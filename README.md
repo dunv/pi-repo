@@ -28,7 +28,28 @@ pi install /absolute/path/to/pi-worktree-panel
 
 Run `/reload` in existing Pi sessions. Local installations reference the checkout directly: keep it at that path, and reload after source changes. Do not also copy or symlink it into `~/.pi/agent/extensions`, which would load it twice.
 
-Once a Git remote or npm release is available, the same package can be installed using Pi's `git:` or `npm:` sources; this initial release is local only.
+From the public GitHub repository, pinned to the first release:
+
+```sh
+pi install git:github.com/dunv/pi-worktree-panel@v0.1.0
+```
+
+Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
+
+### Nix / Home Manager
+
+The package has no runtime npm dependencies, so a pinned source checkout is sufficient:
+
+```nix
+home.file.".pi/agent/extensions/pi-worktree-panel".source = pkgs.fetchFromGitHub {
+  owner = "dunv";
+  repo = "pi-worktree-panel";
+  rev = "13b10d86ac480e02fb0c8e92c2cd6d995327dea7"; # v0.1.0
+  hash = "sha256-DvfoOCZoUqAaTv+k3k9XxbghoAfhAKEnDwWxT4qYquQ=";
+};
+```
+
+Remove any existing `pi install` entry for this package before activating Home Manager, then run `/reload`. Pi automatically discovers the package's manifest in the linked directory. Nix-managed resources do not appear in `pi list`, which only reports packages recorded in Pi's settings.
 
 ## Commands
 
@@ -86,7 +107,7 @@ Node 24+ is required for the TypeScript-based tests. Pi loads `src/index.ts` dir
 pi remove /absolute/path/to/pi-worktree-panel
 ```
 
-Then `/reload` or restart Pi.
+Then `/reload` or restart Pi. For a GitHub install, remove the same `git:` source used to install it. For a Nix installation, remove the Home Manager declaration and activate the updated configuration instead.
 
 ## License
 
