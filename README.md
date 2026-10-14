@@ -28,17 +28,19 @@ pi install /absolute/path/to/pi-worktree-panel
 
 Run `/reload` in existing Pi sessions. Local installations reference the checkout directly: keep it at that path, and reload after source changes. Do not also copy or symlink it into `~/.pi/agent/extensions`, which would load it twice.
 
-From the public GitHub repository, pinned to the first release:
+From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.1.0
+pi install git:github.com/dunv/pi-worktree-panel@v0.2.0
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
 
 ### Nix / Home Manager
 
-The package has no runtime npm dependencies, so a pinned source checkout is sufficient:
+The package has no runtime npm dependencies, so a pinned source checkout is sufficient.
+The example below pins the original v0.1.0 release; for the agent target tool, pin
+v0.2.0 or its immutable commit and update the source hash accordingly:
 
 ```nix
 home.file.".pi/agent/extensions/pi-worktree-panel".source = pkgs.fetchFromGitHub {
@@ -66,6 +68,19 @@ Remove any existing `pi install` entry for this package before activating Home M
 
 Preview changes **only the displayed worktree and file-picker target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Panel settings and preview are session-local and reset on reload/restart.
 
+## Agent workflow integration
+
+The model-callable `worktree_panel_target` tool accepts `{ "path": "/absolute/worktree" }`
+to target a linked worktree (subdirectories are normalized to its root), or
+`{ "path": null }` to restore the session directory. Relative paths, main checkouts,
+and non-worktrees are rejected without changing the existing target.
+
+Call it after creating/resuming a feature worktree and clear it before cleanup.
+It shares the `/worktree-preview` override and `[preview]` label: only the panel
+and file picker change, **not Pi's cwd or tool paths**. Continue using absolute
+worktree paths for edits and shell commands. Reapply after reload/restart.
+In non-TUI modes it records the target but does not display a panel.
+
 ## Status and editor
 
 Status retains Git's two porcelain columns: the first describes staged/index changes, the second describes unstaged/working-tree changes. `??` means untracked. Conflicts are highlighted; deleted files stay visible but are omitted from the file picker. The picker lists every openable file even when the overlay is paginated.
@@ -87,7 +102,7 @@ The panel hides below 110 terminal columns, when its width would leave fewer tha
 - Debounced asynchronous refreshes after tool activity.
 - Three-second status polling only while a linked worktree is being displayed; unchanged snapshots do not repaint.
 - Git subprocesses have time/output limits and disable optional index writes.
-- No runtime npm dependencies, private Pi patches, replacement tools, extra model calls, model-context changes or session-file rewrites.
+- No runtime npm dependencies, private Pi patches, replacement tools, extra model calls, system-prompt changes or session-file rewrites.
 
 Tested with Pi 1.0.2 and Node 24. Repository-root paths containing newlines are unsupported; changed filenames containing spaces/newlines are parsed safely and terminal controls are escaped. Extremely large Git status outputs are bounded at 8 MiB and cause the panel to hide with a diagnostic.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Add the model-callable `worktree_panel_target` tool for feature-worktree workflows.
+- Validate and normalize linked-worktree targets; clear with `path: null`.
+- Keep Pi's cwd and tool paths unchanged, with session-local panel/file-picker targeting.
+- Reset the override when starting a session.
+
 ## 0.1.0
 
 - Worktree-only, non-capturing right-side Pi overlay.

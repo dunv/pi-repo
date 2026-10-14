@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type OverlayHandle } from "@earendil-works/pi-tui";
-import { basename, resolve } from "node:path";
+import { Type } from "@earendil-works/pi-ai";
+import { basename, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot } from "./core.ts";
@@ -172,6 +173,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     stop();
+    preview = undefined;
     if (!interactive(ctx)) return;
     context = ctx;
     schedule(0);
@@ -179,6 +181,31 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.on("session_shutdown", stop);
   pi.on("tool_execution_end", () => schedule());
   pi.on("agent_end", () => schedule());
+
+  pi.registerTool({
+    name: "worktree_panel_target",
+    label: "Worktree panel target",
+    description: "Point the changed-files panel and file picker at a linked Git worktree, or clear the override with path: null. Does NOT change Pi's cwd or tool paths. Call after creating/resuming a feature worktree and clear before removing it. Session-local; reapply after reload/restart.",
+    parameters: Type.Object({
+      path: Type.Union([Type.String({ description: "Absolute linked-worktree path" }), Type.Null()]),
+    }),
+    async execute(_id, { path }, _signal, _onUpdate, ctx) {
+      if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
+      const root = path === null ? undefined : await linkedRoot(path);
+      if (path !== null && !root) throw new Error("That path is not inside a linked Git worktree");
+      epoch++;
+      preview = root;
+      clear();
+      context = interactive(ctx) ? ctx : undefined;
+      schedule(0);
+      return {
+        content: [{ type: "text", text: root
+          ? `Panel target: ${root}. Pi cwd and tool paths are unchanged; use absolute worktree paths for edits.`
+          : "Panel target reset to session cwd. Pi cwd and tool paths are unchanged." }],
+        details: { path: root ?? null, cwdChanged: false, panelAvailable: interactive(ctx) },
+      };
+    },
+  });
 
   pi.registerCommand("worktree-open", {
     description: "Choose a changed worktree file and open $EDITOR in a Herdr tab or Alacritty window",
