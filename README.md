@@ -31,7 +31,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.2.0
+pi install git:github.com/dunv/pi-worktree-panel@v0.3.0
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -58,9 +58,10 @@ Remove any existing `pi install` entry for this package before activating Home M
 | Command | Action |
 | --- | --- |
 | `/worktree-open` | Choose a changed file and open it in your editor |
+| `/worktree-diff` | Choose any changed file and view its diff inside Pi |
 | `/worktree-panel hide` | Temporarily hide the overlay |
 | `/worktree-panel show` | Show the overlay again |
-| `/worktree-panel width 52` | Set width to 30–80 columns; default 44 |
+| `/worktree-panel width 52` | Set width to 30–80 columns; default 64 |
 | `/worktree-panel next` / `prev` | Page through long file lists |
 | `/worktree-refresh` | Refresh Git status immediately |
 | `/worktree-preview /absolute/path` | Display another linked worktree for testing |
@@ -92,11 +93,24 @@ The opener uses `$EDITOR`, falling back to `$VISUAL`. Quoted command arguments a
 
 No editor configured, missing files or launch failures produce a notification. Herdr integration has been tested with `nvim`; Alacritty launching has not yet been interactively tested.
 
+## Show diff
+
+Run `/worktree-diff` to pick a file from the active worktree, including deleted
+files. The read-only viewer shows staged and unstaged patches separately and
+untracked files as additions. Renames, conflicts and binary-file summaries use
+Git's diff output. Long lines wrap; use ↑/↓ (or j/k), PgUp/PgDn, Space, and
+Home/End (or g/G) to navigate. Esc, q, or Ctrl+C closes the viewer and returns
+focus to Pi. No editor, Alacritty or Herdr is required.
+
+Diffs are fetched only on request, respect the preview/agent target, disable
+external diff/textconv commands, and are bounded by the Git timeout/output limits.
+The viewer is a snapshot; reopen it to see subsequent edits.
+
 ## Layout and performance
 
 This is an **overlay**, not a reserved sidebar: it covers the right edge of the conversation without reflowing it. Use `/worktree-panel hide` when reviewing long lines.
 
-The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left, or below 16 terminal rows. Long lists are paginated to the available height.
+The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left (128 columns at the default width of 64), or below 16 terminal rows. Long lists are paginated to the available height.
 
 - Cached layout by content, width, height and page.
 - Debounced asynchronous refreshes after tool activity.

@@ -67,7 +67,7 @@ export class WorktreePanel {
       result.push(line(th.fg(color, `${file.status} ${display(file.path)}`)));
     }
     if (pages > 1) result.push(line(th.fg("dim", `${start + 1}–${Math.min(this.data.files.length, start + this.pageSize)} · /worktree-panel next|prev`)));
-    result.push(line(th.fg("dim", "/worktree-open · /worktree-panel hide")), frame("╰", "╯"));
+    result.push(line(th.fg("dim", "/worktree-open · /worktree-diff · /worktree-panel hide")), frame("╰", "╯"));
     this.cacheKey = key;
     this.cached = result;
     return result;

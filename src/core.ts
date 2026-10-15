@@ -6,11 +6,18 @@ const exec = promisify(execFile);
 export type ChangedFile = { status: string; path: string; from?: string };
 export type Snapshot = { root: string; branch: string; files: ChangedFile[] };
 
-export async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(cwd: string, args: string[], diffExit = false): Promise<string> {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
   for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key];
-  const result = await exec("git", ["-C", cwd, ...args], { env, timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
-  return result.stdout;
+  try {
+    const result = await exec("git", ["-C", cwd, ...args], { env, timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
+    return result.stdout;
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; killed?: boolean };
+    // --no-index reports differences with exit 1, not an execution failure.
+    if (diffExit && failure.code === 1 && !failure.killed && typeof failure.stdout === "string") return failure.stdout;
+    throw error;
+  }
 }
 
 export function parseStatus(text: string): ChangedFile[] {
@@ -49,6 +56,24 @@ export async function readSnapshot(root: string): Promise<Snapshot> {
   let name = branch.trim();
   if (name === "HEAD") name = `detached ${(await git(root, ["rev-parse", "--short", "HEAD"])).trim()}`;
   return { root, branch: name, files: parseStatus(status) };
+}
+
+export async function readDiff(root: string, file: ChangedFile): Promise<string> {
+  const target = fileTarget(root, file.path);
+  const options = ["--no-ext-diff", "--no-textconv", "--color=never", "--no-exit-code"];
+  if (file.status === "??") {
+    const patch = await git(root, ["diff", ...options, "--no-index", "--", "/dev/null", target], true);
+    return `Untracked\n${patch || "Empty untracked file"}`;
+  }
+  const paths = [file.path, ...(file.from ? [file.from] : [])];
+  paths.forEach(path => fileTarget(root, path));
+  const pathspecs = paths.map(path => `:(literal)${path}`);
+  const [staged, unstaged] = await Promise.all([
+    git(root, ["diff", ...options, "--cached", "--", ...pathspecs]),
+    git(root, ["diff", ...options, "--", ...pathspecs]),
+  ]);
+  return [staged && `Staged\n${staged}`, unstaged && `Unstaged\n${unstaged}`].filter(Boolean).join("\n")
+    || "No textual diff (file may have changed since selection).";
 }
 
 // Prevent malicious filenames/branch names from emitting terminal control codes.

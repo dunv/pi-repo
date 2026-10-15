@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot } from "./core.ts";
 
 import { WorktreePanel } from "./panel.ts";
+import { DiffViewer } from "./diff.ts";
+import { readDiff } from "./core.ts";
 
 const KEY = "worktree-panel-preview";
 type PanelSession = {
@@ -29,7 +31,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
   let lastError = "";
   let overlay: PanelSession | undefined;
   let panelHidden = false;
-  let panelWidth = 44;
+  let panelWidth = 64;
   const interactive = (ctx: ExtensionContext) => ctx.mode === "tui" && ctx.hasUI;
 
   function clear() {
@@ -225,6 +227,29 @@ export default function worktreePanel(pi: ExtensionAPI) {
       } catch (error) { ctx.ui.notify(`Cannot open file: ${String(error)}`, "error"); }
     },
   });
+  pi.registerCommand("worktree-diff", {
+    description: "Choose a changed worktree file and show its staged/unstaged diff",
+    handler: async (_args, ctx) => {
+      if (!interactive(ctx)) return;
+      try {
+        const root = await linkedRoot(preview ?? ctx.cwd);
+        if (!root) { ctx.ui.notify("Not in a linked Git worktree", "info"); return; }
+        const { files } = await readSnapshot(root);
+        if (!files.length) { ctx.ui.notify("No changed files to diff", "info"); return; }
+        const labels = files.map((f, i) => `${i + 1}. ${f.status} ${display(f.path)}`);
+        const picked = await ctx.ui.select("Show diff", labels);
+        if (!picked) return;
+        const file = files[labels.indexOf(picked)];
+        const text = await readDiff(root, file);
+        await ctx.ui.custom<void>((tui, theme, _keys, done) => new DiffViewer(
+          file.path, text, theme, () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
+          () => tui.requestRender(), () => done()), {
+          overlay: true,
+          overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },
+        });
+      } catch (error) { ctx.ui.notify(`Cannot show diff: ${String(error)}`, "error"); }
+    },
+  });
   pi.registerCommand("worktree-panel", {
     description: "Worktree overlay: show, hide, next, prev, or width 30–80",
     handler: async (args, ctx) => {
@@ -244,7 +269,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
         overlay?.component?.invalidate();
         overlay?.requestRender?.();
       } else {
-        ctx.ui.notify("/worktree-panel show|hide|next|prev|width 44 · hides below 110 columns", "info");
+        ctx.ui.notify("/worktree-panel show|hide|next|prev|width 64 · requires width + 64 terminal columns", "info");
       }
     },
   });

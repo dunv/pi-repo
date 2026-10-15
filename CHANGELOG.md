@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Widen the default changed-files panel from 44 to 64 columns.
+- Add `/worktree-diff` with a read-only, scrollable in-Pi viewer.
+- Show staged/unstaged patches separately, including renames, deletions, conflicts, untracked files and binary summaries.
+- Wrap long diff lines and escape terminal controls; disable external diff/textconv execution.
+
 ## 0.2.0
 
 - Add the model-callable `worktree_panel_target` tool for feature-worktree workflows.
