@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Integrate file selection and diff viewing into the existing sidebar using `/worktree-open` or `/worktree-panel`; remove the separate diff command/picker.
+- Add ↑/↓ selection, Enter for diff, e for editor, and Esc to release focus.
+- Return from diffs to the panel, preserve selected paths during refresh, and allow explicit focus on narrower terminals.
+
 ## 0.3.0
 
 - Widen the default changed-files panel from 44 to 64 columns.

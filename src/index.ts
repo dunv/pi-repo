@@ -13,6 +13,9 @@ import { readDiff } from "./core.ts";
 const KEY = "worktree-panel-preview";
 type PanelSession = {
   closed: boolean;
+  focusRequested?: boolean;
+  actionBusy?: boolean;
+  closeDiff?: () => void;
   done?: () => void;
   handle?: OverlayHandle;
   component?: WorktreePanel;
@@ -41,6 +44,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
     overlay = undefined;
     if (previous) {
       previous.closed = true;
+      previous.closeDiff?.();
       previous.done?.(); // Finish ctx.ui.custom; never remove its overlay via handle.hide().
     }
     if (poll) clearInterval(poll);
@@ -63,7 +67,12 @@ export default function worktreePanel(pi: ExtensionAPI) {
         session.done = () => done();
         session.requestRender = () => tui.requestRender();
         const component = new WorktreePanel(next, Boolean(preview), theme,
-          { truncate: truncateToWidth, measure: visibleWidth }, () => availableRows);
+          { truncate: truncateToWidth, measure: visibleWidth }, () => availableRows, {
+            diff: (root, file) => { void panelAction(session, () => showDiff(session, ctx, root, file)); },
+            edit: (root, file) => { void panelAction(session, () => openFile(root, file.path)); },
+            close: () => releaseFocus(session),
+            render: () => tui.requestRender(),
+          });
         session.component = component;
         return component;
       }, {
@@ -76,13 +85,20 @@ export default function worktreePanel(pi: ExtensionAPI) {
           nonCapturing: true,
           visible: (width, height) => {
             availableRows = Math.max(9, Math.floor(height * 0.7));
-            return width >= Math.max(110, panelWidth + 64) && height >= 16;
+            const minimum = session.focusRequested ? panelWidth + 2 : Math.max(110, panelWidth + 64);
+            return width >= minimum && height >= 16;
           },
         },
         onHandle: handle => {
           session.handle = handle;
           if (session.closed) session.done?.();
-          else handle.setHidden(panelHidden);
+          else {
+            handle.setHidden(panelHidden);
+            if (session.focusRequested) {
+              session.component?.setActive(true);
+              handle.focus();
+            }
+          }
         },
       }).then(() => {
         if (overlay === session) overlay = undefined;
@@ -99,6 +115,63 @@ export default function worktreePanel(pi: ExtensionAPI) {
       poll = setInterval(() => schedule(0), 3000);
       poll.unref();
     }
+  }
+
+  function releaseFocus(session: PanelSession) {
+    session.focusRequested = false;
+    session.component?.setActive(false);
+    session.handle?.unfocus();
+    session.requestRender?.();
+  }
+
+  async function panelAction(session: PanelSession, action: () => Promise<void>) {
+    if (session.actionBusy || session.closed) return;
+    session.actionBusy = true;
+    try { await action(); }
+    catch (error) { context?.ui.notify(`Worktree panel: ${String(error)}`, "error"); }
+    finally {
+      session.actionBusy = false;
+      if (overlay === session && session.focusRequested && !panelHidden) session.handle?.focus();
+      session.requestRender?.();
+    }
+  }
+
+  async function showDiff(session: PanelSession, ctx: ExtensionContext, root: string, file: Snapshot["files"][number]) {
+    const text = await readDiff(root, file);
+    if (session.closed) return;
+    try {
+      await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+        session.closeDiff = () => done();
+        if (session.closed) done();
+        return new DiffViewer(file.path, text, theme,
+          () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
+          () => tui.requestRender(), () => done());
+      }, {
+        overlay: true,
+        overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },
+      });
+    } finally { session.closeDiff = undefined; }
+  }
+
+  async function focusPanel(ctx: ExtensionContext) {
+    if (!interactive(ctx)) return;
+    try {
+      const token = epoch;
+      const root = await linkedRoot(preview ?? ctx.cwd);
+      if (!root) { ctx.ui.notify("Not in a linked Git worktree", "info"); return; }
+      const data = await readSnapshot(root);
+      if (token !== epoch) return;
+      context = ctx;
+      panelHidden = false;
+      paint(data);
+      const session = overlay;
+      if (!session) return;
+      session.focusRequested = true;
+      session.component?.setActive(true);
+      session.handle?.setHidden(false);
+      session.handle?.focus();
+      session.requestRender?.();
+    } catch (error) { ctx.ui.notify(`Cannot open worktree panel: ${String(error)}`, "error"); }
   }
 
   async function refresh() {
@@ -210,53 +283,18 @@ export default function worktreePanel(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("worktree-open", {
-    description: "Choose a changed worktree file and open $EDITOR in a Herdr tab or Alacritty window",
-    handler: async (_args, ctx) => {
-      if (!interactive(ctx)) return;
-      // Fetch fresh data even if a debounced/background refresh is in flight.
-      const root = await linkedRoot(preview ?? ctx.cwd);
-      if (!root) { ctx.ui.notify("Not in a linked Git worktree", "info"); return; }
-      try {
-        const current = await readSnapshot(root);
-        const files = current.files.filter(f => f.status !== " D" && f.status !== "D " && f.status !== "DD");
-        if (!files.length) { ctx.ui.notify("No changed files available to open", "info"); return; }
-        const labels = files.map((f, i) => `${i + 1}. ${f.status} ${display(f.path)}`);
-        const picked = await ctx.ui.select("Open changed file in $EDITOR", labels);
-        if (!picked) return;
-        await openFile(root, files[labels.indexOf(picked)].path);
-      } catch (error) { ctx.ui.notify(`Cannot open file: ${String(error)}`, "error"); }
-    },
-  });
-  pi.registerCommand("worktree-diff", {
-    description: "Choose a changed worktree file and show its staged/unstaged diff",
-    handler: async (_args, ctx) => {
-      if (!interactive(ctx)) return;
-      try {
-        const root = await linkedRoot(preview ?? ctx.cwd);
-        if (!root) { ctx.ui.notify("Not in a linked Git worktree", "info"); return; }
-        const { files } = await readSnapshot(root);
-        if (!files.length) { ctx.ui.notify("No changed files to diff", "info"); return; }
-        const labels = files.map((f, i) => `${i + 1}. ${f.status} ${display(f.path)}`);
-        const picked = await ctx.ui.select("Show diff", labels);
-        if (!picked) return;
-        const file = files[labels.indexOf(picked)];
-        const text = await readDiff(root, file);
-        await ctx.ui.custom<void>((tui, theme, _keys, done) => new DiffViewer(
-          file.path, text, theme, () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
-          () => tui.requestRender(), () => done()), {
-          overlay: true,
-          overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },
-        });
-      } catch (error) { ctx.ui.notify(`Cannot show diff: ${String(error)}`, "error"); }
-    },
+    description: "Focus the worktree panel: select a file, Enter for diff, e for editor",
+    handler: async (_args, ctx) => { await focusPanel(ctx); },
   });
   pi.registerCommand("worktree-panel", {
-    description: "Worktree overlay: show, hide, next, prev, or width 30–80",
+    description: "Focus worktree files, or show, hide, next, prev, width 30–80",
     handler: async (args, ctx) => {
       if (!interactive(ctx)) return;
       const action = args.trim();
+      if (!action) { await focusPanel(ctx); return; }
       if (action === "show" || action === "hide") {
         panelHidden = action === "hide";
+        if (panelHidden && overlay) releaseFocus(overlay);
         overlay?.handle?.setHidden(panelHidden);
         schedule(0);
       } else if (action === "next" || action === "prev") {

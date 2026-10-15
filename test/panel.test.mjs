@@ -42,3 +42,31 @@ test('terminal controls in paths and branches are escaped', () => {
   assert.ok(text.includes('name\\x0afile'));
   assert.ok(!text.includes('\x1b'));
 });
+test('interactive selection spans pages, survives refresh, and dispatches diff/editor actions', () => {
+  const data = fixture(20);
+  const calls = [];
+  let rows = 14;
+  const panel = new WorktreePanel(data, false, theme, layout, () => rows, {
+    diff: (_root, file) => calls.push(['diff', file.path]),
+    edit: (_root, file) => calls.push(['edit', file.path]),
+    close: () => calls.push(['close']), render() {},
+  });
+  panel.handleInput('\r'); // Passive sidebar must not process input.
+  assert.deepEqual(calls, []);
+  panel.setActive(true);
+  panel.render(64);
+  for (let i = 0; i < 6; i++) panel.handleInput('j');
+  assert.ok(panel.render(64).some(line => line.includes('›  M file-006')));
+  const updated = { ...data, files: data.files.slice(2) };
+  panel.update(updated, false);
+  panel.handleInput('\r');
+  panel.handleInput('e');
+  assert.deepEqual(calls, [['diff', 'file-006.txt'], ['edit', 'file-006.txt']]);
+  rows = 10;
+  assert.ok(panel.render(64).length <= rows);
+  panel.update(fixture(), false);
+  panel.handleInput('\r');
+  assert.equal(calls.length, 2);
+  panel.handleInput('q');
+  assert.deepEqual(calls.at(-1), ['close']);
+});

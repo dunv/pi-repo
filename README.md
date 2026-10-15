@@ -2,7 +2,7 @@
 
 A lightweight right-side changed-files overlay for [Pi](https://pi.dev).
 
-Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git. The panel uses Pi's supported overlay API, does not capture keyboard focus, and requires no Herdr installation to display.
+Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git. The panel uses Pi's supported overlay API, stays passive until explicitly focused, and requires no Herdr installation to display.
 
 ```text
 ╭──────────────────────────────────────────╮
@@ -31,7 +31,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.3.0
+pi install git:github.com/dunv/pi-worktree-panel@v0.3.1
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -57,8 +57,8 @@ Remove any existing `pi install` entry for this package before activating Home M
 
 | Command | Action |
 | --- | --- |
-| `/worktree-open` | Choose a changed file and open it in your editor |
-| `/worktree-diff` | Choose any changed file and view its diff inside Pi |
+| `/worktree-open` | Focus the existing panel; ↑/↓ select, Enter shows diff, e opens editor |
+| `/worktree-panel` | Focus the same panel |
 | `/worktree-panel hide` | Temporarily hide the overlay |
 | `/worktree-panel show` | Show the overlay again |
 | `/worktree-panel width 52` | Set width to 30–80 columns; default 64 |
@@ -67,7 +67,7 @@ Remove any existing `pi install` entry for this package before activating Home M
 | `/worktree-preview /absolute/path` | Display another linked worktree for testing |
 | `/worktree-preview off` | Return to the session's working directory |
 
-Preview changes **only the displayed worktree and file-picker target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Panel settings and preview are session-local and reset on reload/restart.
+Preview changes **only the displayed worktree and diff/editor target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Panel settings and preview are session-local and reset on reload/restart.
 
 ## Agent workflow integration
 
@@ -78,13 +78,13 @@ and non-worktrees are rejected without changing the existing target.
 
 Call it after creating/resuming a feature worktree and clear it before cleanup.
 It shares the `/worktree-preview` override and `[preview]` label: only the panel
-and file picker change, **not Pi's cwd or tool paths**. Continue using absolute
+and diff/editor target change, **not Pi's cwd or tool paths**. Continue using absolute
 worktree paths for edits and shell commands. Reapply after reload/restart.
 In non-TUI modes it records the target but does not display a panel.
 
 ## Status and editor
 
-Status retains Git's two porcelain columns: the first describes staged/index changes, the second describes unstaged/working-tree changes. `??` means untracked. Conflicts are highlighted; deleted files stay visible but are omitted from the file picker. The picker lists every openable file even when the overlay is paginated.
+Status retains Git's two porcelain columns: the first describes staged/index changes, the second describes unstaged/working-tree changes. `??` means untracked. Conflicts are highlighted; deleted files remain selectable for diffs. While the panel is focused, press e to open the selected file in your editor; missing/deleted files produce a notification rather than being recreated. Selection automatically pages through the full list and is preserved by filename across refreshes.
 
 The opener uses `$EDITOR`, falling back to `$VISUAL`. Quoted command arguments are supported; shell pipelines, variable expansion and other shell expressions are not.
 
@@ -95,12 +95,16 @@ No editor configured, missing files or launch failures produce a notification. H
 
 ## Show diff
 
-Run `/worktree-diff` to pick a file from the active worktree, including deleted
-files. The read-only viewer shows staged and unstaged patches separately and
+Run `/worktree-open` (or `/worktree-panel`) to focus the **existing sidebar**.
+Use ↑/↓ or j/k to select a file, PgUp/PgDn or Home/End to navigate, and Enter to
+show its diff, including deleted files. Press e for the editor, or Esc/q/Ctrl+C
+to return focus to Pi. There is no separate file picker or diff command.
+
+The read-only viewer shows staged and unstaged patches separately and
 untracked files as additions. Renames, conflicts and binary-file summaries use
 Git's diff output. Long lines wrap; use ↑/↓ (or j/k), PgUp/PgDn, Space, and
 Home/End (or g/G) to navigate. Esc, q, or Ctrl+C closes the viewer and returns
-focus to Pi. No editor, Alacritty or Herdr is required.
+focus to the file panel. No editor, Alacritty or Herdr is required.
 
 Diffs are fetched only on request, respect the preview/agent target, disable
 external diff/textconv commands, and are bounded by the Git timeout/output limits.
@@ -110,7 +114,7 @@ The viewer is a snapshot; reopen it to see subsequent edits.
 
 This is an **overlay**, not a reserved sidebar: it covers the right edge of the conversation without reflowing it. Use `/worktree-panel hide` when reviewing long lines.
 
-The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left (128 columns at the default width of 64), or below 16 terminal rows. Long lists are paginated to the available height.
+The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left (128 columns at the default width of 64), or below 16 terminal rows. Explicitly focusing the panel relaxes the left-side space requirement: it only needs its own width plus two columns. Long lists are paginated to the available height.
 
 - Cached layout by content, width, height and page.
 - Debounced asynchronous refreshes after tool activity.
