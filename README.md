@@ -32,7 +32,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.4.1
+pi install git:github.com/dunv/pi-worktree-panel@v0.4.2
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -55,6 +55,10 @@ home.file.".pi/agent/extensions/pi-worktree-panel".source = pkgs.fetchFromGitHub
 Remove any existing `pi install` entry for this package before activating Home Manager, then run `/reload`. Pi automatically discovers the package's manifest in the linked directory. Nix-managed resources do not appear in `pi list`, which only reports packages recorded in Pi's settings.
 
 ## Commands
+
+**Alt+W** focuses the panel directly from Pi's editor, including in regular
+(non-fullscreen) mode. Press Alt+W again in the panel to return to Pi, or use
+Esc/q. Your draft stays in the editor. The shortcut appears in `/hotkeys`.
 
 | Command | Action |
 | --- | --- |
@@ -126,7 +130,7 @@ No editor configured, missing files or launch failures produce a notification. H
 
 ## Show diff
 
-Run `/worktree-open` (or `/worktree-panel`) to focus the **existing sidebar**.
+Press **Alt+W**, or run `/worktree-open` (or `/worktree-panel`), to focus the **existing sidebar**.
 Use ↑/↓ or j/k to select a file, PgUp/PgDn or Home/End to navigate, and Enter to
 show its diff, including deleted files. Press e for the editor, or Esc/q/Ctrl+C
 to return focus to Pi. There is no separate file picker or diff command.
@@ -146,7 +150,13 @@ The viewer is a snapshot; refresh the panel and reopen it to see subsequent edit
 
 This is an **overlay**, not a reserved sidebar: it covers the right edge of the conversation without reflowing it. Use `/worktree-panel hide` when reviewing long lines.
 
-The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left (128 columns at the default width of 64), or below 16 terminal rows. Explicitly focusing the panel relaxes the left-side space requirement: it only needs its own width plus two columns. Long lists are paginated to the available height.
+The panel hides below 110 terminal columns, when its width would leave fewer than 64 columns to the left (128 columns at the default width of 64), or below 24 terminal rows. Explicitly focusing the panel relaxes the left-side space requirement: it only needs its own width plus two columns.
+
+The sidebar is capped at **one-third of the terminal height**, including borders.
+On shorter terminals its branch is folded into the title and the full root-path
+row is omitted, keeping both diff areas visible. Long lists paginate within that
+limit; all files remain accessible. The separate diff viewer still uses up to 85%
+of the height for readability.
 
 - Cached layout by content, width, height and page.
 - Debounced asynchronous refreshes after tool activity.

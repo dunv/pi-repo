@@ -14,6 +14,7 @@ function harness(cwd) {
   worktreePanel({
     registerTool: tool => tools.set(tool.name, tool),
     registerCommand() {},
+    registerShortcut() {},
     appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }),
     on: (name, handler) => events.set(name, handler),
   });

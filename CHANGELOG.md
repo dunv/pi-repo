@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Add Alt+W to focus the panel from Pi's editor in regular or fullscreen mode; Alt+W/Esc returns focus to Pi.
+- Cap sidebar height at one-third of the terminal, including borders; compact metadata on short terminals while retaining both diff areas.
+- Keep the diff viewer's larger viewport and existing commands unchanged.
+
 ## 0.4.1
 
 - Save the tool-selected worktree per session branch and restore it on reload/resume/restart and tree navigation, without changing Pi's cwd.

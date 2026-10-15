@@ -62,7 +62,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
     } else {
       const session: PanelSession = { closed: false };
       overlay = session;
-      let availableRows = 20;
+      let availableRows = 8;
       const ctx = context!;
       void ctx.ui.custom<void>((tui, theme, _keys, done) => {
         session.done = () => done();
@@ -81,13 +81,13 @@ export default function worktreePanel(pi: ExtensionAPI) {
         overlayOptions: {
           anchor: "top-right",
           get width() { return panelWidth; },
-          maxHeight: "70%",
+          get maxHeight() { return Math.max(1, availableRows); },
           margin: { top: 1, right: 1, bottom: 8 },
           nonCapturing: true,
           visible: (width, height) => {
-            availableRows = Math.max(9, Math.floor(height * 0.7));
+            availableRows = Math.floor(height / 3);
             const minimum = session.focusRequested ? panelWidth + 2 : Math.max(110, panelWidth + 64);
-            return width >= minimum && height >= 16;
+            return width >= minimum && availableRows >= 8;
           },
         },
         onHandle: handle => {
@@ -290,6 +290,15 @@ export default function worktreePanel(pi: ExtensionAPI) {
           : "Panel target reset to session cwd. Pi cwd and tool paths are unchanged." }],
         details: { path: root ?? null, cwdChanged: false, panelAvailable: interactive(ctx) },
       };
+    },
+  });
+
+  pi.registerShortcut("alt+w", {
+    description: "Focus/unfocus the worktree panel",
+    handler: async ctx => {
+      if (!interactive(ctx)) return;
+      if (overlay?.focusRequested) releaseFocus(overlay);
+      else await focusPanel(ctx);
     },
   });
 

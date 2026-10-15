@@ -11,13 +11,14 @@ const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
 
 test('existing commands focus the same panel; Enter opens diff and Esc restores panel/Pi focus', async () => {
   const base = await mkdtemp(join(tmpdir(), 'panel-interaction-'));
-  const commands = new Map(), events = new Map(), views = [];
+  const commands = new Map(), events = new Map(), shortcuts = new Map(), views = [];
   const notifications = [];
   let focus;
   worktreePanel({
     on: (name, handler) => events.set(name, handler),
     registerCommand: (name, command) => commands.set(name, command),
     registerTool() {},
+    registerShortcut: (key, shortcut) => shortcuts.set(key, shortcut),
   });
   const ctx = { cwd: join(base, 'linked'), mode: 'tui', hasUI: true, ui: {
     notify: message => notifications.push(message),
@@ -54,11 +55,18 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     await git(ctx.cwd, ['commit', '-m', 'branch change']);
     await writeFile(join(ctx.cwd, 'new.txt'), 'new content\n');
     assert.deepEqual([...commands.keys()].sort(), ['worktree-open', 'worktree-panel', 'worktree-preview', 'worktree-refresh']);
-    await commands.get('worktree-open').handler('', ctx);
+    assert.deepEqual([...shortcuts.keys()], ['alt+w']);
+    await shortcuts.get('alt+w').handler(ctx);
     assert.equal(views.length, 1);
     const panel = views[0];
     assert.equal(focus, panel);
     assert.equal(panel.component.active, true);
+    assert.equal(panel.options.overlayOptions.visible(80, 40), true);
+    assert.equal(panel.options.overlayOptions.maxHeight, Math.floor(40 / 3));
+    assert.equal(panel.options.overlayOptions.visible(80, 24), true);
+    assert.equal(panel.options.overlayOptions.maxHeight, 8);
+    assert.ok(panel.component.render(64).length <= 8);
+    assert.equal(panel.options.overlayOptions.visible(80, 23), false);
     assert.equal(panel.options.overlayOptions.visible(80, 40), true);
     const lines = panel.component.render(64).join('\n');
     assert.match(lines, /Committed vs develop/);
@@ -81,13 +89,18 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     views[2].component.handleInput('q');
     await setTimeout(0);
     assert.equal(focus, panel);
-    panel.component.handleInput('\x1b');
+    panel.component.handleInput('\x1bw'); // Alt+W is routed to the focused component.
     assert.equal(panel.component.active, false);
     assert.equal(focus, undefined);
     assert.equal(panel.options.overlayOptions.visible(80, 40), false);
     await commands.get('worktree-panel').handler('', ctx);
     assert.equal(focus, panel);
     assert.equal(views.length, 3); // Reuses the sidebar, not another picker/panel.
+    await shortcuts.get('alt+w').handler(ctx);
+    assert.equal(focus, undefined);
+    assert.equal(panel.component.active, false);
+    await shortcuts.get('alt+w').handler(ctx);
+    assert.equal(focus, panel);
     await commands.get('worktree-panel').handler('hide', ctx);
     assert.equal(panel.component.active, false);
     assert.equal(focus, undefined);

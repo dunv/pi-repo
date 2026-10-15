@@ -40,6 +40,7 @@ function harness(cwd, history) {
     on: (name, handler) => events.set(name, handler),
     registerCommand: (name, command) => commands.set(name, command),
     registerTool: tool => tools.set(tool.name, tool),
+    registerShortcut() {},
     appendEntry: (customType, data) => history.push({ type: 'custom', customType, data }),
   });
   return {

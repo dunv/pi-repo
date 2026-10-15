@@ -80,12 +80,13 @@ test('both areas stay visible and dispatch different sources for the same filena
     diff: (_root, file, source) => calls.push([file.path, source.kind]),
     edit() {}, close() {}, render() {},
   });
-  for (const height of [16, 10, 24]) {
+  for (const height of [8, 9, 10, 11, 12, 16, 24]) {
     rows = height;
     const lines = panel.render(64);
     assert.ok(lines.length <= rows);
     assert.ok(lines.some(line => line.includes('Committed vs develop')));
     assert.ok(lines.some(line => line.includes('Uncommitted')));
+    assert.ok(lines.some(line => line.includes('Alt+W focus')));
   }
   panel.movePage(100);
   assert.equal(panel.render(64).filter(line => line.includes('file-019')).length, 2);

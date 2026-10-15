@@ -75,7 +75,7 @@ export class WorktreePanel {
   setActive(active: boolean) { this.active = active; this.invalidate(); }
   handleInput(data: string) {
     if (!this.active || !this.actions) return;
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "alt+w") || data === "q") {
       this.actions.close(); return;
     }
     const entries = this.entries();
@@ -103,11 +103,12 @@ export class WorktreePanel {
   invalidate() { this.cacheKey = ""; }
 
   render(width: number): string[] {
-    const height = Math.max(10, this.rows());
+    const height = Math.max(8, this.rows());
+    const compact = height < 12;
     const inner = Math.max(1, width - 4);
     const sections = this.sections();
-    // Eight fixed rows; reserve at least one content row for each area.
-    const slots = height - 8;
+    // Collapse metadata on short terminals, keeping both areas and controls.
+    const slots = height - (compact ? 6 : 8);
     const counts = sections.map(section => Math.max(1, section.files.length));
     this.sizes[0] = Math.min(counts[0], Math.max(1, Math.floor(slots / 2)));
     this.sizes[1] = Math.min(counts[1], slots - this.sizes[0]);
@@ -136,10 +137,9 @@ export class WorktreePanel {
     const border = (text: string) => th.fg("border", text);
     const line = (text: string) => th.bg("customMessageBg", border("│ ") + pad(text) + border(" │"));
     const frame = (left: string, right: string) => th.bg("customMessageBg", border(left + "─".repeat(Math.max(1, width - 2)) + right));
-    const result = [frame("╭", "╮"),
-      line(th.fg("accent", `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}`)),
-      line(th.fg("text", display(this.data.branch))),
-      line(th.fg("dim", display(this.data.root)))];
+    const title = `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
+    const result = [frame("╭", "╮"), line(th.fg("accent", title))];
+    if (!compact) result.push(line(th.fg("text", display(this.data.branch))), line(th.fg("dim", display(this.data.root))));
     sections.forEach((section, group) => {
       const start = this.pages[group] * this.sizes[group];
       const end = Math.min(section.files.length, start + this.sizes[group]);
@@ -154,7 +154,7 @@ export class WorktreePanel {
         result.push(line(th.fg(marked ? "accent" : color, `${marked ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`)));
       }
     });
-    result.push(line(th.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Esc back" : "/worktree-open · /worktree-panel hide")), frame("╰", "╯"));
+    result.push(line(th.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Alt+W/Esc back" : "Alt+W focus · /worktree-panel hide")), frame("╰", "╯"));
     this.cacheKey = key;
     this.cached = result;
     return result;

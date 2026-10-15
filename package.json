@@ -1,6 +1,6 @@
 {
   "name": "pi-worktree-panel",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "A lightweight, worktree-only right-side Git changed-files overlay for Pi.",
   "type": "module",
   "license": "MIT",
