@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { basename } from "node:path";
-import { display, type Snapshot, type ChangedFile } from "./core.ts";
+import { display, type Snapshot, type ChangedFile, type DiffSource } from "./core.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 
 export type Layout = {
@@ -9,13 +9,14 @@ export type Layout = {
 };
 
 export type PanelActions = {
-  diff(root: string, file: ChangedFile): void;
+  diff(root: string, file: ChangedFile, source: DiffSource): void;
   edit(root: string, file: ChangedFile): void;
   close(): void;
   render(): void;
 };
+type Section = { title: string; files: ChangedFile[]; source?: DiffSource; error?: string };
 
-// No Git, timers or model calls here. The host owns focus and file actions.
+// No Git, timers or model calls here. Both areas remain visible while paging.
 export class WorktreePanel {
   active = false;
   private selected = 0;
@@ -25,8 +26,8 @@ export class WorktreePanel {
   private theme: Theme;
   private layout: Layout;
   private rows: () => number;
-  private page = 0;
-  private pageSize = 1;
+  private pages = [0, 0];
+  private sizes = [1, 1];
   private cacheKey = "";
   private cached: string[] = [];
 
@@ -38,53 +39,94 @@ export class WorktreePanel {
     this.layout = layout;
     this.rows = rows;
   }
+  private sections(): Section[] {
+    const committed = this.data.committed;
+    return [
+      { title: `Committed vs ${committed?.ref ?? "develop"}`, files: committed?.files ?? [],
+        source: committed?.source, error: committed?.error },
+      { title: "Uncommitted", files: this.data.files, source: { kind: "uncommitted" } },
+    ];
+  }
+  private entries() {
+    return this.sections().flatMap((section, group) => section.files.map(file => ({ file, source: section.source, group })));
+  }
   update(data: Snapshot, preview: boolean) {
-    const path = this.data.files[this.selected]?.path;
-    const index = data.files.findIndex(file => file.path === path);
-    this.selected = index >= 0 ? index : Math.max(0, Math.min(this.selected, data.files.length - 1));
+    const before = this.entries()[this.selected];
     this.data = data;
+    const entries = this.entries();
+    const index = entries.findIndex(entry => entry.group === before?.group && entry.file.path === before.file.path);
+    this.selected = index >= 0 ? index : Math.max(0, Math.min(this.selected, entries.length - 1));
     this.preview = preview;
     this.invalidate();
   }
   movePage(direction: number) {
-    const pages = Math.max(1, Math.ceil(this.data.files.length / this.pageSize));
-    this.page = Math.max(0, Math.min(pages - 1, this.page + direction));
-    this.selected = this.page * this.pageSize;
+    const sections = this.sections();
+    const selected = this.entries()[this.selected];
+    sections.forEach((section, group) => {
+      if (this.active && selected && selected.group !== group) return;
+      const pages = Math.max(1, Math.ceil(section.files.length / this.sizes[group]));
+      this.pages[group] = Math.max(0, Math.min(pages - 1, this.pages[group] + direction));
+      if (this.active && selected?.group === group) {
+        this.selected = (group ? sections[0].files.length : 0) + this.pages[group] * this.sizes[group];
+      }
+    });
     this.invalidate();
   }
-  setActive(active: boolean) {
-    this.active = active;
-    this.invalidate();
-  }
+  setActive(active: boolean) { this.active = active; this.invalidate(); }
   handleInput(data: string) {
     if (!this.active || !this.actions) return;
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
       this.actions.close(); return;
     }
-    const file = this.data.files[this.selected];
-    if (matchesKey(data, "return")) { if (file) this.actions.diff(this.data.root, file); return; }
-    if (data === "e") { if (file) this.actions.edit(this.data.root, file); return; }
+    const entries = this.entries();
+    const entry = entries[this.selected];
+    if (matchesKey(data, "return")) {
+      if (entry?.source) this.actions.diff(this.data.root, entry.file, entry.source);
+      return;
+    }
+    if (data === "e") { if (entry) this.actions.edit(this.data.root, entry.file); return; }
+    const pageSize = this.sizes[entry?.group ?? 0];
     if (matchesKey(data, "up") || data === "k") this.selected--;
     else if (matchesKey(data, "down") || data === "j") this.selected++;
-    else if (matchesKey(data, "pageUp")) this.selected -= this.pageSize;
-    else if (matchesKey(data, "pageDown")) this.selected += this.pageSize;
+    else if (matchesKey(data, "pageUp")) this.selected -= pageSize;
+    else if (matchesKey(data, "pageDown")) this.selected += pageSize;
     else if (matchesKey(data, "home")) this.selected = 0;
-    else if (matchesKey(data, "end")) this.selected = this.data.files.length - 1;
-    else return;
-    this.selected = Math.max(0, Math.min(this.selected, this.data.files.length - 1));
-    this.page = Math.floor(this.selected / this.pageSize);
+    else if (matchesKey(data, "end")) this.selected = entries.length - 1;
+    else if (matchesKey(data, "tab")) {
+      const count = this.sections()[0].files.length;
+      this.selected = entry?.group === 0 && this.data.files.length ? count : 0;
+    } else return;
+    this.selected = Math.max(0, Math.min(this.selected, entries.length - 1));
     this.invalidate();
     this.actions.render();
   }
   invalidate() { this.cacheKey = ""; }
 
   render(width: number): string[] {
-    const height = Math.max(9, this.rows());
+    const height = Math.max(10, this.rows());
     const inner = Math.max(1, width - 4);
-    this.pageSize = Math.max(1, height - 9);
-    const pages = Math.max(1, Math.ceil(this.data.files.length / this.pageSize));
-    this.page = this.active ? Math.floor(this.selected / this.pageSize) : Math.min(this.page, pages - 1);
-    const key = `${width}:${height}:${this.page}:${this.active}:${this.selected}`;
+    const sections = this.sections();
+    // Eight fixed rows; reserve at least one content row for each area.
+    const slots = height - 8;
+    const counts = sections.map(section => Math.max(1, section.files.length));
+    this.sizes[0] = Math.min(counts[0], Math.max(1, Math.floor(slots / 2)));
+    this.sizes[1] = Math.min(counts[1], slots - this.sizes[0]);
+    let left = slots - this.sizes[0] - this.sizes[1];
+    for (let group = 0; group < 2; group++) {
+      const extra = Math.min(left, counts[group] - this.sizes[group]);
+      this.sizes[group] += extra;
+      left -= extra;
+    }
+    const selected = this.entries()[this.selected];
+    sections.forEach((section, group) => {
+      const count = Math.max(1, Math.ceil(section.files.length / this.sizes[group]));
+      this.pages[group] = Math.min(this.pages[group], count - 1);
+      if (this.active && selected?.group === group) {
+        const offset = group ? sections[0].files.length : 0;
+        this.pages[group] = Math.floor((this.selected - offset) / this.sizes[group]);
+      }
+    });
+    const key = `${width}:${height}:${this.pages}:${this.active}:${this.selected}`;
     if (key === this.cacheKey) return this.cached;
     const th = this.theme;
     const pad = (text: string) => {
@@ -97,18 +139,22 @@ export class WorktreePanel {
     const result = [frame("╭", "╮"),
       line(th.fg("accent", `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}`)),
       line(th.fg("text", display(this.data.branch))),
-      line(th.fg("dim", display(this.data.root))),
-      frame("├", "┤"),
-      line(th.fg(this.data.files.length ? "muted" : "success", this.data.files.length ? `${this.data.files.length} changed files` : "✓ Clean"))];
-    const start = this.page * this.pageSize;
-    for (const file of this.data.files.slice(start, start + this.pageSize)) {
-      const conflict = /U/.test(file.status) || file.status === "AA" || file.status === "DD";
-      const color = conflict ? "error" : file.status === "??" ? "muted" : "text";
-      const selected = this.active && file === this.data.files[this.selected];
-      result.push(line(th.fg(selected ? "accent" : color, `${selected ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`)));
-    }
-    if (pages > 1) result.push(line(th.fg("dim", `${start + 1}–${Math.min(this.data.files.length, start + this.pageSize)} · /worktree-panel next|prev`)));
-    result.push(line(th.fg("dim", this.active ? "↑↓ select · Enter diff · e edit · Esc back" : "/worktree-open · /worktree-panel hide")), frame("╰", "╯"));
+      line(th.fg("dim", display(this.data.root)))];
+    sections.forEach((section, group) => {
+      const start = this.pages[group] * this.sizes[group];
+      const end = Math.min(section.files.length, start + this.sizes[group]);
+      const count = section.files.length > this.sizes[group] ? `${start + 1}–${end}/${section.files.length}` : String(section.files.length);
+      result.push(line(th.fg("accent", `── ${display(section.title)} · ${section.error ? "unavailable" : count}`)));
+      if (section.error) result.push(line(th.fg("warning", display(section.error))));
+      else if (!section.files.length) result.push(line(th.fg("success", group ? "✓ Clean" : "No committed changes")));
+      for (const file of section.files.slice(start, end)) {
+        const conflict = /U/.test(file.status) || file.status === "AA" || file.status === "DD";
+        const color = conflict ? "error" : file.status === "??" ? "muted" : "text";
+        const marked = this.active && selected?.group === group && selected.file === file;
+        result.push(line(th.fg(marked ? "accent" : color, `${marked ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`)));
+      }
+    });
+    result.push(line(th.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Esc back" : "/worktree-open · /worktree-panel hide")), frame("╰", "╯"));
     this.cacheKey = key;
     this.cached = result;
     return result;

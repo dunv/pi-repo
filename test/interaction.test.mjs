@@ -47,7 +47,11 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     await git(base, ['config', 'user.email', 'test@example.invalid']);
     await git(base, ['config', 'user.name', 'Test']);
     await git(base, ['commit', '--allow-empty', '-m', 'fixture']);
+    await git(base, ['branch', 'develop']);
     await git(base, ['worktree', 'add', '-b', 'feature', ctx.cwd]);
+    await writeFile(join(ctx.cwd, 'committed.txt'), 'branch content\n');
+    await git(ctx.cwd, ['add', 'committed.txt']);
+    await git(ctx.cwd, ['commit', '-m', 'branch change']);
     await writeFile(join(ctx.cwd, 'new.txt'), 'new content\n');
     assert.deepEqual([...commands.keys()].sort(), ['worktree-open', 'worktree-panel', 'worktree-preview', 'worktree-refresh']);
     await commands.get('worktree-open').handler('', ctx);
@@ -56,12 +60,25 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     assert.equal(focus, panel);
     assert.equal(panel.component.active, true);
     assert.equal(panel.options.overlayOptions.visible(80, 40), true);
-    panel.component.render(64);
+    const lines = panel.component.render(64).join('\n');
+    assert.match(lines, /Committed vs develop/);
+    assert.match(lines, /Uncommitted/);
     panel.component.handleInput('\r');
     for (let i = 0; i < 100 && views.length < 2; i++) await setTimeout(10);
     assert.equal(views.length, 2);
-    assert.match(views[1].component.render(80).join('\n'), /\+new content/);
+    const committed = views[1].component.render(80).join('\n');
+    assert.match(committed, /Committed vs develop/);
+    assert.match(committed, /\+branch content/);
+    assert.doesNotMatch(committed, /new content/);
     views[1].component.handleInput('q');
+    await setTimeout(0);
+    assert.equal(focus, panel);
+    panel.component.handleInput('\t');
+    panel.component.handleInput('\r');
+    for (let i = 0; i < 100 && views.length < 3; i++) await setTimeout(10);
+    assert.equal(views.length, 3);
+    assert.match(views[2].component.render(80).join('\n'), /\+new content/);
+    views[2].component.handleInput('q');
     await setTimeout(0);
     assert.equal(focus, panel);
     panel.component.handleInput('\x1b');
@@ -70,7 +87,7 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     assert.equal(panel.options.overlayOptions.visible(80, 40), false);
     await commands.get('worktree-panel').handler('', ctx);
     assert.equal(focus, panel);
-    assert.equal(views.length, 2); // Reuses the sidebar, not another picker/panel.
+    assert.equal(views.length, 3); // Reuses the sidebar, not another picker/panel.
     await commands.get('worktree-panel').handler('hide', ctx);
     assert.equal(panel.component.active, false);
     assert.equal(focus, undefined);

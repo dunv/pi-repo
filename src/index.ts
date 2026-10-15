@@ -4,7 +4,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { basename, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot } from "./core.ts";
+import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot, type DiffSource } from "./core.ts";
 
 import { WorktreePanel } from "./panel.ts";
 import { DiffViewer } from "./diff.ts";
@@ -68,7 +68,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
         session.requestRender = () => tui.requestRender();
         const component = new WorktreePanel(next, Boolean(preview), theme,
           { truncate: truncateToWidth, measure: visibleWidth }, () => availableRows, {
-            diff: (root, file) => { void panelAction(session, () => showDiff(session, ctx, root, file)); },
+            diff: (root, file, source) => { void panelAction(session, () => showDiff(session, ctx, root, file, source)); },
             edit: (root, file) => { void panelAction(session, () => openFile(root, file.path)); },
             close: () => releaseFocus(session),
             render: () => tui.requestRender(),
@@ -136,14 +136,15 @@ export default function worktreePanel(pi: ExtensionAPI) {
     }
   }
 
-  async function showDiff(session: PanelSession, ctx: ExtensionContext, root: string, file: Snapshot["files"][number]) {
-    const text = await readDiff(root, file);
+  async function showDiff(session: PanelSession, ctx: ExtensionContext, root: string, file: Snapshot["files"][number], source: DiffSource) {
+    const text = await readDiff(root, file, source);
     if (session.closed) return;
     try {
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         session.closeDiff = () => done();
         if (session.closed) done();
-        return new DiffViewer(file.path, text, theme,
+        const title = `${source.kind === "committed" ? `Committed vs ${source.ref}` : "Uncommitted"} · ${file.path}`;
+        return new DiffViewer(title, text, theme,
           () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
           () => tui.requestRender(), () => done());
       }, {
@@ -283,7 +284,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("worktree-open", {
-    description: "Focus the worktree panel: select a file, Enter for diff, e for editor",
+    description: "Focus committed-vs-develop and uncommitted files: Enter for diff, e for editor",
     handler: async (_args, ctx) => { await focusPanel(ctx); },
   });
   pi.registerCommand("worktree-panel", {

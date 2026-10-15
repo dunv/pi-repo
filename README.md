@@ -9,10 +9,11 @@ Automatically appears when Pi starts inside a **linked Git worktree**, including
 │ Worktree · fix-checkout                   │
 │ fix/checkout                             │
 │ /home/me/worktrees/fix-checkout           │
-├──────────────────────────────────────────┤
-│ 3 changed files                          │
-│  M src/checkout.ts                        │
+│ ── Committed vs develop · 2              │
+│ M  src/checkout.ts                        │
 │ A  tests/checkout.test.ts                 │
+│ ── Uncommitted · 2                       │
+│  M src/checkout.ts                        │
 │ ?? notes.md                              │
 │ /worktree-open · /worktree-panel hide     │
 ╰──────────────────────────────────────────╯
@@ -31,7 +32,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.3.1
+pi install git:github.com/dunv/pi-worktree-panel@v0.4.0
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -82,9 +83,31 @@ and diff/editor target change, **not Pi's cwd or tool paths**. Continue using ab
 worktree paths for edits and shell commands. Reapply after reload/restart.
 In non-TUI modes it records the target but does not display a panel.
 
+## Two diff areas
+
+The panel always shows two independently paginated areas:
+
+- **Committed vs develop:** files changed from the merge base with `develop` to
+  the displayed branch's HEAD (`git diff develop...HEAD`). This excludes changes
+  made only on develop after the branch diverged and all staged/unstaged edits.
+  The viewer uses the displayed commit IDs, so a later commit cannot change an
+  already selected comparison.
+- **Uncommitted:** staged, unstaged, and untracked changes in the worktree. Its
+  viewer keeps staged and unstaged patches separate; untracked files are additions.
+
+A file can appear in both areas with different diffs. A clean worktree does not
+hide committed branch changes. Local `develop` is preferred, with `origin/develop`
+as a fallback. Nothing is fetched automatically. If neither ref exists or there
+is no common ancestor, the committed area says unavailable; the uncommitted area
+continues working.
+
+Use Tab to switch areas, or ↑/↓ to move through all files. Paging never hides
+either area's heading. `/worktree-panel next|prev` pages both areas while passive,
+or the selected area while focused.
+
 ## Status and editor
 
-Status retains Git's two porcelain columns: the first describes staged/index changes, the second describes unstaged/working-tree changes. `??` means untracked. Conflicts are highlighted; deleted files remain selectable for diffs. While the panel is focused, press e to open the selected file in your editor; missing/deleted files produce a notification rather than being recreated. Selection automatically pages through the full list and is preserved by filename across refreshes.
+In the uncommitted area, status retains Git's two porcelain columns: the first describes staged/index changes, the second describes unstaged/working-tree changes. `??` means untracked. Conflicts are highlighted; deleted files remain selectable for diffs. While the panel is focused, press e to open the selected file in your editor; missing/deleted files produce a notification rather than being recreated. Selection automatically pages through the full list and is preserved by area and filename across refreshes. Committed files show their change type (A/M/D/R/etc.) rather than index/worktree status.
 
 The opener uses `$EDITOR`, falling back to `$VISUAL`. Quoted command arguments are supported; shell pipelines, variable expansion and other shell expressions are not.
 
@@ -100,15 +123,16 @@ Use ↑/↓ or j/k to select a file, PgUp/PgDn or Home/End to navigate, and Ente
 show its diff, including deleted files. Press e for the editor, or Esc/q/Ctrl+C
 to return focus to Pi. There is no separate file picker or diff command.
 
-The read-only viewer shows staged and unstaged patches separately and
-untracked files as additions. Renames, conflicts and binary-file summaries use
+The read-only viewer shows the comparison for the selected area. In the
+uncommitted area it shows staged and unstaged patches separately and untracked
+files as additions. Renames, conflicts and binary-file summaries use
 Git's diff output. Long lines wrap; use ↑/↓ (or j/k), PgUp/PgDn, Space, and
 Home/End (or g/G) to navigate. Esc, q, or Ctrl+C closes the viewer and returns
 focus to the file panel. No editor, Alacritty or Herdr is required.
 
 Diffs are fetched only on request, respect the preview/agent target, disable
 external diff/textconv commands, and are bounded by the Git timeout/output limits.
-The viewer is a snapshot; reopen it to see subsequent edits.
+The viewer is a snapshot; refresh the panel and reopen it to see subsequent edits or commits.
 
 ## Layout and performance
 

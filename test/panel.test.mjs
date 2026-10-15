@@ -70,3 +70,42 @@ test('interactive selection spans pages, survives refresh, and dispatches diff/e
   panel.handleInput('q');
   assert.deepEqual(calls.at(-1), ['close']);
 });
+test('both areas stay visible and dispatch different sources for the same filename', () => {
+  const source = { kind: 'committed', ref: 'develop', base: 'base-sha', head: 'head-sha' };
+  const data = fixture(20);
+  data.committed = { ref: 'develop', source, files: fixture(20).files };
+  const calls = [];
+  let rows = 16;
+  const panel = new WorktreePanel(data, false, theme, layout, () => rows, {
+    diff: (_root, file, source) => calls.push([file.path, source.kind]),
+    edit() {}, close() {}, render() {},
+  });
+  for (const height of [16, 10, 24]) {
+    rows = height;
+    const lines = panel.render(64);
+    assert.ok(lines.length <= rows);
+    assert.ok(lines.some(line => line.includes('Committed vs develop')));
+    assert.ok(lines.some(line => line.includes('Uncommitted')));
+  }
+  panel.movePage(100);
+  assert.equal(panel.render(64).filter(line => line.includes('file-019')).length, 2);
+  panel.movePage(-100);
+  panel.setActive(true);
+  panel.render(64);
+  panel.handleInput('\r');
+  panel.handleInput('\t');
+  panel.handleInput('\r');
+  assert.deepEqual(calls, [['file-000.txt', 'committed'], ['file-000.txt', 'uncommitted']]);
+  panel.update({ ...data, committed: { ...data.committed, files: data.committed.files.slice(1) } }, false);
+  panel.handleInput('\r');
+  assert.deepEqual(calls.at(-1), ['file-000.txt', 'uncommitted']);
+});
+test('missing develop is shown in its area without hiding uncommitted files', () => {
+  const data = fixture(1);
+  data.committed = { ref: 'develop', files: [], error: 'No develop ref' };
+  const panel = new WorktreePanel(data, false, theme, layout, () => 12);
+  const lines = panel.render(64);
+  assert.ok(lines.some(line => line.includes('No develop ref')));
+  assert.ok(lines.some(line => line.includes('file-000')));
+  assert.ok(lines.length <= 12);
+});

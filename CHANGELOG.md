@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Split the existing panel into committed-vs-develop and uncommitted areas, each with its own file list and paging.
+- Compare committed changes from the merge base to HEAD, independently of staged/unstaged/untracked changes.
+- Prefer local develop, fall back to origin/develop, and show unavailable comparisons without hiding worktree edits.
+- Tab switches areas; Enter views the selected area's diff using existing commands only.
+- Keep committed comparisons pinned to the displayed commit IDs and preserve selection by area and path.
+
 ## 0.3.1
 
 - Integrate file selection and diff viewing into the existing sidebar using `/worktree-open` or `/worktree-panel`; remove the separate diff command/picker.

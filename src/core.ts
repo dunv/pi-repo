@@ -4,7 +4,14 @@ import { resolve, relative, isAbsolute } from "node:path";
 
 const exec = promisify(execFile);
 export type ChangedFile = { status: string; path: string; from?: string };
-export type Snapshot = { root: string; branch: string; files: ChangedFile[] };
+export type DiffSource = { kind: "uncommitted" } | { kind: "committed"; ref: string; base: string; head: string };
+export type CommittedChanges = {
+  ref: string;
+  files: ChangedFile[];
+  source?: Extract<DiffSource, { kind: "committed" }>;
+  error?: string;
+};
+export type Snapshot = { root: string; branch: string; files: ChangedFile[]; committed?: CommittedChanges };
 
 export async function git(cwd: string, args: string[], diffExit = false): Promise<string> {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
@@ -48,26 +55,70 @@ export async function linkedRoot(cwd: string): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
+export function parseNameStatus(text: string): ChangedFile[] {
+  const records = text.split("\0");
+  const files: ChangedFile[] = [];
+  for (let i = 0; i < records.length && records[i];) {
+    const status = records[i++];
+    if (!/^[ACDMRTUXB](?:\d+)?$/.test(status)) throw new Error("Invalid Git diff status");
+    const first = records[i++];
+    if (!first) throw new Error("Missing Git diff path");
+    if (/^[RC]/.test(status)) {
+      const path = records[i++];
+      if (!path) throw new Error("Missing Git diff rename destination");
+      files.push({ status: `${status[0]} `, path, from: first });
+    } else files.push({ status: `${status[0]} `, path: first });
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function readCommitted(root: string): Promise<CommittedChanges> {
+  let ref = "develop";
+  let tip: string | undefined;
+  for (const [name, full] of [["develop", "refs/heads/develop"], ["origin/develop", "refs/remotes/origin/develop"]]) {
+    try {
+      tip = (await git(root, ["rev-parse", "--verify", `${full}^{commit}`])).trim();
+      ref = name;
+      break;
+    } catch { /* A local develop is preferred; never fetch or mutate refs. */ }
+  }
+  if (!tip) return { ref, files: [], error: "No develop or origin/develop ref" };
+  try {
+    const head = (await git(root, ["rev-parse", "HEAD"])).trim();
+    const base = (await git(root, ["merge-base", tip, head])).trim();
+    const status = await git(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-relative", "--no-exit-code",
+      "--name-status", "-z", "--find-renames", base, head, "--"]);
+    return { ref, files: parseNameStatus(status), source: { kind: "committed", ref, base, head } };
+  } catch {
+    return { ref, files: [], error: `Cannot compare with ${ref} (no merge base or diff unavailable)` };
+  }
+}
+
 export async function readSnapshot(root: string): Promise<Snapshot> {
-  const [status, branch] = await Promise.all([
+  const [status, branch, committed] = await Promise.all([
     git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
     git(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    readCommitted(root),
   ]);
   let name = branch.trim();
   if (name === "HEAD") name = `detached ${(await git(root, ["rev-parse", "--short", "HEAD"])).trim()}`;
-  return { root, branch: name, files: parseStatus(status) };
+  return { root, branch: name, files: parseStatus(status), committed };
 }
 
-export async function readDiff(root: string, file: ChangedFile): Promise<string> {
+export async function readDiff(root: string, file: ChangedFile, source: DiffSource = { kind: "uncommitted" }): Promise<string> {
   const target = fileTarget(root, file.path);
-  const options = ["--no-ext-diff", "--no-textconv", "--color=never", "--no-exit-code"];
-  if (file.status === "??") {
+  const options = ["--no-ext-diff", "--no-textconv", "--color=never", "--no-exit-code", "--no-relative"];
+  if (source.kind === "uncommitted" && file.status === "??") {
     const patch = await git(root, ["diff", ...options, "--no-index", "--", "/dev/null", target], true);
     return `Untracked\n${patch || "Empty untracked file"}`;
   }
   const paths = [file.path, ...(file.from ? [file.from] : [])];
   paths.forEach(path => fileTarget(root, path));
   const pathspecs = paths.map(path => `:(literal)${path}`);
+  if (source.kind === "committed") {
+    const patch = await git(root, ["diff", ...options, "--find-renames", source.base, source.head, "--", ...pathspecs]);
+    return `Committed vs ${source.ref} (merge base → HEAD)\n${patch || "No textual diff"}`;
+  }
   const [staged, unstaged] = await Promise.all([
     git(root, ["diff", ...options, "--cached", "--", ...pathspecs]),
     git(root, ["diff", ...options, "--", ...pathspecs]),
