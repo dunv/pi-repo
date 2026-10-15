@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { basename } from "node:path";
 import { display, type Snapshot, type ChangedFile, type DiffSource } from "./core.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
+import { darkSurface, type SurfaceTone } from "./surface.ts";
 
 export type Layout = {
   truncate(text: string, width: number): string;
@@ -129,32 +130,32 @@ export class WorktreePanel {
     });
     const key = `${width}:${height}:${this.pages}:${this.active}:${this.selected}`;
     if (key === this.cacheKey) return this.cached;
-    const th = this.theme;
+    const surface = darkSurface(this.theme);
     const pad = (text: string) => {
       const short = this.layout.truncate(text, inner);
       return short + " ".repeat(Math.max(0, inner - this.layout.measure(short)));
     };
-    const border = (text: string) => th.fg("border", text);
-    const line = (text: string) => th.bg("customMessageBg", border("│ ") + pad(text) + border(" │"));
-    const frame = (left: string, right: string) => th.bg("customMessageBg", border(left + "─".repeat(Math.max(1, width - 2)) + right));
+    const border = (text: string) => surface.fg(this.active ? "borderAccent" : "border", text);
+    const line = (text: string, tone: SurfaceTone = "body") => surface.fill(border("│ ") + pad(text) + border(" │"), tone);
+    const frame = (left: string, right: string) => surface.fill(border(left + "─".repeat(Math.max(1, width - 2)) + right));
     const title = `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
-    const result = [frame("╭", "╮"), line(th.fg("accent", title))];
-    if (!compact) result.push(line(th.fg("text", display(this.data.branch))), line(th.fg("dim", display(this.data.root))));
+    const result = [frame("╭", "╮"), line(surface.fg("accent", title, true), "header")];
+    if (!compact) result.push(line(surface.fg("text", display(this.data.branch))), line(surface.fg("dim", display(this.data.root))));
     sections.forEach((section, group) => {
       const start = this.pages[group] * this.sizes[group];
       const end = Math.min(section.files.length, start + this.sizes[group]);
       const count = section.files.length > this.sizes[group] ? `${start + 1}–${end}/${section.files.length}` : String(section.files.length);
-      result.push(line(th.fg("accent", `── ${display(section.title)} · ${section.error ? "unavailable" : count}`)));
-      if (section.error) result.push(line(th.fg("warning", display(section.error))));
-      else if (!section.files.length) result.push(line(th.fg("success", group ? "✓ Clean" : "No committed changes")));
+      result.push(line(surface.fg("accent", `── ${display(section.title)} · ${section.error ? "unavailable" : count}`), "header"));
+      if (section.error) result.push(line(surface.fg("warning", display(section.error))));
+      else if (!section.files.length) result.push(line(surface.fg("success", group ? "✓ Clean" : "No committed changes")));
       for (const file of section.files.slice(start, end)) {
         const conflict = /U/.test(file.status) || file.status === "AA" || file.status === "DD";
         const color = conflict ? "error" : file.status === "??" ? "muted" : "text";
         const marked = this.active && selected?.group === group && selected.file === file;
-        result.push(line(th.fg(marked ? "accent" : color, `${marked ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`)));
+        result.push(line(surface.fg(marked ? "accent" : color, `${marked ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`), marked ? "selected" : "body"));
       }
     });
-    result.push(line(th.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Alt+W/Esc back" : "Alt+W focus · /worktree-panel hide")), frame("╰", "╯"));
+    result.push(line(surface.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Alt+W/Esc back" : "Alt+W focus · /worktree-panel hide"), "header"), frame("╰", "╯"));
     this.cacheKey = key;
     this.cached = result;
     return result;

@@ -32,7 +32,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.4.2
+pi install git:github.com/dunv/pi-worktree-panel@v0.5.0
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -137,8 +137,13 @@ to return focus to Pi. There is no separate file picker or diff command.
 
 The read-only viewer shows the comparison for the selected area. In the
 uncommitted area it shows staged and unstaged patches separately and untracked
-files as additions. Renames, conflicts and binary-file summaries use
-Git's diff output. Long lines wrap; use ↑/↓ (or j/k), PgUp/PgDn, Space, and
+files as additions. Code hunks use filename-based syntax highlighting (including
+Nix), old/new line-number gutters, and green/red markers with subtle row tints.
+Old and new code are highlighted separately so multiline syntax survives edits.
+Unknown languages, binary summaries and combined conflict diffs remain readable
+as plain text. Syntax is cached outside the scroll path; very large hunks fall
+back to plain text. Renames, conflicts and binary-file summaries use Git's diff
+output. Long lines wrap; use ↑/↓ (or j/k), PgUp/PgDn, Space, and
 Home/End (or g/G) to navigate. Esc, q, or Ctrl+C closes the viewer and returns
 focus to the file panel. No editor, Alacritty or Herdr is required.
 
@@ -147,6 +152,12 @@ external diff/textconv commands, and are bounded by the Git timeout/output limit
 The viewer is a snapshot; refresh the panel and reopen it to see subsequent edits or commits.
 
 ## Layout and performance
+
+Both the sidebar and diff viewer have opaque dark backgrounds, contrasting
+blue-gray title/section bands, and visible borders. Focus brightens the sidebar
+border and highlights the selected row. Syntax colors are lifted when necessary
+for readability on the dark surface, including when Pi uses a light theme.
+Truecolor and 256-color terminals are supported; Pi's global theme is unchanged.
 
 This is an **overlay**, not a reserved sidebar: it covers the right edge of the conversation without reflowing it. Use `/worktree-panel hide` when reviewing long lines.
 

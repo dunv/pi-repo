@@ -7,7 +7,7 @@ import { setTimeout } from 'node:timers/promises';
 import { git } from '../src/core.ts';
 import worktreePanel from '../src/index.ts';
 
-const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+const theme = { fg: (_color, text) => text, bg: (_color, text) => text, style: text => text, getColorMode: () => 'truecolor' };
 
 test('existing commands focus the same panel; Enter opens diff and Esc restores panel/Pi focus', async () => {
   const base = await mkdtemp(join(tmpdir(), 'panel-interaction-'));
@@ -76,7 +76,7 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     assert.equal(views.length, 2);
     const committed = views[1].component.render(80).join('\n');
     assert.match(committed, /Committed vs develop/);
-    assert.match(committed, /\+branch content/);
+    assert.match(committed, /\+ branch content/);
     assert.doesNotMatch(committed, /new content/);
     views[1].component.handleInput('q');
     await setTimeout(0);
@@ -85,7 +85,7 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     panel.component.handleInput('\r');
     for (let i = 0; i < 100 && views.length < 3; i++) await setTimeout(10);
     assert.equal(views.length, 3);
-    assert.match(views[2].component.render(80).join('\n'), /\+new content/);
+    assert.match(views[2].component.render(80).join('\n'), /\+ new content/);
     views[2].component.handleInput('q');
     await setTimeout(0);
     assert.equal(focus, panel);

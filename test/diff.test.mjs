@@ -7,7 +7,7 @@ import { git, readSnapshot, readDiff } from '../src/core.ts';
 import { DiffViewer } from '../src/diff.ts';
 import { visibleWidth } from '@earendil-works/pi-tui';
 
-const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+const theme = { fg: (_color, text) => text, bg: (_color, text) => text, style: text => text, getColorMode: () => 'truecolor' };
 
 test('diffs include staged and unstaged content, literal paths, renames, deletions and untracked files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'panel-diff-'));

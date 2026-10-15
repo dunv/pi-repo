@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Add filename-based syntax highlighting to diff hunks, highlighting old/new source independently with multiline color state preserved.
+- Show old/new line numbers, colored change markers and subtle added/removed row tints without replacing syntax colors.
+- Give both panels opaque dark backgrounds, contrasting title/section bands, visible borders and a distinct focused selection.
+- Keep syntax readable with light Pi themes, preserve backgrounds across ANSI resets, and support 256-color terminals.
+- Cache highlighting separately from wrapping/scrolling, retain plain-text fallbacks, and pin host development dependencies for runtime import tests.
+
 ## 0.4.2
 
 - Add Alt+W to focus the panel from Pi's editor in regular or fullscreen mode; Alt+W/Esc returns focus to Pi.

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WorktreePanel } from '../src/panel.ts';
 
-const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+const theme = { fg: (_color, text) => text, bg: (_color, text) => text, style: text => text, getColorMode: () => 'truecolor' };
 const layout = { truncate: (text, width) => text.length > width ? text.slice(0, width - 1) + '…' : text, measure: text => text.length };
 const fixture = (count = 0) => ({ root: '/tmp/worktree', branch: 'feature/test', files: Array.from({ length: count }, (_, i) => ({ status: ' M', path: `file-${String(i).padStart(3, '0')}.txt` })) });
 

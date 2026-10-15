@@ -147,7 +147,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
         const title = `${source.kind === "committed" ? `Committed vs ${source.ref}` : "Uncommitted"} · ${file.path}`;
         return new DiffViewer(title, text, theme,
           () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
-          () => tui.requestRender(), () => done());
+          () => tui.requestRender(), () => done(), file.path);
       }, {
         overlay: true,
         overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },

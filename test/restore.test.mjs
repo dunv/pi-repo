@@ -11,7 +11,7 @@ const custom = path => ({ type: 'custom', customType: TARGET_ENTRY, data: { path
 const result = (path, isError = false) => ({ type: 'message', message: {
   role: 'toolResult', toolName: 'worktree_panel_target', details: { path }, isError,
 } });
-const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+const theme = { fg: (_color, text) => text, bg: (_color, text) => text, style: text => text, getColorMode: () => 'truecolor' };
 
 test('restore honors latest valid target/reset and supports successful legacy results only', () => {
   assert.equal(restoreTarget([result('/legacy')]), '/legacy');
