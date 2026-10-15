@@ -5,19 +5,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import worktreePanel from '../src/index.ts';
+import { restoreTarget, TARGET_ENTRY } from '../src/target.ts';
 
 function harness(cwd) {
+  const entries = [];
   const tools = new Map();
   const events = new Map();
   worktreePanel({
     registerTool: tool => tools.set(tool.name, tool),
     registerCommand() {},
+    appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }),
     on: (name, handler) => events.set(name, handler),
   });
-  const ctx = { cwd, mode: 'print', hasUI: false };
+  const ctx = { cwd, mode: 'print', hasUI: false, sessionManager: { getBranch: () => entries } };
   return {
     call: path => tools.get('worktree_panel_target').execute('test', { path }, undefined, undefined, ctx),
     stop: () => events.get('session_shutdown')(),
+    entries,
   };
 }
 
@@ -40,9 +44,13 @@ test('panel target validates linked worktrees, normalizes subdirs and clears wit
       await assert.rejects(h.call(invalid), /absolute|linked Git worktree/);
     }
     assert.equal(process.cwd(), before);
+    assert.equal(h.entries.length, 1); // Rejected paths never overwrite saved state.
+    assert.equal(restoreTarget(h.entries), tree);
     const cleared = await h.call(null);
     assert.equal(cleared.details.path, null);
     assert.equal(cleared.details.cwdChanged, false);
+    assert.equal(h.entries.length, 2);
+    assert.equal(restoreTarget(h.entries), undefined);
   } finally {
     h.stop();
     await rm(base, { recursive: true, force: true });

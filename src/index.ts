@@ -9,6 +9,7 @@ import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, 
 import { WorktreePanel } from "./panel.ts";
 import { DiffViewer } from "./diff.ts";
 import { readDiff } from "./core.ts";
+import { restoreTarget, TARGET_ENTRY } from "./target.ts";
 
 const KEY = "worktree-panel-preview";
 type PanelSession = {
@@ -159,7 +160,12 @@ export default function worktreePanel(pi: ExtensionAPI) {
     try {
       const token = epoch;
       const root = await linkedRoot(preview ?? ctx.cwd);
-      if (!root) { ctx.ui.notify("Not in a linked Git worktree", "info"); return; }
+      if (!root) {
+        ctx.ui.notify(preview
+          ? `Worktree target is unavailable: ${display(preview)}. Set or clear it with worktree_panel_target.`
+          : "No worktree target selected, and Pi's cwd is not a linked worktree. Set the target with worktree_panel_target.", "info");
+        return;
+      }
       const data = await readSnapshot(root);
       if (token !== epoch) return;
       context = ctx;
@@ -247,13 +253,16 @@ export default function worktreePanel(pi: ExtensionAPI) {
     }
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  function restoreSession(ctx: ExtensionContext) {
     stop();
-    preview = undefined;
+    preview = restoreTarget(ctx.sessionManager.getBranch());
     if (!interactive(ctx)) return;
     context = ctx;
     schedule(0);
-  });
+  }
+
+  pi.on("session_start", (_event, ctx) => restoreSession(ctx));
+  pi.on("session_tree", (_event, ctx) => restoreSession(ctx));
   pi.on("session_shutdown", stop);
   pi.on("tool_execution_end", () => schedule());
   pi.on("agent_end", () => schedule());
@@ -261,7 +270,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the changed-files panel and file picker at a linked Git worktree, or clear the override with path: null. Does NOT change Pi's cwd or tool paths. Call after creating/resuming a feature worktree and clear before removing it. Session-local; reapply after reload/restart.",
+    description: "Point the panel, diffs and editor at a linked Git worktree, or clear the override with path: null. Does NOT change Pi's cwd or tool paths. Call after creating/resuming a feature worktree and clear before removing it. Target is saved in this session and restored on reload/restart.",
     parameters: Type.Object({
       path: Type.Union([Type.String({ description: "Absolute linked-worktree path" }), Type.Null()]),
     }),
@@ -269,6 +278,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
       const root = path === null ? undefined : await linkedRoot(path);
       if (path !== null && !root) throw new Error("That path is not inside a linked Git worktree");
+      pi.appendEntry(TARGET_ENTRY, { path: root ?? null });
       epoch++;
       preview = root;
       clear();
@@ -317,16 +327,18 @@ export default function worktreePanel(pi: ExtensionAPI) {
     handler: async (_args, ctx) => { if (interactive(ctx)) schedule(0); },
   });
   pi.registerCommand("worktree-preview", {
-    description: "Temporary testing: show a linked worktree by absolute path; 'off' restores session cwd",
+    description: "Set the saved panel worktree by path; 'off' restores session cwd",
     handler: async (args, ctx) => {
       if (!interactive(ctx)) return;
       const path = args.trim();
       if (!path) { ctx.ui.notify("Usage: /worktree-preview /absolute/path or /worktree-preview off", "info"); return; }
-      if (path !== "off" && !await linkedRoot(resolve(ctx.cwd, path))) {
+      const root = path === "off" ? undefined : await linkedRoot(resolve(ctx.cwd, path));
+      if (path !== "off" && !root) {
         ctx.ui.notify("That path is not inside a linked Git worktree", "warning"); return;
       }
+      pi.appendEntry(TARGET_ENTRY, { path: root ?? null });
       epoch++;
-      preview = path === "off" ? undefined : resolve(ctx.cwd, path);
+      preview = root;
       context = ctx;
       clear();
       schedule(0);

@@ -32,7 +32,7 @@ Run `/reload` in existing Pi sessions. Local installations reference the checkou
 From the public GitHub repository, pinned to the current release:
 
 ```sh
-pi install git:github.com/dunv/pi-worktree-panel@v0.4.0
+pi install git:github.com/dunv/pi-worktree-panel@v0.4.1
 ```
 
 Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
@@ -68,7 +68,7 @@ Remove any existing `pi install` entry for this package before activating Home M
 | `/worktree-preview /absolute/path` | Display another linked worktree for testing |
 | `/worktree-preview off` | Return to the session's working directory |
 
-Preview changes **only the displayed worktree and diff/editor target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Panel settings and preview are session-local and reset on reload/restart.
+Preview changes **only the displayed worktree and diff/editor target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Width/visibility reset on reload/restart. The target is saved per session branch and restored automatically.
 
 ## Agent workflow integration
 
@@ -80,7 +80,15 @@ and non-worktrees are rejected without changing the existing target.
 Call it after creating/resuming a feature worktree and clear it before cleanup.
 It shares the `/worktree-preview` override and `[preview]` label: only the panel
 and diff/editor target change, **not Pi's cwd or tool paths**. Continue using absolute
-worktree paths for edits and shell commands. Reapply after reload/restart.
+worktree paths for edits and shell commands. `/worktree-open` and `/worktree-panel`
+always use this selected target, even when Pi stays in the main checkout.
+
+The target is saved through Pi's session-entry API and restored on reload, resume,
+restart, fork, or tree navigation from the active session branch. Successful target
+tool results from older versions are also recovered, so upgrading does not require
+another tool call. Explicit `path: null` or `/worktree-preview off` clears the saved
+override. New sessions do not inherit another session's target. Removed worktrees
+produce an explicit unavailable-target message rather than silently switching repos.
 In non-TUI modes it records the target but does not display a panel.
 
 ## Two diff areas
@@ -144,7 +152,7 @@ The panel hides below 110 terminal columns, when its width would leave fewer tha
 - Debounced asynchronous refreshes after tool activity.
 - Three-second status polling only while a linked worktree is being displayed; unchanged snapshots do not repaint.
 - Git subprocesses have time/output limits and disable optional index writes.
-- No runtime npm dependencies, private Pi patches, replacement tools, extra model calls, system-prompt changes or session-file rewrites.
+- No runtime npm dependencies, private Pi patches, replacement tools, extra model calls, system-prompt changes or direct session-file rewrites (target state uses Pi's append-only session API).
 
 Tested with Pi 1.0.2 and Node 24. Repository-root paths containing newlines are unsupported; changed filenames containing spaces/newlines are parsed safely and terminal controls are escaped. Extremely large Git status outputs are bounded at 8 MiB and cause the panel to hide with a diagnostic.
 

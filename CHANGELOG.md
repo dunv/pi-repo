@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Save the tool-selected worktree per session branch and restore it on reload/resume/restart and tree navigation, without changing Pi's cwd.
+- Recover successful target tool results from older versions when upgrading.
+- Persist explicit resets and manual previews; report unavailable targets rather than silently falling back to Pi's cwd.
+- Cover opening from the main checkout, reload/resume, legacy sessions, reset, tree navigation and removed worktrees with regression tests.
+
 ## 0.4.0
 
 - Split the existing panel into committed-vs-develop and uncommitted areas, each with its own file list and paging.
