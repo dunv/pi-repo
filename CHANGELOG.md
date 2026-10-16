@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Truncate long worktree root paths from the left, keeping the worktree name and trailing directories readable.
+
 - Make the diff popup fill terminal height with a one-row gap above and below; keep short diffs top-aligned and the footer at the bottom, including after resizing.
 
 - Default to side-by-side diffs in viewers at least 87 columns wide, with old/new line numbers, syntax highlighting and independent added/removed cell backgrounds.

@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { basename } from "node:path";
 import { display, type Snapshot, type ChangedFile, type DiffSource } from "./core.ts";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, sliceByColumn } from "@earendil-works/pi-tui";
 import { darkSurface, type SurfaceTone } from "./surface.ts";
 
 export type Layout = {
@@ -140,7 +140,14 @@ export class WorktreePanel {
     const frame = (left: string, right: string) => surface.fill(border(left + "─".repeat(Math.max(1, width - 2)) + right));
     const title = `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
     const result = [frame("╭", "╮"), line(surface.fg("accent", title, true), "header")];
-    if (!compact) result.push(line(surface.fg("text", display(this.data.branch))), line(surface.fg("dim", display(this.data.root))));
+    if (!compact) {
+      const path = display(this.data.root);
+      const pathWidth = this.layout.measure(path);
+      const shortPath = pathWidth > inner
+        ? "…" + sliceByColumn(path, pathWidth - (inner - 1), inner - 1, true)
+        : path;
+      result.push(line(surface.fg("text", display(this.data.branch))), line(surface.fg("dim", shortPath)));
+    }
     sections.forEach((section, group) => {
       const start = this.pages[group] * this.sizes[group];
       const end = Math.min(section.files.length, start + this.sizes[group]);

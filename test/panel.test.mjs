@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WorktreePanel } from '../src/panel.ts';
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 
 const theme = { fg: (_color, text) => text, bg: (_color, text) => text, style: text => text, getColorMode: () => 'truecolor' };
 const layout = { truncate: (text, width) => text.length > width ? text.slice(0, width - 1) + '…' : text, measure: text => text.length };
@@ -32,6 +33,21 @@ test('long lists paginate and adapt to terminal height without losing access to 
   panel.movePage(-100);
   assert.ok(panel.render(44).some(line => line.includes('file-000')));
 });
+test('worktree root truncates from the left, preserves suffix and handles Unicode/resizing', () => {
+  const data = { ...fixture(), root: '/home/someone/very-long-parent/worktrees/feature-checkout' };
+  const panel = new WorktreePanel(data, false, theme,
+    { truncate: truncateToWidth, measure: visibleWidth }, () => 20);
+  const pathRow = width => panel.render(width)[3];
+  assert.match(pathRow(36), /….*\/feature-checkout/);
+  assert.ok(!pathRow(36).includes('/home/'));
+  assert.ok(pathRow(100).includes(data.root));
+  panel.update({ ...data, root: '/home/界界界/é/worktrees/feature-checkout' }, false);
+  for (const width of [24, 30, 36, 80]) {
+    assert.ok(panel.render(width).every(line => visibleWidth(line) === width));
+    assert.ok(pathRow(width).includes('feature-checkout'));
+  }
+});
+
 test('terminal controls in paths and branches are escaped', () => {
   const data = fixture(1);
   data.branch = 'bad\x1b[2J';

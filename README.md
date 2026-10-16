@@ -171,7 +171,8 @@ The panel hides below 110 terminal columns, when its width would leave fewer tha
 
 The sidebar is capped at **one-third of the terminal height**, including borders.
 On shorter terminals its branch is folded into the title and the full root-path
-row is omitted, keeping both diff areas visible. Long lists paginate within that
+row is omitted, keeping both diff areas visible. When shown, long root paths are
+shortened from the left (`…/worktrees/feature-name`), preserving the path ending. Long lists paginate within that
 limit; all files remain accessible. The separate diff viewer fills the terminal
 height with a one-row gap above and below and retains its 90% width. Short diffs
 stay top-aligned, with empty rows below and the navigation footer at the bottom.
