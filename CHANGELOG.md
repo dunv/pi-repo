@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Default to side-by-side diffs in viewers at least 87 columns wide, with old/new line numbers, syntax highlighting and independent added/removed cell backgrounds.
+- Add `s` to toggle unified/side-by-side layouts; fall back to unified on narrow terminals and preserve the preference across resizing.
+- Pair replacement blocks, align independently wrapped lines, and retain full-width metadata and binary/conflict summaries.
+
 ## 0.5.0
 
 - Add filename-based syntax highlighting to diff hunks, highlighting old/new source independently with multiline color state preserved.

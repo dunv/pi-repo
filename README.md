@@ -139,6 +139,12 @@ The read-only viewer shows the comparison for the selected area. In the
 uncommitted area it shows staged and unstaged patches separately and untracked
 files as additions. Code hunks use filename-based syntax highlighting (including
 Nix), old/new line-number gutters, and green/red markers with subtle row tints.
+At viewer widths of **87 columns or more**, diffs default to **side-by-side**:
+old code on the left, new code on the right, with independent line numbers and
+red/green cell backgrounds. Replacement blocks are paired by line position;
+insertions/deletions have a blank opposite side. Each side wraps independently.
+Press **s** to toggle unified/side-by-side layouts. Narrower viewers always use
+unified layout; the chosen preference survives resizing until the viewer closes.
 Old and new code are highlighted separately so multiline syntax survives edits.
 Unknown languages, binary summaries and combined conflict diffs remain readable
 as plain text. Syntax is cached outside the scroll path; very large hunks fall

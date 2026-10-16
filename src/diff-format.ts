@@ -10,6 +10,33 @@ export type DiffLine = {
   next?: number;
 };
 
+export type DiffPair = { left?: DiffLine; right?: DiffLine; full?: DiffLine };
+
+/** Pair replacement blocks by position; never pair across context or metadata. */
+export function pairDiffLines(lines: DiffLine[]): DiffPair[] {
+  const result: DiffPair[] = [];
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    if (line.kind === "context") {
+      result.push({ left: line, right: line });
+      i++;
+    } else if (line.kind === "removed" || line.kind === "added") {
+      const left: DiffLine[] = [], right: DiffLine[] = [];
+      while (i < lines.length && (lines[i].kind === "removed" || lines[i].kind === "added")) {
+        const item = lines[i++];
+        (item.kind === "removed" ? left : right).push(item);
+      }
+      for (let j = 0; j < Math.max(left.length, right.length); j++) {
+        result.push({ left: left[j], right: right[j] });
+      }
+    } else {
+      result.push({ full: line });
+      i++;
+    }
+  }
+  return result;
+}
+
 /** Highlight each hunk's old/new code separately, preserving multiline lexer state. */
 export function formatDiff(text: string, path: string, theme: Theme,
   highlight = highlightCode): DiffLine[] {
