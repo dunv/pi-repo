@@ -146,11 +146,11 @@ export default function worktreePanel(pi: ExtensionAPI) {
         if (session.closed) done();
         const title = `${source.kind === "committed" ? `Committed vs ${source.ref}` : "Uncommitted"} · ${file.path}`;
         return new DiffViewer(title, text, theme,
-          () => Math.max(6, Math.floor(tui.terminal.rows * 0.85)),
+          () => Math.max(6, tui.terminal.rows - 2),
           () => tui.requestRender(), () => done(), file.path);
       }, {
         overlay: true,
-        overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },
+        overlayOptions: { anchor: "center", width: "90%", maxHeight: "100%", margin: { top: 1, bottom: 1 } },
       });
     } finally { session.closeDiff = undefined; }
   }

@@ -172,8 +172,9 @@ The panel hides below 110 terminal columns, when its width would leave fewer tha
 The sidebar is capped at **one-third of the terminal height**, including borders.
 On shorter terminals its branch is folded into the title and the full root-path
 row is omitted, keeping both diff areas visible. Long lists paginate within that
-limit; all files remain accessible. The separate diff viewer still uses up to 85%
-of the height for readability.
+limit; all files remain accessible. The separate diff viewer fills the terminal
+height with a one-row gap above and below and retains its 90% width. Short diffs
+stay top-aligned, with empty rows below and the navigation footer at the bottom.
 
 - Cached layout by content, width, height and page.
 - Debounced asynchronous refreshes after tool activity.

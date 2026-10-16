@@ -124,7 +124,10 @@ export class DiffViewer {
     };
     const frame = (left: string, right: string) => surface.fill(border(left + "─".repeat(Math.max(0, width - 2)) + right));
     return [frame("╭", "╮"), row(surface.fg("accent", `Diff · ${display(this.title)} · ${this.split ? "Old │ New" : "Unified"}`, true), "header"), frame("├", "┤"),
-      ...this.wrapped.slice(this.offset, this.offset + this.pageSize).map(line => row(line.text, line.tone)),
+      ...Array.from({ length: this.pageSize }, (_, index) => {
+        const line = this.wrapped[this.offset + index];
+        return row(line?.text ?? "", line?.tone ?? "body");
+      }),
       row(surface.fg("dim", `${this.offset + 1}–${Math.min(this.wrapped.length, this.offset + this.pageSize)}/${this.wrapped.length} · ↑↓ PgUp/PgDn · s layout · Esc/q close`), "header"), frame("╰", "╯")];
   }
 }

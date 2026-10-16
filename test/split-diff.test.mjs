@@ -53,6 +53,24 @@ test('split wrapping aligns unequal heights, bounds widths, scrolls and invalida
   assert.match(plain(viewer).join('\n'), /short/);
 });
 
+test('short diffs stay top-aligned in a full-height viewport with a bottom footer', () => {
+  let rows = 38;
+  const viewer = new DiffViewer('file.txt', '@@ -1 +1 @@\n-old\n+new',
+    theme, () => rows, () => {}, () => {});
+  for (const width of [120, 60]) {
+    for (const height of [38, 18, 45]) {
+      rows = height;
+      const lines = viewer.render(width).map(strip);
+      assert.equal(lines.length, height);
+      assert.match(lines[3], /@@ -1 \+1 @@/);
+      assert.match(lines[4], /old/);
+      assert.match(lines[width >= 87 ? 4 : 5], /new/);
+      assert.match(lines.at(-2), /s layout/);
+      assert.match(lines.at(-3), /^│\s+│$/);
+    }
+  }
+});
+
 test('metadata and binary/conflict summaries remain full-width', () => {
   const viewer = new DiffViewer('file.txt', 'Staged\nBinary files a/file and b/file differ\n@@@ -1,1 -1,1 +1,1 @@@\n++conflict',
     theme, () => 30, () => {}, () => {});

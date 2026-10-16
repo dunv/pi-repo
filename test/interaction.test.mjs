@@ -74,6 +74,10 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     panel.component.handleInput('\r');
     for (let i = 0; i < 100 && views.length < 2; i++) await setTimeout(10);
     assert.equal(views.length, 2);
+    assert.deepEqual(views[1].options.overlayOptions, {
+      anchor: 'center', width: '90%', maxHeight: '100%', margin: { top: 1, bottom: 1 },
+    });
+    assert.equal(views[1].component.render(80).length, 38); // 40 terminal rows minus popup margins.
     const committed = views[1].component.render(80).join('\n');
     assert.match(committed, /Committed vs develop/);
     assert.match(committed, /\+ branch content/);
