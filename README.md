@@ -99,19 +99,22 @@ In non-TUI modes it records the target but does not display a panel.
 
 The panel always shows two independently paginated areas:
 
-- **Committed vs develop:** files changed from the merge base with `develop` to
-  the displayed branch's HEAD (`git diff develop...HEAD`). This excludes changes
-  made only on develop after the branch diverged and all staged/unstaged edits.
+- **Committed vs develop** (or **master**): files changed from the merge base with
+  the selected base branch to the displayed branch's HEAD (e.g. `git diff develop...HEAD`).
+  This excludes changes made only on the base branch after divergence and all staged/unstaged edits.
   The viewer uses the displayed commit IDs, so a later commit cannot change an
   already selected comparison.
 - **Uncommitted:** staged, unstaged, and untracked changes in the worktree. Its
   viewer keeps staged and unstaged patches separate; untracked files are additions.
 
 A file can appear in both areas with different diffs. A clean worktree does not
-hide committed branch changes. Local `develop` is preferred, with `origin/develop`
-as a fallback. Nothing is fetched automatically. If neither ref exists or there
-is no common ancestor, the committed area says unavailable; the uncommitted area
-continues working.
+hide committed branch changes. Base refs are tried in this order: `develop`,
+`origin/develop`, `master`, `origin/master`. Thus develop remains the default,
+while master-only repositories work automatically. The heading and diff viewer
+show the selected ref. Nothing is fetched automatically. If none of these refs
+exists or the selected ref has no common ancestor, the committed area says
+unavailable; the uncommitted area continues working. An existing develop ref
+without a common ancestor does not silently fall back to master.
 
 Use Tab to switch areas, or ↑/↓ to move through all files. Paging never hides
 either area's heading. `/worktree-panel next|prev` pages both areas while passive,

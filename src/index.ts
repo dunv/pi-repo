@@ -303,7 +303,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("worktree-open", {
-    description: "Focus committed-vs-develop and uncommitted files: Enter for diff, e for editor",
+    description: "Focus committed branch changes and uncommitted files: Enter for diff, e for editor",
     handler: async (_args, ctx) => { await focusPanel(ctx); },
   });
   pi.registerCommand("worktree-panel", {

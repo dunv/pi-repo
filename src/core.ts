@@ -75,14 +75,20 @@ export function parseNameStatus(text: string): ChangedFile[] {
 async function readCommitted(root: string): Promise<CommittedChanges> {
   let ref = "develop";
   let tip: string | undefined;
-  for (const [name, full] of [["develop", "refs/heads/develop"], ["origin/develop", "refs/remotes/origin/develop"]]) {
+  const candidates = [
+    ["develop", "refs/heads/develop"],
+    ["origin/develop", "refs/remotes/origin/develop"],
+    ["master", "refs/heads/master"],
+    ["origin/master", "refs/remotes/origin/master"],
+  ];
+  for (const [name, full] of candidates) {
     try {
       tip = (await git(root, ["rev-parse", "--verify", `${full}^{commit}`])).trim();
       ref = name;
       break;
-    } catch { /* A local develop is preferred; never fetch or mutate refs. */ }
+    } catch { /* Prefer develop, then master; never fetch or mutate refs. */ }
   }
-  if (!tip) return { ref, files: [], error: "No develop or origin/develop ref" };
+  if (!tip) return { ref, files: [], error: "No develop, origin/develop, master or origin/master ref" };
   try {
     const head = (await git(root, ["rev-parse", "HEAD"])).trim();
     const base = (await git(root, ["merge-base", tip, head])).trim();

@@ -81,6 +81,48 @@ test('comparison supports committed renames/deletions and remains pinned to the 
   });
 });
 
+test('master-only repositories compare committed changes using local or remote master', async () => {
+  await fixture(async (base, tree) => {
+    await git(base, ['branch', '-m', 'develop', 'master']);
+    await writeFile(join(tree, 'same.txt'), 'committed feature\n');
+    await git(tree, ['add', 'same.txt']);
+    await git(tree, ['commit', '-m', 'feature change']);
+    await writeFile(join(base, 'master-only.txt'), 'upstream\n');
+    await git(base, ['add', 'master-only.txt']);
+    await git(base, ['commit', '-m', 'master advance']);
+    await writeFile(join(tree, 'same.txt'), 'uncommitted feature\n');
+    await git(base, ['update-ref', 'refs/remotes/origin/master', 'master']);
+    for (const ref of ['master', 'origin/master']) {
+      const snapshot = await readSnapshot(tree);
+      assert.equal(snapshot.committed.ref, ref);
+      assert.equal(snapshot.committed.error, undefined);
+      assert.deepEqual(snapshot.committed.files, [{ status: 'M ', path: 'same.txt' }]);
+      assert.equal(snapshot.files[0].path, 'same.txt');
+      const diff = await readDiff(tree, snapshot.committed.files[0], snapshot.committed.source);
+      assert.ok(diff.includes(`Committed vs ${ref}`));
+      assert.match(diff, /\+committed feature/);
+      assert.doesNotMatch(diff, /uncommitted feature|master-only/);
+      if (ref === 'master') await git(base, ['branch', '-m', 'master', 'main']);
+    }
+  });
+});
+
+test('develop refs stay preferred over master, even with an unrelated develop', async () => {
+  await fixture(async (base, tree) => {
+    await git(base, ['branch', 'master']);
+    await git(base, ['update-ref', 'refs/remotes/origin/master', 'master']);
+    await git(base, ['update-ref', 'refs/remotes/origin/develop', 'develop']);
+    assert.equal((await readSnapshot(tree)).committed.ref, 'develop');
+    await git(base, ['branch', '-m', 'develop', 'main']);
+    assert.equal((await readSnapshot(tree)).committed.ref, 'origin/develop');
+    await git(base, ['checkout', '--orphan', 'develop']);
+    await git(base, ['commit', '-m', 'unrelated root']);
+    const snapshot = await readSnapshot(tree);
+    assert.equal(snapshot.committed.ref, 'develop');
+    assert.match(snapshot.committed.error, /no merge base/);
+  });
+});
+
 test('origin/develop fallback and missing/unrelated develop leave worktree changes available', async () => {
   await fixture(async (base, tree) => {
     await git(base, ['update-ref', 'refs/remotes/origin/develop', 'develop']);
@@ -90,7 +132,7 @@ test('origin/develop fallback and missing/unrelated develop leave worktree chang
     await git(base, ['update-ref', '-d', 'refs/remotes/origin/develop']);
     await writeFile(join(tree, 'new.txt'), 'new\n');
     const missing = await readSnapshot(tree);
-    assert.match(missing.committed.error, /No develop/);
+    assert.match(missing.committed.error, /No develop, origin\/develop, master or origin\/master ref/);
     assert.equal(missing.files[0].path, 'new.txt');
     await git(base, ['checkout', '--orphan', 'develop']);
     await git(base, ['commit', '-m', 'unrelated root']);

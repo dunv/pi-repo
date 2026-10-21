@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support master-only repositories by falling back to master/origin/master when develop/origin/develop is absent; keep develop preferred and show the selected ref in comparisons.
+
 - Truncate long worktree root paths from the left, keeping the worktree name and trailing directories readable.
 
 - Make the diff popup fill terminal height with a one-row gap above and below; keep short diffs top-aligned and the footer at the bottom, including after resizing.
