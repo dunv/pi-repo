@@ -41,9 +41,16 @@ export function view(job: Job, tasks: Task[]) {
     nonce: job.nonce, id: job.id ?? task?.id,
     phase: !job.admitted ? "ADMISSION_UNKNOWN" : task?.phase ?? "UNKNOWN",
     ...(task?.exitCode === undefined || !job.admitted ? {} : { exitCode: task.exitCode }),
-    cancellationRequested: !!job.cancellationRequested,
-    publication: "UNVERIFIED", stoppedDescendants: "UNVERIFIED",
+    ...(job.cancellationRequested ? { cancellationRequested: true as const } : {}),
   };
+}
+export type JobView = ReturnType<typeof view>;
+export type StatusFilter = { nonce?: string; state?: "all" | "active" | "finished" };
+/** UNKNOWN is unresolved, not finished; active filters must retain uncertainty. */
+export function filterViews(rows: JobView[], filter: StatusFilter): JobView[] {
+  if (filter.nonce && !rows.some(row => row.nonce === filter.nonce)) throw new Error("Nonce not owned by this session branch");
+  return rows.filter(row => (!filter.nonce || row.nonce === filter.nonce)
+    && (filter.state === "active" ? row.phase !== "EXITED" : filter.state === "finished" ? row.phase === "EXITED" : true));
 }
 export function noticed(entries: readonly SessionEntry[], key: string): boolean {
   return entries.some(e => e.type === "custom_message" && e.customType === NOTICE

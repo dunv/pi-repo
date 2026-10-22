@@ -77,7 +77,7 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
   const start = () => events.get('session_start')({ reason: 'resume' }, ctx);
   const call = async (name, input = {}, signal) => tools.get(name).execute('tool', input, signal, undefined, ctx);
   const submit = input => call('pueue_submit', { argv: ['/bin/echo', 'hello'], cwd: '/repo', ...input });
-  const status = async () => JSON.parse((await call('pueue_status')).content[0].text.split('\n')[0]);
+  const status = async (input = {}) => JSON.parse((await call('pueue_status', input)).content[0].text);
   const job = () => h.history.filter(e => e.customType === ENTRY).at(-1)?.data;
   const cancel = nonce => commands.get('pueue-cancel').handler(nonce ?? job().nonce, ctx);
   await start();
@@ -123,7 +123,8 @@ test('admission persists nonce before add, stashed identity before enqueue; no t
   };
   await h.call('pueue_submit', { argv: ['/bin/echo', 'hello'], cwd: '/repo' }, signal.signal);
   const [state] = await h.status();
-  assert.equal(state.phase, 'RUNNING'); assert.equal(state.publication, 'UNVERIFIED');
+  assert.equal(state.phase, 'RUNNING');
+  assert.equal('publication' in state, false); assert.equal('cancellationRequested' in state, false);
   const text = JSON.stringify(await h.call('pueue_status'));
   assert.doesNotMatch(text, /must-not-escape|secret-command|OTHER_SECRET/);
   h.stop(); h.stop();
@@ -178,7 +179,7 @@ test('success/nonzero are backend exits only; killed/restored/missing/reused sta
     ['Killed', 'UNKNOWN'], ['Errored', 'UNKNOWN'], [{ FailedToSpawn: 'SECRET' }, 'UNKNOWN']]) {
     h.fake.finish(0, backendResult);
     const [state] = await h.status(); assert.equal(state.phase, expected); assert.equal(state.exitCode, code);
-    assert.equal(state.stoppedDescendants, 'UNVERIFIED');
+    assert.equal('stoppedDescendants' in state, false);
   }
   const original = structuredClone(h.fake.tasks[0]);
   h.fake.tasks = {}; assert.equal((await h.status())[0].phase, 'UNKNOWN');
@@ -198,7 +199,7 @@ test('explicit cancellation uses SIGTERM only, persists intent even when handler
   await h.cancel();
   assert.deepEqual(h.fake.calls.find(a => a[0] === 'kill'), ['kill', '--signal', 'SIGTERM', '0']);
   const [state] = await h.status(); assert.equal(state.phase, 'EXITED'); assert.equal(state.exitCode, 0);
-  assert.equal(state.cancellationRequested, true); assert.equal(state.publication, 'UNVERIFIED');
+  assert.equal(state.cancellationRequested, true); assert.equal('publication' in state, false);
   await h.cancel(); // Already exited: intent remains, no second signal.
   assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 1);
   assert.equal(h.tools.has('pueue_cancel'), false);
@@ -236,7 +237,8 @@ test('completion reconciles lost callbacks on resume and deduplicates repeated h
   assert.equal(h.messages[0].customType, NOTICE);
   assert.deepEqual(h.messages[0].options, { deliverAs: 'followUp', triggerTurn: false });
   assert.match(h.messages[0].content, /"exitCode":7/);
-  assert.match(h.messages[0].content, /not CI\/review\/publication success/);
+  assert.deepEqual(JSON.parse(h.messages[0].content), { nonce: h.job().nonce, id: 0, phase: 'EXITED', exitCode: 7 });
+  assert.match(h.tools.get('pueue_status').description, /not CI\/review\/publication success/);
   h.fake.tasks = {}; await h.start(); await h.start();
   assert.equal(h.messages.length, 2); assert.match(h.messages[1].content, /UNKNOWN/);
 });
@@ -282,14 +284,56 @@ test('bounded log tail preserves final errors, exact offsets and full artifact; 
   const body = 'x'.repeat(100000) + '\nFINAL ERROR: uncertain publication\n';
   await writeFile(path, body);
   const response = await h.call('pueue_result', { nonce: h.job().nonce });
-  const data = JSON.parse(response.content[0].text.split('\n')[0]);
+  const data = JSON.parse(response.content[0].text);
   assert.equal(data.status.phase, 'RUNNING'); assert.match(data.log.text, /FINAL ERROR/);
-  assert.equal(Buffer.byteLength(data.log.text), 16384); assert.equal(data.log.omittedBefore, true);
-  assert.equal(data.log.omittedAfter, false); assert.equal(data.log.path, path);
+  assert.equal(Buffer.byteLength(data.log.text), 4096); assert.equal(data.log.omittedBefore, true);
+  assert.equal('omittedAfter' in data.log, false); assert.equal(data.log.path, path);
+  const larger = JSON.parse((await h.call('pueue_result', { nonce: h.job().nonce, limit: 16384 })).content[0].text);
+  assert.equal(Buffer.byteLength(larger.log.text), 16384); assert.match(larger.log.text, /FINAL ERROR/);
   const head = await sliceLog(path, 0, 50); assert.equal(head.text.length, 50); assert.equal(head.omittedAfter, true);
   assert.equal((await readFile(path, 'utf8')).length, body.length);
   await assert.rejects(sliceLog(path, -1)); await assert.rejects(sliceLog(path, undefined, 16385));
   await symlink(path, join(h.config.data, 'link')); await assert.rejects(sliceLog(join(h.config.data, 'link')));
+});
+
+test('status filters retain unresolved identities and reject non-owned nonces without deleting history', async () => {
+  const h = await harness();
+  await h.submit(); const first = h.job().nonce;
+  await h.submit(); const second = h.job().nonce;
+  await h.submit(); const third = h.job().nonce;
+  h.fake.finish(0, 'Success'); delete h.fake.tasks[2];
+  assert.equal((await h.status()).length, 3);
+  assert.deepEqual((await h.status({ state: 'active' })).map(r => r.nonce), [second, third]);
+  assert.deepEqual((await h.status({ state: 'finished' })).map(r => r.nonce), [first]);
+  assert.deepEqual(await h.status({ nonce: third }), [{ nonce: third, id: 2, phase: 'UNKNOWN' }]);
+  assert.deepEqual(await h.status({ nonce: first, state: 'active' }), []);
+  await assert.rejects(h.status({ nonce: 'another-session-nonce' }), /not owned/);
+  assert.equal((await h.status()).length, 3);
+});
+
+test('compact payload upgrades preserve legacy notice dedup keys and meaningful cancellation changes', async () => {
+  const h = await harness(); await h.submit(); h.fake.finish(0, 'Success');
+  const j = h.job();
+  h.history.push({ type: 'custom_message', customType: NOTICE,
+    content: JSON.stringify({ nonce: j.nonce, id: 0, phase: 'EXITED', exitCode: 0, cancellationRequested: false,
+      publication: 'UNVERIFIED', stoppedDescendants: 'UNVERIFIED' }) + '\nOld caveat',
+    details: { key: `${j.nonce}:EXITED:0:false` } });
+  await h.start(); assert.equal(h.messages.length, 0);
+  await h.cancel(); // Intent only: already exited, no signal. A changed intent deserves a new notice.
+  await h.start(); assert.equal(h.messages.length, 1);
+  assert.equal(JSON.parse(h.messages[0].content).cancellationRequested, true);
+  assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0);
+  await h.start(); assert.equal(h.messages.length, 1);
+});
+
+test('log results report fresh backend status after reading and keep tiny artifacts compact', async () => {
+  const h = await harness(); await h.submit();
+  const path = join(h.config.data, 'task_logs', '0.log'); await writeFile(path, 'small final error\n');
+  let queries = 0;
+  h.fake.hook = args => { if (args[0] === 'status' && ++queries === 2) h.fake.finish(0, { Failed: 7 }); };
+  const data = JSON.parse((await h.call('pueue_result', { nonce: h.job().nonce })).content[0].text);
+  assert.deepEqual(data.status, { nonce: h.job().nonce, id: 0, phase: 'EXITED', exitCode: 7 });
+  assert.deepEqual(data.log, { path, start: 0, end: 18, size: 18, text: 'small final error\n' });
 });
 
 test('private callback hints validate numeric IDs, never interpolate logs/commands; duplicate wakeups are coalesced', async () => {

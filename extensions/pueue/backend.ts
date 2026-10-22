@@ -110,7 +110,7 @@ export async function privateDirectory(path: string) {
   }
 }
 /** Positional, asynchronous byte slices. Full backend-owned logs are never capped or deleted. */
-export async function sliceLog(path: string, offset?: number, limit = 16384) {
+export async function sliceLog(path: string, offset?: number, limit = 4096) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16384
     || (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0))) throw new Error("Invalid log slice");
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -121,7 +121,8 @@ export async function sliceLog(path: string, offset?: number, limit = 16384) {
     const buffer = Buffer.alloc(Math.min(limit, Math.max(0, info.size - start)));
     const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
     return { path, start, end: start + bytesRead, size: info.size,
-      omittedBefore: start > 0, omittedAfter: start + bytesRead < info.size,
+      ...(start > 0 ? { omittedBefore: true as const } : {}),
+      ...(start + bytesRead < info.size ? { omittedAfter: true as const } : {}),
       text: buffer.subarray(0, bytesRead).toString("utf8") };
   } finally { await file.close(); }
 }

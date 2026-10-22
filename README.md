@@ -2,7 +2,7 @@
 
 Source-only Pi extension package (Node 24+, tested with Pi 1.3.0).
 
-- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): migrated Git worktree overlay, unchanged implementation and regression tests.
+- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): history-preserving migration of the Git worktree overlay, with its full regression suite.
 - [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**. No supervisor, installer, automatic retry, paid review, publication, or merge policy.
 
 ## Installation
@@ -21,7 +21,7 @@ pi install /absolute/path/to/pi-repo
 
 Choose **one** root-package route: Pi-managed package **or** a Nix-managed directory at `~/.pi/agent/extensions/pi-repo`. Do not also load its children or the old worktree-panel package. Root manifest discovery through a Nix-style symlink is tested with Pi's actual loader. No live settings or extension symlinks were changed during development.
 
-Pueue stays unconfigured until explicitly supplied the external paths described in its README. Loading the package does not install/start a daemon. GitHub destination: [dunv/pi-repo](https://github.com/dunv/pi-repo), created by Daniel as a public repository. Daniel approved a dedicated Nix-managed Pueue 4.0.4 backend; see [Nix integration notes](docs/nix-integration.md). Submission confirmation is optional and off by default (`PI_PUEUE_CONFIRM_SUBMIT=1` enables it). Completion notices use compact neutral styling.
+Pueue stays unconfigured until explicitly supplied the external paths described in its README. Loading the package does not install/start a daemon. GitHub destination: [dunv/pi-repo](https://github.com/dunv/pi-repo), created by Daniel as a public repository. Daniel approved a dedicated Nix-managed Pueue 4.0.4 backend; see [Nix integration notes](docs/nix-integration.md). Submission confirmation is optional and off by default (`PI_PUEUE_CONFIRM_SUBMIT=1` enables it). Completion notices use compact neutral styling. Model-facing outputs omit repeated boilerplate/default fields; status supports nonce/state filters, and logs default to a 4 KiB tail with full artifacts retained.
 
 ## Development
 

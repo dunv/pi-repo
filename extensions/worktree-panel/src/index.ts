@@ -286,8 +286,8 @@ export default function worktreePanel(pi: ExtensionAPI) {
       schedule(0);
       return {
         content: [{ type: "text", text: root
-          ? `Panel target: ${root}. Pi cwd and tool paths are unchanged; use absolute worktree paths for edits.`
-          : "Panel target reset to session cwd. Pi cwd and tool paths are unchanged." }],
+          ? `Panel target: ${root}. Cwd unchanged.`
+          : "Panel target reset to session cwd. Cwd unchanged." }],
         details: { path: root ?? null, cwdChanged: false, panelAvailable: interactive(ctx) },
       };
     },
