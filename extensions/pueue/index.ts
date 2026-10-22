@@ -50,7 +50,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
         const key = `${j.nonce}:${state.phase}:${state.exitCode ?? "none"}:${!!state.cancellationRequested}`;
         if (noticed(a.ctx.sessionManager.getBranch(), key)) continue;
         pi.sendMessage({ customType: NOTICE, content: JSON.stringify(state),
-          display: true, details: { key } }, { deliverAs: "followUp", triggerTurn: false });
+          display: true, details: { key } }, { deliverAs: "followUp", triggerTurn: state.phase === "EXITED" });
       }
     } catch {
       // No raw diagnostics, no automatic retry timer. Resume or explicit status reconciles again.

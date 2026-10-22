@@ -230,17 +230,18 @@ test('backend-owned duplicate reservations reject a second paid pass, including 
   assert.equal(h.fake.groups.size, 1);
 });
 
-test('completion reconciles lost callbacks on resume and deduplicates repeated hints/reload; never injects user authorization', async () => {
+test('completion triggers a follow-up on resume once; uncertainty stays passive and never injects user authorization', async () => {
   const h = await harness(); await h.submit(); h.fake.finish(0, { Failed: 7 });
   await h.start(); await h.start();
   assert.equal(h.messages.length, 1);
   assert.equal(h.messages[0].customType, NOTICE);
-  assert.deepEqual(h.messages[0].options, { deliverAs: 'followUp', triggerTurn: false });
+  assert.deepEqual(h.messages[0].options, { deliverAs: 'followUp', triggerTurn: true });
   assert.match(h.messages[0].content, /"exitCode":7/);
   assert.deepEqual(JSON.parse(h.messages[0].content), { nonce: h.job().nonce, id: 0, phase: 'EXITED', exitCode: 7 });
   assert.match(h.tools.get('pueue_status').description, /not CI\/review\/publication success/);
   h.fake.tasks = {}; await h.start(); await h.start();
   assert.equal(h.messages.length, 2); assert.match(h.messages[1].content, /UNKNOWN/);
+  assert.deepEqual(h.messages[1].options, { deliverAs: 'followUp', triggerTurn: false });
 });
 
 test('session switch/fork/tree excludes other owners and abandoned branches; delayed query never routes to current unrelated session', async () => {
