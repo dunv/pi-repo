@@ -1,19 +1,35 @@
-# Pending Nix integration (no activation performed)
+# Nix source integration; backend packaging pending
 
-Owning configuration: `/etc/nixos/common/daniel/pi.nix`. It remains unchanged and valid, retaining the original `dunv/pi-worktree-panel` pin `7a84ea8e795ffc5fb5dd6073a1495e768aae0df0` / `sha256-0Ox9QmH4jyPgdlsG9c3+4Vf2tPIOHWLkhWkLxPebdAw=`. No current extension symlink was removed and no live Pi settings were changed.
+Owning configuration: `/etc/nixos/common/daniel/pi.nix`. Local Nix commit `51a544c6f274ca552b706ddce8f86e71a7abd289` replaces the original `dunv/pi-worktree-panel` pin with the verified public package below. The Nix repository was **not pushed or activated**. The old checkout and currently active extension symlink remain intact; no live Pi settings were changed.
 
 ## Publication gate
 
 Daniel created and confirmed `git@github.com:dunv/pi-repo.git` during implementation. Read-only GitHub API inspection confirmed `full_name=dunv/pi-repo`, `private=false`, `visibility=public`; the remote was initially empty. This clears the source-publication gate. No npm publication, old-repository alteration, or Nix push is planned.
 
-After successful root checks, the concrete integration sequence is:
+## Verified source pin
 
-1. Publish the approved source commit, obtain its immutable GitHub source revision and independently computed Nix source hash. For private visibility, decide an approved authenticated fetch mechanism first; never embed credentials in Nix expressions, argv, store paths, or session output. `fetchFromGitHub` is straightforward only for a publicly fetchable source.
-2. Replace the `pi-worktree-panel` let binding in `pi.nix` with `pi-repo = pkgs.fetchFromGitHub { owner = <confirmed>; repo = <confirmed>; rev = <published full commit>; hash = <verified source hash>; };` **using actual confirmed values**, not these prose placeholders. No `runCommand` rewriting is necessary: wrapper entry points already have meaningful parent names.
-3. Replace only `home.file.".pi/agent/extensions/pi-worktree-panel".source` with `home.file.".pi/agent/extensions/pi-repo".source = pi-repo;`. A reusable valid source-parameterized fragment is [`../nix/extensions.nix`](../nix/extensions.nix). One linked root directory discovers exactly the two manifest entries, tested against Pi 1.3.0. Do not also link children or add a Pi package settings entry. Audit any separately configured old package entry for later user-authorized removal; do not mutate settings implicitly.
-4. Evaluate/build the owning Nix configuration and inspect the resulting extension tree **without activation**. Verify its manifest/peer imports and no node_modules/build artifacts. The existing extension stays live until the user separately authorizes activation/reload and replacement.
+```nix
+pi-repo = pkgs.fetchFromGitHub {
+  owner = "dunv";
+  repo = "pi-repo";
+  rev = "007cf00fc8e34353812eb39d203c5a53e702d776";
+  hash = "sha256-/SbV8pcMrHIvQAvZbCKA1JlkNbQS0gVGbufwqaELfbw=";
+};
+```
 
-No broken placeholder pin/config is committed in `/etc/nixos`.
+This implementation revision is published on `main`; its GitHub Check workflow succeeded ([run 39762090476](https://github.com/dunv/pi-repo/actions/runs/39762090476)). Later documentation-only commits need not change the implementation pin.
+
+`pi.nix` now declares `home.file.".pi/agent/extensions/pi-repo".source = pi-repo;` instead of the old independent panel declaration. A reusable source-parameterized fragment is [`../nix/extensions.nix`](../nix/extensions.nix). No `runCommand` rewriting is necessary: wrapper entry points already have meaningful parent names. One linked root directory discovers exactly two manifest entries. Do not also link children or add a Pi package settings entry. Audit separately configured old package entries for later user-authorized removal; never mutate settings implicitly.
+
+Verification performed without activation:
+
+- `npm ci --ignore-scripts --no-audit --no-fund` and `npm run check`: TypeScript plus **50 passing tests**, including all 34 migrated regressions and actual Pi 1.3.0 root-package autodiscovery.
+- `npm pack --dry-run --ignore-scripts`: source/docs/license only, no node_modules, test payload, generated build, or bundled Rust binaries.
+- `nixfmt --check`, `nix-instantiate --parse`, and Git whitespace checks passed for changed Nix code.
+- Evaluated the actual `daniel-thinkpad` Home Manager extension source: new declaration exists, old declaration absent in the *evaluated future configuration*.
+- Built **only the source fetch derivation**, verifying the exact hash at `/nix/store/0lmvvbydgz07vqaywbilk9l74r67v3qq-source`. Loaded its two entry points with the actual Pi 1.3.0 loader: no errors/warnings and exactly the expected four tools. No npm dependency install was needed inside the fetched source.
+
+No full system/home activation build, service operation or live-daemon experiment was performed. The existing live extension stays installed until separately authorized activation/reload/replacement. Backend packaging, daemon lifecycle, approved credential resolution and eventual disposable-daemon acceptance testing still need decisions. No placeholder pin/config was committed.
 
 ## Backend packaging decision — options, not a selection
 
