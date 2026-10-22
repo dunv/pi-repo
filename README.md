@@ -4,10 +4,11 @@ Source-only Pi extension package (Node 24+, tested with Pi 1.3.0).
 
 - [`extensions/worktree-panel`](extensions/worktree-panel/README.md): history-preserving migration of the Git worktree overlay, with its full regression suite.
 - [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**. No supervisor, installer, automatic retry, paid review, publication, or merge policy.
+- [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only local Git snapshot with bounded structured output. No watcher, fetch, or per-prompt scan.
 
 ## Installation
 
-The root `package.json` explicitly exposes exactly two entry points. For an isolated one-invocation test:
+The root `package.json` explicitly exposes exactly three entry points. For an isolated one-invocation test:
 
 ```sh
 pi --no-extensions -e /absolute/path/to/pi-repo
@@ -31,7 +32,7 @@ npm run check
 npm pack --dry-run
 ```
 
-Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies. Dev-only host packages are pinned to 1.3.0. Tests use a deterministic fake Pueue backend, never a real review or remote mutation. The inherited GitHub workflow runs these root checks.
+Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies. Dev-only host packages are pinned to 1.3.0. Tests use a deterministic fake Pueue backend and temporary Git repositories, never a real review or remote mutation. The inherited GitHub workflow runs these root checks.
 
 ## Provenance and license
 
