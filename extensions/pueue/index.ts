@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { noticeText } from "./notice.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
-import { ENTRY, NOTICE, filterViews, intent, jobs, matching, noticed, reservation, view, type Job, type Owner } from "./state.ts";
+import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, view, type Job, type Owner } from "./state.ts";
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
@@ -49,8 +49,13 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
         // Preserve v1 keys across compact-payload upgrades; omission still means false.
         const key = `${j.nonce}:${state.phase}:${state.exitCode ?? "none"}:${!!state.cancellationRequested}`;
         if (noticed(a.ctx.sessionManager.getBranch(), key)) continue;
+        const triggerTurn = state.phase === "EXITED" && !completionNoticed(a.ctx.sessionManager.getBranch(), j.nonce);
+        // sendMessage is void and may queue delivery behind startup/streaming.
+        // Persist BEFORE asking Pi to run: a message is not a synchronous receipt.
+        pi.appendEntry(RECEIPT, { key });
+        if (!bound(a, j)) return;
         pi.sendMessage({ customType: NOTICE, content: JSON.stringify(state),
-          display: true, details: { key } }, { deliverAs: "followUp", triggerTurn: state.phase === "EXITED" });
+          display: true, details: { key } }, { deliverAs: "followUp", triggerTurn });
       }
     } catch {
       // No raw diagnostics, no automatic retry timer. Resume or explicit status reconciles again.
@@ -140,7 +145,9 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     async execute(_id, input, _signal, _update, ctx) {
       const a = requireActive(ctx), tasks = await a.backend.tasks();
       if (!current(a)) throw new Error("Session changed");
-      return result(filterViews(owned(a).map(j => view(j, tasks)), input));
+      const rows = filterViews(owned(a).map(j => view(j, tasks)), input);
+      schedule(a); // Explicit status also reconciles a lost callback; no polling.
+      return result(rows);
     },
   });
   pi.registerTool({

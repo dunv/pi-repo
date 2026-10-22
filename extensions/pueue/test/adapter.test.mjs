@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Backend, project, command, minimalEnvironment, runner, configuration, sliceLog, privateDirectory } from '../backend.ts';
-import { ENTRY, NOTICE, jobs, matching, view } from '../state.ts';
+import { ENTRY, NOTICE, RECEIPT, jobs, matching, view } from '../state.ts';
 import { extension } from '../index.ts';
 import { hint } from '../callback.mjs';
 
@@ -50,7 +50,7 @@ class Fake {
   }
   finish(id, result) { this.tasks[id].status = { Done: { result, end: 'now' } }; }
 }
-async function harness({ history = [], session = 'origin', file = '/sessions/origin.jsonl', fake = new Fake(), config } = {}) {
+async function harness({ history = [], session = 'origin', file = '/sessions/origin.jsonl', fake = new Fake(), config, delayedDelivery = false } = {}) {
   config ??= (await fixture()).config;
   const env = { PI_PUEUE_BINARY: config.binary, PI_PUEUE_CONFIG: config.config,
     PI_PUEUE_DATA: config.data, PI_PUEUE_NAMESPACE: config.namespace, PI_PUEUE_PATH: config.path,
@@ -69,7 +69,12 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
     on: (name, fn) => events.set(name, fn), registerTool: t => tools.set(t.name, t), registerCommand: (n, c) => commands.set(n, c),
     registerMessageRenderer() {},
     appendEntry: (customType, data) => h.history.push({ type: 'custom', id: `entry-${h.history.length}`, customType, data: structuredClone(data) }),
-    sendMessage: (message, options) => { messages.push({ ...message, options }); h.history.push({ type: 'custom_message', ...structuredClone(message) }); },
+    sendMessage: (message, options) => {
+      messages.push({ ...message, options });
+      // Pi's void sendMessage can queue through startup/streaming before persistence.
+      if (!delayedDelivery) h.history.push({ type: 'custom_message', ...structuredClone(message) });
+      h.onSend?.(message);
+    },
   };
   extension(pi, c => new Backend(c, args => fake.run(args)));
   const stop = () => events.get('session_shutdown')({}, ctx);
@@ -323,6 +328,7 @@ test('compact payload upgrades preserve legacy notice dedup keys and meaningful 
   await h.cancel(); // Intent only: already exited, no signal. A changed intent deserves a new notice.
   await h.start(); assert.equal(h.messages.length, 1);
   assert.equal(JSON.parse(h.messages[0].content).cancellationRequested, true);
+  assert.equal(h.messages[0].options.triggerTurn, false); // Known completion, new intent is passive.
   assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0);
   await h.start(); assert.equal(h.messages.length, 1);
 });
@@ -353,4 +359,57 @@ test('private callback hints validate numeric IDs, never interpolate logs/comman
   await hint(hints, '0'); await delay(200);
   assert.equal(h.messages.length, 1);
   h.stop(); await hint(hints, '0');
+});
+
+test('receipt precedes triggerTurn: delayed message persistence, reload and trigger feedback cannot replay a completion', async () => {
+  const h = await harness({ delayedDelivery: true });
+  await h.submit(); h.fake.finish(0, 'Success');
+  let feedback;
+  h.onSend = () => {
+    assert.equal(h.history.at(-1).customType, RECEIPT);
+    // A trigger can initiate work before the message itself is in getBranch().
+    feedback = h.status();
+  };
+  await h.start();
+  await feedback;
+  assert.equal(h.messages.length, 1);
+  assert.equal(h.history.some(e => e.type === 'custom_message'), false);
+  for (let i = 0; i < 5; i++) await h.start();
+  assert.equal(h.messages.length, 1);
+  // Recreate the extension runtime from JSON-roundtripped supported entries.
+  const restored = await harness({ history: JSON.parse(JSON.stringify(h.history)), fake: h.fake,
+    config: h.config, delayedDelivery: true });
+  assert.equal(restored.messages.length, 0);
+  assert.equal(restored.fake.calls.filter(a => a[0] === 'add').length, 1);
+  assert.equal((await restored.status())[0].exitCode, 0);
+});
+
+test('lost callback reconciles on explicit status, repeated callbacks before message persistence do not pay for more turns', async () => {
+  const { dir, config } = await fixture();
+  const hints = join(dir, 'hints'); await mkdir(hints, { mode: 0o700 });
+  const h = await harness({ config: { ...config, hints }, delayedDelivery: true });
+  await h.submit(); await delay(150); // Drain admission reconciliation while RUNNING.
+  h.fake.finish(0, { Failed: 7 });
+  await h.status(); await delay(150);
+  assert.equal(h.messages.length, 1);
+  await hint(hints, '0'); await delay(150);
+  await hint(hints, '0'); await delay(150);
+  assert.equal(h.messages.length, 1);
+  assert.equal(h.messages[0].options.triggerTurn, true);
+  h.stop(); await hint(hints, '0'); await delay(150);
+  assert.equal(h.messages.length, 1);
+});
+
+test('receipt and delayed backend response cannot grant fork or abandoned branch ownership', async () => {
+  const h = await harness({ delayedDelivery: true });
+  await h.submit(); h.fake.finish(0, 'Success'); await h.start();
+  const received = structuredClone(h.history);
+  h.session = 'fork'; h.file = '/sessions/fork.jsonl'; await h.start();
+  assert.deepEqual(await h.status(), []);
+  assert.equal(h.messages.length, 1);
+  h.session = 'origin'; h.file = '/sessions/origin.jsonl'; h.history = [];
+  await h.events.get('session_tree')({}, h.ctx);
+  assert.deepEqual(await h.status(), []);
+  h.history = received; await h.events.get('session_tree')({}, h.ctx);
+  assert.equal(h.messages.length, 1);
 });

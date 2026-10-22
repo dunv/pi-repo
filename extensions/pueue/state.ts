@@ -4,6 +4,7 @@ import type { Task } from "./backend.ts";
 
 export const ENTRY = "pi-repo.pueue.job.v1";
 export const NOTICE = "pi-repo.pueue.notice.v1";
+export const RECEIPT = "pi-repo.pueue.receipt.v1";
 export type Owner = { session: string; file: string; anchor: string | null };
 export type Job = Owner & {
   namespace: string; nonce: string; label: string; id?: number; created?: string;
@@ -52,7 +53,16 @@ export function filterViews(rows: JobView[], filter: StatusFilter): JobView[] {
   return rows.filter(row => (!filter.nonce || row.nonce === filter.nonce)
     && (filter.state === "active" ? row.phase !== "EXITED" : filter.state === "finished" ? row.phase === "EXITED" : true));
 }
+function noticeKey(e: SessionEntry): string | undefined {
+  const data = e.type === "custom_message" && e.customType === NOTICE ? e.details
+    : e.type === "custom" && e.customType === RECEIPT ? e.data : undefined;
+  const key = (data as { key?: unknown } | undefined)?.key;
+  return typeof key === "string" ? key : undefined;
+}
 export function noticed(entries: readonly SessionEntry[], key: string): boolean {
-  return entries.some(e => e.type === "custom_message" && e.customType === NOTICE
-    && (e.details as { key?: string } | undefined)?.key === key);
+  return entries.some(e => noticeKey(e) === key);
+}
+/** Later cancellation intent/result changes can inform, but must not pay to wake twice. */
+export function completionNoticed(entries: readonly SessionEntry[], nonce: string): boolean {
+  return entries.some(e => noticeKey(e)?.startsWith(`${nonce}:EXITED:`));
 }
