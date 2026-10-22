@@ -11,7 +11,7 @@ export type CommittedChanges = {
   source?: Extract<DiffSource, { kind: "committed" }>;
   error?: string;
 };
-export type Snapshot = { root: string; branch: string; files: ChangedFile[]; committed?: CommittedChanges };
+export type Snapshot = { root: string; branch: string; files: ChangedFile[]; committed?: CommittedChanges; branchOnly?: boolean };
 
 export async function git(cwd: string, args: string[], diffExit = false): Promise<string> {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
@@ -72,7 +72,30 @@ export function parseNameStatus(text: string): ChangedFile[] {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function readCommitted(root: string): Promise<CommittedChanges> {
+/** Resolve only local/remote branch refs, never arbitrary revision expressions or options. */
+export async function branchTarget(cwd: string, branch: string): Promise<{ root: string; branch: string }> {
+  const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trimEnd();
+  const refs = branch.startsWith("refs/heads/") || branch.startsWith("refs/remotes/")
+    ? [branch] : [`refs/heads/${branch}`, `refs/remotes/${branch}`];
+  for (const ref of refs) {
+    try {
+      await git(root, ["check-ref-format", ref]);
+      await git(root, ["show-ref", "--verify", "--", ref]);
+      return { root, branch: ref };
+    } catch { /* Try the next fully qualified branch ref. */ }
+  }
+  throw new Error(`Branch unavailable: ${display(branch)}`);
+}
+
+export async function readBranchSnapshot(cwd: string, branch: string): Promise<Snapshot> {
+  const target = await branchTarget(cwd, branch);
+  // Resolve once: the file list and every selected diff use the same immutable commit.
+  const head = (await git(target.root, ["rev-parse", "--verify", `${target.branch}^{commit}`])).trim();
+  return { root: target.root, branch: target.branch.replace(/^refs\/(heads|remotes)\//, ""),
+    files: [], committed: await readCommitted(target.root, head), branchOnly: true };
+}
+
+async function readCommitted(root: string, revision = "HEAD"): Promise<CommittedChanges> {
   let ref = "develop";
   let tip: string | undefined;
   const candidates = [
@@ -90,7 +113,7 @@ async function readCommitted(root: string): Promise<CommittedChanges> {
   }
   if (!tip) return { ref, files: [], error: "No develop, origin/develop, master or origin/master ref" };
   try {
-    const head = (await git(root, ["rev-parse", "HEAD"])).trim();
+    const head = (await git(root, ["rev-parse", "--verify", `${revision}^{commit}`])).trim();
     const base = (await git(root, ["merge-base", tip, head])).trim();
     const status = await git(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-relative", "--no-exit-code",
       "--name-status", "-z", "--find-renames", base, head, "--"]);
@@ -123,7 +146,7 @@ export async function readDiff(root: string, file: ChangedFile, source: DiffSour
   const pathspecs = paths.map(path => `:(literal)${path}`);
   if (source.kind === "committed") {
     const patch = await git(root, ["diff", ...options, "--find-renames", source.base, source.head, "--", ...pathspecs]);
-    return `Committed vs ${source.ref} (merge base → HEAD)\n${patch || "No textual diff"}`;
+    return `Committed vs ${source.ref} (merge base → selected commit)\n${patch || "No textual diff"}`;
   }
   const [staged, unstaged] = await Promise.all([
     git(root, ["diff", ...options, "--cached", "--", ...pathspecs]),

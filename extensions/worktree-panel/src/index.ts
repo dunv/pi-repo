@@ -4,12 +4,11 @@ import { Type } from "@earendil-works/pi-ai";
 import { basename, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { linkedRoot, readSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot, type DiffSource } from "./core.ts";
+import { linkedRoot, readSnapshot, readDiff, branchTarget, readBranchSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot, type DiffSource } from "./core.ts";
 
 import { WorktreePanel } from "./panel.ts";
 import { DiffViewer } from "./diff.ts";
-import { readDiff } from "./core.ts";
-import { restoreTarget, TARGET_ENTRY } from "./target.ts";
+import { restorePanelTarget, TARGET_ENTRY } from "./target.ts";
 
 const KEY = "worktree-panel-preview";
 type PanelSession = {
@@ -26,6 +25,13 @@ type PanelSession = {
 export default function worktreePanel(pi: ExtensionAPI) {
   let context: ExtensionContext | undefined;
   let preview: string | undefined;
+  let previewBranch: string | undefined;
+
+  async function snapshot(cwd: string): Promise<Snapshot | undefined> {
+    if (previewBranch) return readBranchSnapshot(preview ?? cwd, previewBranch);
+    const root = await linkedRoot(preview ?? cwd);
+    return root ? readSnapshot(root) : undefined;
+  }
   let signature = "";
   let epoch = 0;
   let busy = false;
@@ -112,7 +118,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
     }
     if (!poll) {
       // External edits are detected without filesystem watchers or render-time Git.
-      // Poll ONLY while displaying a linked worktree; repaint ONLY on changes.
+      // Poll only while displaying a target; repaint only on changes.
       poll = setInterval(() => schedule(0), 3000);
       poll.unref();
     }
@@ -159,14 +165,13 @@ export default function worktreePanel(pi: ExtensionAPI) {
     if (!interactive(ctx)) return;
     try {
       const token = epoch;
-      const root = await linkedRoot(preview ?? ctx.cwd);
-      if (!root) {
+      const data = await snapshot(ctx.cwd);
+      if (!data) {
         ctx.ui.notify(preview
           ? `Worktree target is unavailable: ${display(preview)}. Set or clear it with worktree_panel_target.`
           : "No worktree target selected, and Pi's cwd is not a linked worktree. Set the target with worktree_panel_target.", "info");
         return;
       }
-      const data = await readSnapshot(root);
       if (token !== epoch) return;
       context = ctx;
       panelHidden = false;
@@ -188,11 +193,9 @@ export default function worktreePanel(pi: ExtensionAPI) {
     const token = epoch;
     const ctx = context;
     try {
-      const root = await linkedRoot(preview ?? ctx.cwd);
+      const next = await snapshot(ctx.cwd);
       if (token !== epoch) return;
-      if (!root) { clear(); return; }
-      const next = await readSnapshot(root);
-      if (token !== epoch) return;
+      if (!next) { clear(); return; }
       lastError = "";
       paint(next);
     } catch (error) {
@@ -255,7 +258,9 @@ export default function worktreePanel(pi: ExtensionAPI) {
 
   function restoreSession(ctx: ExtensionContext) {
     stop();
-    preview = restoreTarget(ctx.sessionManager.getBranch());
+    const saved = restorePanelTarget(ctx.sessionManager.getBranch());
+    preview = saved?.path;
+    previewBranch = saved?.branch;
     if (!interactive(ctx)) return;
     context = ctx;
     schedule(0);
@@ -270,25 +275,29 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the panel, diffs and editor at a linked Git worktree, or clear the override with path: null. Does NOT change Pi's cwd or tool paths. Call after creating/resuming a feature worktree and clear before removing it. Target is saved in this session and restored on reload/restart.",
+    description: "Point the panel at a linked Git worktree, or set branch plus an absolute repository path for read-only committed branch diffs without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
     parameters: Type.Object({
-      path: Type.Union([Type.String({ description: "Absolute linked-worktree path" }), Type.Null()]),
+      path: Type.Union([Type.String({ description: "Absolute linked-worktree path, or repository path when branch is supplied" }), Type.Null()]),
+      branch: Type.Optional(Type.String({ minLength: 1, description: "Local or remote branch (e.g. feature/foo or origin/feature/foo); read-only, no worktree needed" })),
     }),
-    async execute(_id, { path }, _signal, _onUpdate, ctx) {
+    async execute(_id, { path, branch }, _signal, _onUpdate, ctx) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
-      const root = path === null ? undefined : await linkedRoot(path);
+      if (branch !== undefined && (path === null || !branch)) throw new Error("Branch requires a repository path and a nonempty name");
+      const target = branch !== undefined && path !== null ? await branchTarget(path, branch) : undefined;
+      const root = target?.root ?? (path === null ? undefined : await linkedRoot(path));
       if (path !== null && !root) throw new Error("That path is not inside a linked Git worktree");
-      pi.appendEntry(TARGET_ENTRY, { path: root ?? null });
+      pi.appendEntry(TARGET_ENTRY, { path: root ?? null, ...(target ? { branch: target.branch } : {}) });
       epoch++;
       preview = root;
+      previewBranch = target?.branch;
       clear();
       context = interactive(ctx) ? ctx : undefined;
       schedule(0);
       return {
         content: [{ type: "text", text: root
-          ? `Panel target: ${root}. Cwd unchanged.`
+          ? `Panel target: ${root}${target ? ` · ${target.branch} (read-only)` : ""}. Cwd unchanged.`
           : "Panel target reset to session cwd. Cwd unchanged." }],
-        details: { path: root ?? null, cwdChanged: false, panelAvailable: interactive(ctx) },
+        details: { path: root ?? null, ...(target ? { branch: target.branch } : {}), cwdChanged: false, panelAvailable: interactive(ctx) },
       };
     },
   });
@@ -335,6 +344,23 @@ export default function worktreePanel(pi: ExtensionAPI) {
     description: "Refresh the worktree changed-files panel",
     handler: async (_args, ctx) => { if (interactive(ctx)) schedule(0); },
   });
+  pi.registerCommand("worktree-branch", {
+    description: "Show read-only committed diffs for a local/remote branch without a worktree; off clears target",
+    handler: async (args, ctx) => {
+      const branch = args.trim();
+      if (!branch) { ctx.ui.notify("Usage: /worktree-branch feature/foo (or origin/feature/foo), or off", "info"); return; }
+      try {
+        const target = branch === "off" ? undefined : await branchTarget(ctx.cwd, branch);
+        pi.appendEntry(TARGET_ENTRY, { path: target?.root ?? null, ...(target ? { branch: target.branch } : {}) });
+        epoch++;
+        preview = target?.root;
+        previewBranch = target?.branch;
+        clear();
+        context = interactive(ctx) ? ctx : undefined;
+        schedule(0);
+      } catch (error) { ctx.ui.notify(`Cannot select branch: ${String(error)}`, "warning"); }
+    },
+  });
   pi.registerCommand("worktree-preview", {
     description: "Set the saved panel worktree by path; 'off' restores session cwd",
     handler: async (args, ctx) => {
@@ -348,6 +374,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
       pi.appendEntry(TARGET_ENTRY, { path: root ?? null });
       epoch++;
       preview = root;
+      previewBranch = undefined;
       context = ctx;
       clear();
       schedule(0);

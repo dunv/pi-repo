@@ -3,9 +3,11 @@ import { isAbsolute } from "node:path";
 
 export const TARGET_ENTRY = "worktree-panel-target";
 
+export type PanelTarget = { path: string; branch?: string };
+
 /** Read only the active session branch; null resets override any older target. */
-export function restoreTarget(entries: readonly SessionEntry[]): string | undefined {
-  let target: string | undefined;
+export function restorePanelTarget(entries: readonly SessionEntry[]): PanelTarget | undefined {
+  let target: PanelTarget | undefined;
   for (const entry of entries) {
     let data: unknown;
     if (entry.type === "custom" && entry.customType === TARGET_ENTRY) data = entry.data;
@@ -16,7 +18,15 @@ export function restoreTarget(entries: readonly SessionEntry[]): string | undefi
     if (!data || typeof data !== "object" || !("path" in data)) continue;
     const path = data.path;
     if (path === null) target = undefined;
-    else if (typeof path === "string" && isAbsolute(path)) target = path;
+    else if (typeof path === "string" && isAbsolute(path)) {
+      const branch = "branch" in data && typeof data.branch === "string" ? data.branch : undefined;
+      target = { path, ...(branch ? { branch } : {}) };
+    }
   }
   return target;
+}
+
+/** Legacy path-only accessor. */
+export function restoreTarget(entries: readonly SessionEntry[]): string | undefined {
+  return restorePanelTarget(entries)?.path;
 }

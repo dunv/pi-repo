@@ -2,7 +2,7 @@
 
 A lightweight right-side changed-files overlay for [Pi](https://pi.dev).
 
-Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git. The panel uses Pi's supported overlay API, stays passive until explicitly focused, and requires no Herdr installation to display.
+Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git unless a target is explicitly selected. Branches without worktrees can also be displayed in read-only mode with `/worktree-branch feature/foo`. The panel uses Pi's supported overlay API, stays passive until explicitly focused, and requires no Herdr installation to display.
 
 ```text
 ╭──────────────────────────────────────────╮
@@ -71,6 +71,9 @@ Esc/q. Your draft stays in the editor. The shortcut appears in `/hotkeys`.
 | `/worktree-refresh` | Refresh Git status immediately |
 | `/worktree-preview /absolute/path` | Display another linked worktree for testing |
 | `/worktree-preview off` | Return to the session's working directory |
+| `/worktree-branch feature/foo` | Show committed changes for a branch in Pi's current repository, no worktree required |
+| `/worktree-branch origin/feature/foo` | Show a locally available remote-tracking branch (no fetch) |
+| `/worktree-branch off` | Clear the saved target and return to the session directory |
 
 Preview changes **only the displayed worktree and diff/editor target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Width/visibility reset on reload/restart. The target is saved per session branch and restored automatically.
 
@@ -78,8 +81,9 @@ Preview changes **only the displayed worktree and diff/editor target**, not Pi's
 
 The model-callable `worktree_panel_target` tool accepts `{ "path": "/absolute/worktree" }`
 to target a linked worktree (subdirectories are normalized to its root), or
-`{ "path": null }` to restore the session directory. Relative paths, main checkouts,
-and non-worktrees are rejected without changing the existing target.
+`{ "path": null }` to restore the session directory. Without `branch`, relative paths, main checkouts,
+and non-worktrees are rejected without changing the existing target. With `branch`,
+an absolute repository path selects read-only branch mode (see below).
 
 Call it after creating/resuming a feature worktree and clear it before cleanup.
 It shares the `/worktree-preview` override and `[preview]` label: only the panel
@@ -95,9 +99,36 @@ override. New sessions do not inherit another session's target. Removed worktree
 produce an explicit unavailable-target message rather than silently switching repos.
 In non-TUI modes it records the target but does not display a panel.
 
+## Branches without worktrees
+
+Run `/worktree-branch feature/foo` from the repository's main checkout or a linked
+worktree. Local branches are preferred over matching remote-tracking names;
+fully qualified `refs/heads/...` and `refs/remotes/...` names are also accepted.
+Arbitrary commit expressions and tags are not accepted. To target a branch named
+`off`, use `refs/heads/off`.
+
+The panel is labeled **Branch (read-only)** and shows only committed changes,
+using the same base-ref selection described below. Enter opens a pinned diff;
+there is no uncommitted area or editor action. Neither the checkout, index,
+working files, nor Pi's cwd are changed, and no worktree is created. Refreshes
+track branch-tip updates; already opened diffs retain their commit snapshot.
+Removed branches report an unavailable target without falling back to HEAD.
+Branch targets persist per session branch just like worktree targets.
+`/worktree-branch off`, `/worktree-preview off`, or tool `path: null` clears either mode.
+
+The agent can select a branch in another repository with:
+
+```json
+{ "path": "/absolute/repository", "branch": "feature/foo" }
+```
+
+Pass this to `worktree_panel_target`. Supplying `branch` allows main-checkout
+paths; omitting it retains the existing linked-worktree validation. A rejected
+request leaves the saved target unchanged.
+
 ## Two diff areas
 
-The panel always shows two independently paginated areas:
+In worktree mode the panel shows two independently paginated areas:
 
 - **Committed vs develop** (or **master**): files changed from the merge base with
   the selected base branch to the displayed branch's HEAD (e.g. `git diff develop...HEAD`).
@@ -182,7 +213,7 @@ stay top-aligned, with empty rows below and the navigation footer at the bottom.
 
 - Cached layout by content, width, height and page.
 - Debounced asynchronous refreshes after tool activity.
-- Three-second status polling only while a linked worktree is being displayed; unchanged snapshots do not repaint.
+- Three-second Git polling only while a worktree or branch target is being displayed; unchanged snapshots do not repaint.
 - Git subprocesses have time/output limits and disable optional index writes.
 - No runtime npm dependencies, private Pi patches, replacement tools, extra model calls, system-prompt changes or direct session-file rewrites (target state uses Pi's append-only session API).
 

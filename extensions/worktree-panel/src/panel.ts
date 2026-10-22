@@ -42,11 +42,12 @@ export class WorktreePanel {
   }
   private sections(): Section[] {
     const committed = this.data.committed;
-    return [
+    const sections: Section[] = [
       { title: `Committed vs ${committed?.ref ?? "develop"}`, files: committed?.files ?? [],
         source: committed?.source, error: committed?.error },
-      { title: "Uncommitted", files: this.data.files, source: { kind: "uncommitted" } },
     ];
+    if (!this.data.branchOnly) sections.push({ title: "Uncommitted", files: this.data.files, source: { kind: "uncommitted" } });
+    return sections;
   }
   private entries() {
     return this.sections().flatMap((section, group) => section.files.map(file => ({ file, source: section.source, group })));
@@ -85,7 +86,7 @@ export class WorktreePanel {
       if (entry?.source) this.actions.diff(this.data.root, entry.file, entry.source);
       return;
     }
-    if (data === "e") { if (entry) this.actions.edit(this.data.root, entry.file); return; }
+    if (data === "e") { if (entry && !this.data.branchOnly) this.actions.edit(this.data.root, entry.file); return; }
     const pageSize = this.sizes[entry?.group ?? 0];
     if (matchesKey(data, "up") || data === "k") this.selected--;
     else if (matchesKey(data, "down") || data === "j") this.selected++;
@@ -109,12 +110,12 @@ export class WorktreePanel {
     const inner = Math.max(1, width - 4);
     const sections = this.sections();
     // Collapse metadata on short terminals, keeping both areas and controls.
-    const slots = height - (compact ? 6 : 8);
+    const slots = height - (compact ? 6 : 8) + (this.data.branchOnly ? 1 : 0);
     const counts = sections.map(section => Math.max(1, section.files.length));
-    this.sizes[0] = Math.min(counts[0], Math.max(1, Math.floor(slots / 2)));
-    this.sizes[1] = Math.min(counts[1], slots - this.sizes[0]);
+    this.sizes[0] = Math.min(counts[0], Math.max(1, this.data.branchOnly ? slots : Math.floor(slots / 2)));
+    this.sizes[1] = this.data.branchOnly ? 0 : Math.min(counts[1], slots - this.sizes[0]);
     let left = slots - this.sizes[0] - this.sizes[1];
-    for (let group = 0; group < 2; group++) {
+    for (let group = 0; group < sections.length; group++) {
       const extra = Math.min(left, counts[group] - this.sizes[group]);
       this.sizes[group] += extra;
       left -= extra;
@@ -138,7 +139,9 @@ export class WorktreePanel {
     const border = (text: string) => surface.fg(this.active ? "borderAccent" : "border", text);
     const line = (text: string, tone: SurfaceTone = "body") => surface.fill(border("│ ") + pad(text) + border(" │"), tone);
     const frame = (left: string, right: string) => surface.fill(border(left + "─".repeat(Math.max(1, width - 2)) + right));
-    const title = `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
+    const title = this.data.branchOnly
+      ? `Branch (read-only) · ${display(this.data.branch)}`
+      : `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
     const result = [frame("╭", "╮"), line(surface.fg("accent", title, true), "header")];
     if (!compact) {
       const path = display(this.data.root);
@@ -162,7 +165,7 @@ export class WorktreePanel {
         result.push(line(surface.fg(marked ? "accent" : color, `${marked ? "› " : this.active ? "  " : ""}${file.status} ${display(file.path)}`), marked ? "selected" : "body"));
       }
     });
-    result.push(line(surface.fg("dim", this.active ? "↑↓/Tab select · Enter diff · e edit · Alt+W/Esc back" : "Alt+W focus · /worktree-panel hide"), "header"), frame("╰", "╯"));
+    result.push(line(surface.fg("dim", this.active ? `↑↓/Tab select · Enter diff${this.data.branchOnly ? "" : " · e edit"} · Alt+W/Esc back` : "Alt+W focus · /worktree-panel hide"), "header"), frame("╰", "╯"));
     this.cacheKey = key;
     this.cached = result;
     return result;
