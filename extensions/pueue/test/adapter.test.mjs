@@ -54,18 +54,20 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
   config ??= (await fixture()).config;
   const env = { PI_PUEUE_BINARY: config.binary, PI_PUEUE_CONFIG: config.config,
     PI_PUEUE_DATA: config.data, PI_PUEUE_NAMESPACE: config.namespace, PI_PUEUE_PATH: config.path,
+    PI_PUEUE_CONFIRM_SUBMIT: config.confirmSubmit ? '1' : '0',
     ...(config.hints ? { PI_PUEUE_HINTS: config.hints } : {}) };
   const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
   Object.assign(process.env, env);
   cleanups.push(() => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : process.env[k] = v; });
   const events = new Map(), tools = new Map(), commands = new Map(), messages = [], notifications = [];
-  const h = { history, session, file, confirm: true, hasUI: true };
+  const h = { history, session, file, confirm: true, confirmations: 0, hasUI: true };
   const ctx = { cwd: '/repo', mode: 'tui', get hasUI() { return h.hasUI; },
     sessionManager: { getSessionId: () => h.session, getSessionFile: () => h.file,
       getLeafId: () => h.history.at(-1)?.id ?? null, getBranch: () => h.history },
-    ui: { confirm: async () => h.confirm, notify: text => notifications.push(text) } };
+    ui: { confirm: async () => { h.confirmations++; return h.confirm; }, notify: text => notifications.push(text) } };
   const pi = {
     on: (name, fn) => events.set(name, fn), registerTool: t => tools.set(t.name, t), registerCommand: (n, c) => commands.set(n, c),
+    registerMessageRenderer() {},
     appendEntry: (customType, data) => h.history.push({ type: 'custom', id: `entry-${h.history.length}`, customType, data: structuredClone(data) }),
     sendMessage: (message, options) => { messages.push({ ...message, options }); h.history.push({ type: 'custom_message', ...structuredClone(message) }); },
   };
@@ -132,14 +134,42 @@ test('admission persists nonce before add, stashed identity before enqueue; no t
   assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 1);
 });
 
-test('submission requires confirmation, persistent ownership, and no cancelled pre-admission work', async () => {
-  const h = await harness();
+test('opt-in submission confirmation fails closed without UI or approval, and pre-admission abort still blocks', async () => {
+  const h = await harness({ config: { ...(await fixture()).config, confirmSubmit: true } });
   h.confirm = false; await assert.rejects(h.submit(), /confirmation/);
   h.confirm = true; h.hasUI = false; await assert.rejects(h.submit(), /confirmation/);
   h.hasUI = true;
   const controller = new AbortController(); controller.abort();
   await assert.rejects(h.call('pueue_submit', { argv: ['/bin/true'], cwd: '/repo' }, controller.signal), /not admitted/);
   assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 0);
+  await h.submit(); // Opt-in still admits explicitly approved UI submissions.
+  assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 1);
+  assert.ok(h.confirmations > 0);
+});
+
+test('submission has no extra popup by default, including non-UI sessions; cancellation still requires confirmation', async () => {
+  const h = await harness();
+  h.confirm = false; h.hasUI = false;
+  await h.submit();
+  assert.equal(h.confirmations, 0);
+  assert.equal((await h.status())[0].phase, 'RUNNING');
+  await h.cancel();
+  assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0);
+  h.hasUI = true;
+  await h.cancel();
+  assert.equal(h.confirmations, 1);
+  assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0);
+});
+
+test('submission confirmation configuration defaults off and accepts explicit 0/1 only', async () => {
+  const { config: c } = await fixture();
+  const env = { HOME: c.home, PI_PUEUE_BINARY: c.binary, PI_PUEUE_CONFIG: c.config,
+    PI_PUEUE_DATA: c.data, PI_PUEUE_NAMESPACE: c.namespace, PI_PUEUE_PATH: c.path };
+  assert.equal(configuration(env).confirmSubmit, false);
+  assert.equal(configuration({ ...env, PI_PUEUE_CONFIRM_SUBMIT: '0' }).confirmSubmit, false);
+  assert.equal(configuration({ ...env, PI_PUEUE_CONFIRM_SUBMIT: '1' }).confirmSubmit, true);
+  assert.throws(() => configuration({ ...env, PI_PUEUE_CONFIRM_SUBMIT: 'typo' }), /must be 0 or 1/);
+  assert.equal(minimalEnvironment(configuration({ ...env, PI_PUEUE_CONFIRM_SUBMIT: '1' })).PI_PUEUE_CONFIRM_SUBMIT, undefined);
 });
 
 test('success/nonzero are backend exits only; killed/restored/missing/reused state stays UNKNOWN; no automatic resubmission', async () => {

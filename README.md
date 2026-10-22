@@ -21,7 +21,7 @@ pi install /absolute/path/to/pi-repo
 
 Choose **one** root-package route: Pi-managed package **or** a Nix-managed directory at `~/.pi/agent/extensions/pi-repo`. Do not also load its children or the old worktree-panel package. Root manifest discovery through a Nix-style symlink is tested with Pi's actual loader. No live settings or extension symlinks were changed during development.
 
-Pueue stays unconfigured until explicitly supplied the external paths described in its README. Loading the package does not install/start a daemon. GitHub destination: [dunv/pi-repo](https://github.com/dunv/pi-repo), created by Daniel as a public repository. Backend packaging/daemon installation remains undecided; see [Nix integration plan](docs/nix-integration.md).
+Pueue stays unconfigured until explicitly supplied the external paths described in its README. Loading the package does not install/start a daemon. GitHub destination: [dunv/pi-repo](https://github.com/dunv/pi-repo), created by Daniel as a public repository. Daniel approved a dedicated Nix-managed Pueue 4.0.4 backend; see [Nix integration notes](docs/nix-integration.md). Submission confirmation is optional and off by default (`PI_PUEUE_CONFIRM_SUBMIT=1` enables it). Completion notices use compact neutral styling.
 
 ## Development
 

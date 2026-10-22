@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 
 export type Config = {
   binary: string; config: string; data: string; namespace: string;
-  home: string; path: string; hints?: string;
+  home: string; path: string; hints?: string; confirmSubmit?: boolean;
 };
 export type Task = { id: number; created: string; label: string; phase: string; exitCode?: number };
 export type Run = (args: string[]) => Promise<string>;
@@ -16,7 +16,11 @@ export function configuration(env: NodeJS.ProcessEnv): Config | undefined {
     binary: env.PI_PUEUE_BINARY, config: env.PI_PUEUE_CONFIG ?? "", data: env.PI_PUEUE_DATA ?? "",
     namespace: env.PI_PUEUE_NAMESPACE ?? "", home: env.HOME ?? "",
     path: env.PI_PUEUE_PATH ?? "", hints: env.PI_PUEUE_HINTS,
+    confirmSubmit: env.PI_PUEUE_CONFIRM_SUBMIT === "1",
   };
+  if (env.PI_PUEUE_CONFIRM_SUBMIT !== undefined && !["0", "1"].includes(env.PI_PUEUE_CONFIRM_SUBMIT)) {
+    throw new Error("PI_PUEUE_CONFIRM_SUBMIT must be 0 or 1");
+  }
   if (![c.binary, c.config, c.data, c.home].every(isAbsolute) || !uuid.test(c.namespace)
     || !c.path || c.path.split(":").some(p => !isAbsolute(p)) || (c.hints && !isAbsolute(c.hints))) {
     throw new Error("Invalid Pueue configuration; see extensions/pueue/README.md");

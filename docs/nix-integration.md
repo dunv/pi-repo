@@ -1,4 +1,12 @@
-# Nix source integration; backend packaging pending
+# Nix integration history and deployment notes
+
+## Follow-up deployment
+
+Daniel subsequently authorized pushing/activating the source configuration, then selected the existing pinned Nix Pueue 4.0.4 package and a dedicated user daemon. Nix commit `25d3dba` added `common/daniel/pi/pueue.nix`, `PUEUE.md`, and declarative tests; it was pushed at Daniel's request and activated by him. Live smoke tests verified adapter connectivity, literal-argument execution with exit 0 and exact logs, and a separate intentional exit 7 with callback delivery. No review or remote-mutating job was run. The backend has no automatic restart, uses `X-SwitchMethod=keep-old`, and retains state/logs.
+
+The current adapter removes the extra submission popup by default; `PI_PUEUE_CONFIRM_SUBMIT=1` opts back in. This launch variable is not a task argument or Pi setting and is not forwarded to backend jobs. Explicit cancellation still requires confirmation. Notices render neutrally and compactly without changing model-facing safety caveats or session routing. Apply the updated extension source pin and reload Pi; no daemon restart is needed. Existing daemon callback code remains compatible.
+
+The sections below record the **initial** source integration and options considered before that follow-up approval.
 
 Owning configuration: `/etc/nixos/common/daniel/pi.nix`. Local Nix commit `51a544c6f274ca552b706ddce8f86e71a7abd289` replaces the original `dunv/pi-worktree-panel` pin with the verified public package below. The Nix repository was **not pushed or activated**. The old checkout and currently active extension symlink remain intact; no live Pi settings were changed.
 

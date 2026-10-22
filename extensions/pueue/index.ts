@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
+import { noticeText } from "./notice.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
 import { ENTRY, NOTICE, intent, jobs, matching, noticed, reservation, view, type Job, type Owner } from "./state.ts";
@@ -10,6 +12,8 @@ type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?:
 
 /** Injection is deliberately limited to the backend boundary for deterministic tests. */
 export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParameters<typeof Backend>[0]) => new Backend(c)) {
+  pi.registerMessageRenderer(NOTICE, (message, options, theme) =>
+    new Text(theme.fg("muted", noticeText(message.content, options.expanded)), options.outputPad, 0));
   let active: Active | undefined;
   function stop() {
     if (!active) return;
@@ -90,14 +94,16 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
 
   pi.registerTool({
     name: "pueue_submit", label: "Submit to Pueue", executionMode: "sequential",
-    description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. Requires user UI confirmation. Literal argv only; NEVER put secrets in arguments. No execution deadline/retry. Optional reservationKey permanently reserves a backend group; concurrency alone does not reject duplicates.",
+    description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. No extra submission popup by default; operators may opt in with PI_PUEUE_CONFIRM_SUBMIT=1. Existing authorization boundaries still apply. Literal argv only; NEVER put secrets in arguments. No execution deadline/retry. Optional reservationKey permanently reserves a backend group; concurrency alone does not reject duplicates.",
     parameters: Type.Object({ argv: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }), cwd: Type.String(),
       reservationKey: Type.Optional(Type.String({ maxLength: 1024 })) }),
     async execute(_id, input, signal, _update, ctx) {
       const a = requireActive(ctx);
       command(input.argv); // Validate before asking, persisting, or admitting.
-      if (!ctx.hasUI || !await ctx.ui.confirm("Submit backend job?", `${JSON.stringify(input)}\nNo automatic cancellation, retry, publication or merge permission.`)) {
-        throw new Error("Submission requires explicit user confirmation in a UI-capable session");
+      if (a.backend.config.confirmSubmit) {
+        if (!ctx.hasUI || !await ctx.ui.confirm("Submit backend job?", `${JSON.stringify(input)}\nNo automatic cancellation, retry, publication or merge permission.`)) {
+          throw new Error("Submission confirmation is enabled: explicit user confirmation in a UI-capable session is required");
+        }
       }
       if (!current(a) || signal?.aborted) throw new Error("Submission not admitted: session changed or tool cancelled");
       if (owned(a).length >= 128) throw new Error("Branch has 128 retained jobs; no evidence is automatically deleted");
