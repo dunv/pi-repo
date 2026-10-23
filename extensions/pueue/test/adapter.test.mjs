@@ -68,11 +68,15 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
   Object.assign(process.env, env);
   cleanups.push(() => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : process.env[k] = v; });
   const events = new Map(), tools = new Map(), commands = new Map(), messages = [], notifications = [];
-  const h = { history, session, file, confirm: true, confirmations: 0, hasUI: true };
+  const widgets = new Map();
+  const h = { history, session, file, confirm: true, confirmations: 0, hasUI: true, widgets };
   const ctx = { cwd: '/repo', mode: 'tui', get hasUI() { return h.hasUI; },
     sessionManager: { getSessionId: () => h.session, getSessionFile: () => h.file,
       getLeafId: () => h.history.at(-1)?.id ?? null, getBranch: () => h.history },
-    ui: { confirm: async () => { h.confirmations++; return h.confirm; }, notify: text => notifications.push(text) } };
+    ui: { setWidget: (key, factory) => {
+      if (factory) widgets.set(key, factory({}, { fg: (_color, text) => text }));
+      else widgets.delete(key);
+    }, confirm: async () => { h.confirmations++; return h.confirm; }, notify: text => notifications.push(text) } };
   const pi = {
     on: (name, fn) => events.set(name, fn), registerTool: t => tools.set(t.name, t), registerCommand: (n, c) => commands.set(n, c),
     registerMessageRenderer() {},
@@ -96,6 +100,68 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
   await start();
   return Object.assign(h, { fake, config, events, tools, commands, ctx, messages, notifications, start, stop, call, submit, status, job, cancel });
 }
+
+test('jobs widget appears only for owned active work, toggles without model messages, and hides on completion', async () => {
+  const h = await harness();
+  const key = 'pi-repo.pueue.jobs';
+  const lines = (width = 160) => h.widgets.get(key)?.render(width);
+  assert.equal(lines(), undefined);
+  await h.submit(); await h.submit(); await h.submit();
+  assert.match(lines()[0], /2 running · 1 queued/);
+  assert.equal(lines().length, 4);
+  assert.doesNotMatch(lines().join('\n'), /secret-command|must-not-escape/);
+  const { visibleWidth } = await import('@earendil-works/pi-tui');
+  for (const width of [1, 5, 20, 80]) assert.ok(lines(width).every(line => visibleWidth(line) <= width));
+  await h.commands.get('pueue').handler('', h.ctx);
+  assert.equal(lines().length, 1);
+  assert.equal(h.messages.length, 0);
+  await h.start(); assert.equal(lines().length, 1, 'collapse survives same-session tree/resume');
+  await h.commands.get('pueue').handler('expand', h.ctx);
+  assert.equal(lines().length, 4);
+  for (let id = 0; id < 3; id++) h.fake.finish(id, 'Success');
+  await h.commands.get('pueue').handler('refresh', h.ctx);
+  assert.equal(lines(), undefined);
+  await h.submit(); assert.ok(lines());
+  h.stop(); assert.equal(lines(), undefined);
+});
+
+test('widget keeps uncertainty visible, clears stale session/branch views and ignores delayed old queries', async () => {
+  const h = await harness(); await h.submit();
+  const key = 'pi-repo.pueue.jobs';
+  delete h.fake.tasks[0];
+  await h.status(); assert.match(h.widgets.get(key).render(160)[0], /1 unknown/);
+  h.fake.fail = args => args[0] === 'status';
+  await h.commands.get('pueue').handler('refresh', h.ctx);
+  assert.match(h.widgets.get(key).render(160)[0], /status unavailable/);
+  h.fake.fail = undefined;
+  const original = structuredClone(h.history);
+  h.history = []; await h.events.get('session_tree')({}, h.ctx);
+  assert.equal(h.widgets.has(key), false);
+  h.history = original; h.session = 'fork'; h.file = '/sessions/fork.jsonl'; await h.start();
+  assert.equal(h.widgets.has(key), false);
+  h.session = 'origin'; h.file = '/sessions/origin.jsonl'; await h.start();
+  let release, entered;
+  const entry = new Promise(resolve => entered = resolve);
+  h.fake.hook = args => { if (args[0] === 'status') { entered(); return new Promise(resolve => release = resolve); } };
+  const refreshing = h.commands.get('pueue').handler('refresh', h.ctx); await entry;
+  h.stop(); h.history = []; h.session = 'other'; h.file = '/sessions/other.jsonl';
+  h.fake.hook = undefined; await h.start();
+  release(); await refreshing;
+  assert.equal(h.widgets.has(key), false);
+});
+
+test('non-terminal modes do not install a widget and failed admission remains visibly unresolved', async () => {
+  const h = await harness();
+  h.ctx.mode = 'print';
+  h.ctx.ui.setWidget = () => { throw new Error('terminal UI unavailable'); };
+  await h.submit(); await h.status(); await h.start();
+  assert.equal(h.widgets.size, 0);
+  h.stop();
+  const terminal = await harness();
+  terminal.fake.loseReply = 'add';
+  await assert.rejects(terminal.submit(), /UNKNOWN/);
+  assert.match(terminal.widgets.get('pi-repo.pueue.jobs').render(180)[0], /admission unknown/);
+});
 
 test('literal argv is shell-safe including quotes/newlines/option-looking arguments; no shell expansion', () => {
   const argv = [process.execPath, '-e', 'console.log(JSON.stringify(process.argv.slice(1)))', '--', "a'b", '$(echo expanded)', 'x\ny', '--flag', 'a; false'];
@@ -426,6 +492,7 @@ test('private callback hints validate numeric IDs, never interpolate logs/comman
   await Promise.all(Array.from({ length: 5 }, () => hint(hints, '0')));
   for (let i = 0; i < 30 && !h.messages.length; i++) await delay(20);
   assert.equal(h.messages.length, 1);
+  assert.equal(h.widgets.has('pi-repo.pueue.jobs'), false, 'completion callback removes the last active job');
   await hint(hints, '0'); await delay(200);
   assert.equal(h.messages.length, 1);
   h.stop(); await hint(hints, '0');

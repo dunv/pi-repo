@@ -1,14 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { WIDGET, widgetLines } from "./widget.ts";
 import { noticeText } from "./notice.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
-import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, view, type Job, type Owner } from "./state.ts";
+import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, view, type Job, type JobView, type Owner } from "./state.ts";
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
-type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?: FSWatcher; timer?: ReturnType<typeof setTimeout>; busy: boolean; dirty: boolean; closed: boolean };
+type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?: FSWatcher; timer?: ReturnType<typeof setTimeout>; busy: boolean; dirty: boolean; closed: boolean; expanded: boolean; rows: JobView[]; unavailable: boolean };
 
 /** Injection is deliberately limited to the backend boundary for deterministic tests. */
 export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParameters<typeof Backend>[0]) => new Backend(c)) {
@@ -17,6 +18,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   let active: Active | undefined;
   function stop() {
     if (!active) return;
+    if (active.ctx.mode === "tui") active.ctx.ui.setWidget(WIDGET, undefined);
     active.closed = true;
     active.watcher?.close();
     if (active.timer) clearTimeout(active.timer);
@@ -34,14 +36,27 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       || ctx.sessionManager.getSessionFile() !== a.owner.file) throw new Error("Pueue is unconfigured or this session is no longer active");
     return a;
   }
+  function updateWidget(a: Active, rows: JobView[], unavailable = false) {
+    if (!current(a)) return;
+    a.rows = rows;
+    a.unavailable = unavailable;
+    if (a.ctx.mode !== "tui") return;
+    const lines = widgetLines(rows, a.expanded, unavailable);
+    a.ctx.ui.setWidget(WIDGET, lines ? (_tui, theme) => ({
+      render: (width: number) => lines.map(line => truncateToWidth(theme.fg("muted", line), width)),
+      invalidate() {},
+    }) : undefined, { placement: "aboveEditor" });
+  }
   async function reconcile(a: Active) {
     if (!current(a)) return;
     if (a.busy) { a.dirty = true; return; }
     a.busy = true;
     try {
       const ownedJobs = owned(a);
-      if (!ownedJobs.length) return;
+      if (!ownedJobs.length) { updateWidget(a, []); return; }
       const tasks = await a.backend.tasks();
+      if (!current(a)) return;
+      updateWidget(a, owned(a).map(j => view(j, tasks)));
       for (const j of ownedJobs) {
         if (!bound(a, j)) return;
         const state = view(j, tasks);
@@ -59,6 +74,10 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       }
     } catch {
       // No raw diagnostics, no automatic retry timer. Resume or explicit status reconciles again.
+      if (current(a)) updateWidget(a, owned(a).map(j => {
+        const previous = a.rows.find(row => row.nonce === j.nonce);
+        return previous?.phase === "EXITED" ? previous : view(j, []);
+      }), true);
       if (current(a) && a.ctx.hasUI) a.ctx.ui.notify("Pueue reconciliation unavailable; state remains UNKNOWN. Use pueue_status or resume later.", "warning");
     } finally {
       a.busy = false;
@@ -71,14 +90,17 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     a.timer.unref();
   }
   async function start(ctx: ExtensionContext) {
+    const expanded = active?.owner.session === ctx.sessionManager.getSessionId()
+      && active?.owner.file === ctx.sessionManager.getSessionFile() ? active.expanded : true;
     stop();
     const c = configuration(process.env);
     if (!c) return;
     const file = ctx.sessionManager.getSessionFile();
     if (!file) throw new Error("Pueue requires a persistent Pi session");
     const a: Active = { ctx, backend: makeBackend(c), owner: { session: ctx.sessionManager.getSessionId(), file,
-      anchor: ctx.sessionManager.getLeafId() }, busy: false, dirty: false, closed: false };
+      anchor: ctx.sessionManager.getLeafId() }, busy: false, dirty: false, closed: false, expanded, rows: [], unavailable: false };
     active = a;
+    updateWidget(a, owned(a).map(j => view(j, [])));
     try {
       await a.backend.check();
       if (!current(a)) return;
@@ -98,6 +120,20 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   pi.on("session_tree", (_e, ctx) => start(ctx));
   pi.on("session_shutdown", stop);
 
+  pi.registerCommand("pueue", {
+    description: "Toggle the active Pueue jobs widget; /pueue expand, collapse or refresh",
+    async handler(args, ctx) {
+      const a = requireActive(ctx);
+      const action = args.trim();
+      if (!["", "expand", "collapse", "refresh"].includes(action)) {
+        ctx.ui.notify("Usage: /pueue [expand|collapse|refresh]", "info"); return;
+      }
+      if (action !== "refresh") a.expanded = action === "expand" || (action === "" && !a.expanded);
+      updateWidget(a, a.rows, a.unavailable);
+      await reconcile(a);
+    },
+  });
+
   pi.registerTool({
     name: "pueue_submit", label: "Submit to Pueue", executionMode: "sequential",
     description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. No extra submission popup by default; operators may opt in with PI_PUEUE_CONFIRM_SUBMIT=1. Existing authorization boundaries still apply. Literal argv only; NEVER put secrets in arguments. Ordinary work automatically uses this session's group (2 concurrent jobs, not a global limit). Serialize shared-checkout/build-state mutations and same-PR reviews. No execution deadline/retry. Optional reservationKey permanently reserves a separate one-shot backend group; never use it merely to get concurrency. Concurrency alone does not reject duplicates.",
@@ -115,6 +151,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       if (owned(a).length >= 128) throw new Error("Branch has 128 retained jobs; no evidence is automatically deleted");
       const j = intent({ ...a.owner, anchor: ctx.sessionManager.getLeafId() }, a.backend.config.namespace);
       pi.appendEntry(ENTRY, j); // Durable nonce before backend mutation. Lost replies never cause retries.
+      updateWidget(a, [...a.rows, view(j, [])]);
       try {
         const group = input.reservationKey ? reservation(j.namespace, input.reservationKey) : sessionGroup(j.namespace, a.owner);
         if (input.reservationKey) await a.backend.reserve(group);
@@ -132,6 +169,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
         schedule(a); // Handles completion faster than the add reply or callback watcher setup.
         const tasks = await a.backend.tasks();
         if (!bound(a, j)) throw new Error("Session changed during admission status retrieval");
+        updateWidget(a, owned(a).map(job => view(job, tasks)));
         return result(view(j, tasks));
       } catch {
         throw new Error(`Admission may be UNKNOWN. Saved nonce: ${j.nonce}. Do not resubmit/retry automatically; reconcile from the originating session.`);
@@ -146,7 +184,9 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     async execute(_id, input, _signal, _update, ctx) {
       const a = requireActive(ctx), tasks = await a.backend.tasks();
       if (!current(a)) throw new Error("Session changed");
-      const rows = filterViews(owned(a).map(j => view(j, tasks)), input);
+      const allRows = owned(a).map(j => view(j, tasks));
+      updateWidget(a, allRows);
+      const rows = filterViews(allRows, input);
       schedule(a); // Explicit status also reconciles a lost callback; no polling.
       return result(rows);
     },
@@ -166,6 +206,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       catch { throw new Error("Backend log unavailable; evidence not deleted by extension"); }
       const latest = matching(j, await a.backend.tasks());
       if (!latest || !bound(a, j)) throw new Error("Task identity changed during log read; result withheld");
+      updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? view(j, [latest]) : row), a.unavailable);
       return result({ status: view(j, [latest]), log });
     },
   });
@@ -180,6 +221,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       // Persist intent BEFORE signalling, even if a handler subsequently exits zero or the reply is lost.
       const next = { ...j, cancellationRequested: true };
       pi.appendEntry(ENTRY, next);
+      updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? { ...row, cancellationRequested: true } : row), a.unavailable);
       const task = matching(j, await a.backend.tasks());
       if (!task || !["RUNNING", "PAUSED"].includes(task.phase) || !bound(a, j)) {
         ctx.ui.notify("No verified running task; cancellation intent recorded, no signal sent. State may be UNKNOWN.", "warning"); return;

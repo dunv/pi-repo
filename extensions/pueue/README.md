@@ -12,6 +12,43 @@
 
 Backend exit 0 is **not** green CI, a full clean review, successful publication or permission to merge. No review timeout, elapsed cap, retry, takeover, automatic paid work, model/effort/depth changes, or repo-specific PR policy exists here.
 
+## Active jobs widget (terminal UI)
+
+An above-editor widget appears automatically when this session's **active branch**
+has unresolved owned jobs, including separately reserved jobs. It starts expanded:
+
+```text
+▾ Pueue: 1 running · 2 queued · /pueue collapse
+  #16 · RUNNING · 01234567
+  #17 · QUEUED · 12345678
+  #18 · QUEUED · 23456789
+```
+
+- `/pueue` toggles details; `/pueue expand` and `/pueue collapse` explicitly choose
+  the view. Collapsed mode retains only the summary. The choice survives tree/resume
+  within the loaded session runtime, not a process restart/reload.
+- `/pueue refresh` queries authoritative state without changing expansion. These
+  commands do not send a user prompt or ask the model to inspect the widget. As with
+  existing reconciliation, discovering an unseen completion can still trigger the
+  normal completion follow-up.
+- The widget disappears when every visible job is confirmed `EXITED`, and clears on
+  shutdown, session replacement or navigation to a branch without owned jobs.
+  `UNKNOWN`/`ADMISSION_UNKNOWN` are unresolved, **not finished**, and remain visible.
+  Backend query failure explicitly shows uncertainty/status unavailable; it does not
+  silently report idle or retain a running claim. Previously observed exits are not
+  resurrected by that failure.
+- Submission, status/log reads, cancellation intent, callbacks and resume/tree
+  reconciliation update the display. No polling timer or model polling loop is added;
+  without callbacks, use `/pueue refresh` for backend changes while idle. Queued-to-running
+  transitions without a completion hint may also need an explicit refresh.
+- Details show up to six active job rows plus an overflow count, backend IDs, short
+  display-only nonce prefixes and cancellation intent. Full nonces remain mandatory
+  for identity-bound operations. No commands, paths, environment, log content or raw
+  diagnostics are rendered. Width is bounded with Pi's terminal utilities. The widget
+  is terminal-only and never enters model context; non-terminal tools remain unchanged.
+
+This is a source change, not an installed-plugin activation or a daemon change.
+
 ## Compact output contracts / interface audit
 
 Submission replies, status rows and completion messages share this shape:
