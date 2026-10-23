@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { noticeText } from "./notice.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
-import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, view, type Job, type Owner } from "./state.ts";
+import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, view, type Job, type Owner } from "./state.ts";
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
@@ -100,7 +100,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
 
   pi.registerTool({
     name: "pueue_submit", label: "Submit to Pueue", executionMode: "sequential",
-    description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. No extra submission popup by default; operators may opt in with PI_PUEUE_CONFIRM_SUBMIT=1. Existing authorization boundaries still apply. Literal argv only; NEVER put secrets in arguments. No execution deadline/retry. Optional reservationKey permanently reserves a backend group; concurrency alone does not reject duplicates.",
+    description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. No extra submission popup by default; operators may opt in with PI_PUEUE_CONFIRM_SUBMIT=1. Existing authorization boundaries still apply. Literal argv only; NEVER put secrets in arguments. Ordinary work automatically uses this session's group (2 concurrent jobs, not a global limit). Serialize shared-checkout/build-state mutations and same-PR reviews. No execution deadline/retry. Optional reservationKey permanently reserves a separate one-shot backend group; never use it merely to get concurrency. Concurrency alone does not reject duplicates.",
     parameters: Type.Object({ argv: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }), cwd: Type.String(),
       reservationKey: Type.Optional(Type.String({ maxLength: 1024 })) }),
     async execute(_id, input, signal, _update, ctx) {
@@ -116,8 +116,9 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       const j = intent({ ...a.owner, anchor: ctx.sessionManager.getLeafId() }, a.backend.config.namespace);
       pi.appendEntry(ENTRY, j); // Durable nonce before backend mutation. Lost replies never cause retries.
       try {
-        const group = input.reservationKey ? reservation(j.namespace, input.reservationKey) : undefined;
-        if (group) await a.backend.reserve(group);
+        const group = input.reservationKey ? reservation(j.namespace, input.reservationKey) : sessionGroup(j.namespace, a.owner);
+        if (input.reservationKey) await a.backend.reserve(group);
+        else await a.backend.sessionGroup(group);
         if (!bound(a, j)) throw new Error("Session changed before submission");
         const id = await a.backend.add(input.argv, input.cwd, j.label, group);
         const task = matching({ ...j, id }, await a.backend.tasks());

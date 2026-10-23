@@ -14,6 +14,12 @@ export function intent(owner: Owner, namespace: string): Job {
   const nonce = randomUUID();
   return { ...owner, namespace, nonce, label: `pi:${namespace}:${nonce}` };
 }
+/** Stable across reload/tree navigation, distinct for forks and session-file copies.
+ * No paths, prompts or caller-controlled group names reach the backend. */
+export function sessionGroup(namespace: string, owner: Owner): string {
+  const key = JSON.stringify([owner.session, owner.file]);
+  return `pi-session-${namespace}-${createHash("sha256").update(key).digest("hex")}`;
+}
 export function reservation(namespace: string, key: string): string {
   if (!key || key.length > 1024) throw new Error("Invalid reservation key");
   return `pi-${namespace}-${createHash("sha256").update(key).digest("hex")}`;

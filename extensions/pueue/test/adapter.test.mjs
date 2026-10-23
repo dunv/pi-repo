@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Backend, project, command, minimalEnvironment, runner, configuration, sliceLog, privateDirectory } from '../backend.ts';
-import { ENTRY, NOTICE, RECEIPT, jobs, matching, view } from '../state.ts';
+import { ENTRY, NOTICE, RECEIPT, jobs, matching, sessionGroup, view } from '../state.ts';
 import { extension } from '../index.ts';
 import { hint } from '../callback.mjs';
 
@@ -21,7 +21,7 @@ async function fixture() {
   return { dir, config };
 }
 class Fake {
-  tasks = {}; calls = []; groups = new Set(); next = 0; fail; hook; loseReply;
+  tasks = {}; calls = []; groups = new Map(); next = 0; fail; hook; loseReply;
   async run(args) {
     this.calls.push(structuredClone(args));
     await this.hook?.(args);
@@ -29,20 +29,28 @@ class Fake {
     if (args[0] === '--version') return 'pueue 4.0.4\n';
     if (args[0] === 'status') return JSON.stringify({ tasks: this.tasks, envs: { OTHER_SECRET: 'must-not-escape' } });
     if (args[0] === 'group') {
+      if (args[1] === '--json') return JSON.stringify(Object.fromEntries(this.groups));
+      assert.equal(args[1], 'add');
       const name = args.at(-1);
       if (this.groups.has(name)) return `Group "${name}" already exists`;
-      this.groups.add(name); return `New group "${name}" has been created`;
+      this.groups.set(name, { status: 'Running', parallel_tasks: Number(args[args.indexOf('--parallel') + 1]) });
+      return `New group "${name}" has been created`;
     }
     if (args[0] === 'add') {
       const id = this.next++;
       this.tasks[id] = { id, created_at: `2026-10-22T12:00:${String(id).padStart(2, '0')}+00:00`,
+        group: args[args.indexOf('--group') + 1],
         label: args[args.indexOf('--label') + 1], envs: { SECRET: 'must-not-escape' },
         command: 'secret-command', status: { Stashed: { enqueue_at: null } } };
       if (this.loseReply === 'add') throw new Error('SECRET lost admission reply');
       return `${id}\n`;
     }
     if (args[0] === 'enqueue') {
-      this.tasks[args[1]].status = { Running: { start: 'now' } };
+      const task = this.tasks[args[1]], group = this.groups.get(task.group);
+      assert.ok(group, 'every submission explicitly selects an existing group');
+      const running = Object.values(this.tasks).filter(t => t.group === task.group && t.status.Running).length;
+      task.status = running < group.parallel_tasks && group.status === 'Running'
+        ? { Running: { start: 'now' } } : { Queued: {} };
       if (this.loseReply === 'enqueue') throw new Error('SECRET lost enqueue reply');
     }
     if (args[0] === 'kill') this.finish(Number(args.at(-1)), 'Success'); // SIGTERM handler can exit zero!
@@ -223,6 +231,68 @@ test('lost admission/enqueue replies and restart never re-admit; stashed evidenc
     if (point === 'enqueue') assert.ok(afterMutation ? h.fake.tasks[0].status.Running : h.fake.tasks[0].status.Stashed);
     if (point === 'add' && afterMutation) assert.ok(h.fake.tasks[0].status.Stashed);
   }
+});
+
+test('ordinary work uses a stable private session group with two slots, never default or caller-selected groups', async () => {
+  const h = await harness();
+  const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
+  assert.match(group, /^pi-session-[a-f0-9-]+$/);
+  assert.doesNotMatch(group, /origin|sessions/);
+  await h.submit(); await h.submit(); await h.submit();
+  assert.deepEqual((await h.status()).map(s => s.phase), ['RUNNING', 'RUNNING', 'QUEUED']);
+  assert.equal(h.fake.groups.size, 1);
+  assert.deepEqual(h.fake.groups.get(group), { status: 'Running', parallel_tasks: 2 });
+  assert.ok(Object.values(h.fake.tasks).every(t => t.group === group));
+  assert.equal(h.fake.calls.filter(a => a[0] === 'group' && a[1] === 'add').length, 1);
+  await h.start();
+  // Tree branches share the session budget even when they cannot see old jobs.
+  h.history = []; await h.events.get('session_tree')({}, h.ctx); await h.submit();
+  assert.equal(h.fake.tasks[3].group, group);
+  assert.equal(h.fake.tasks[3].status.Queued !== undefined, true);
+  h.session = 'another-session'; h.file = '/sessions/another.jsonl'; h.history = [];
+  await h.start(); await h.submit();
+  assert.notEqual(h.fake.tasks[4].group, group);
+  assert.equal((await h.status())[0].phase, 'RUNNING', 'another session is not blocked by this one');
+  assert.equal(h.fake.groups.size, 2);
+  assert.notEqual(sessionGroup(ns, { session: 'origin', file: '/copy.jsonl', anchor: null }), group);
+  assert.notEqual(sessionGroup('other-namespace', { session: 'origin', file: '/sessions/origin.jsonl', anchor: null }), group);
+  assert.equal(sessionGroup(ns, { session: 'origin', file: '/sessions/origin.jsonl', anchor: 'other-branch' }), group);
+  assert.match(h.tools.get('pueue_submit').description, /2 concurrent jobs, not a global limit/);
+});
+
+test('session groups fail closed on unexpected state or lost creation replies, never reset limits or enqueue work', async () => {
+  for (const mode of ['malformed', 'bad-schema', 'wrong-limit', 'bad-status', 'lost-reply', 'refused']) {
+    const h = await harness();
+    const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
+    if (mode === 'wrong-limit') h.fake.groups.set(group, { status: 'Running', parallel_tasks: 4 });
+    if (mode === 'bad-status') h.fake.groups.set(group, { status: 'Unknown', parallel_tasks: 2 });
+    const run = h.fake.run.bind(h.fake);
+    h.fake.run = async args => {
+      if (args[0] === 'group' && args[1] === '--json' && mode === 'malformed') return 'SECRET invalid';
+      if (args[0] === 'group' && args[1] === '--json' && mode === 'bad-schema') return '[]';
+      if (args[0] === 'group' && args[1] === 'add' && mode === 'refused') return 'SECRET refused';
+      const reply = await run(args);
+      if (args[0] === 'group' && args[1] === 'add' && mode === 'lost-reply') throw new Error('SECRET lost reply');
+      return reply;
+    };
+    await assert.rejects(h.submit(), e => /UNKNOWN/.test(String(e)) && !/SECRET/.test(String(e)));
+    await h.start();
+    assert.equal(h.fake.calls.filter(a => a[0] === 'add' || a[0] === 'enqueue' || a[0] === 'parallel').length, 0);
+    assert.equal((await h.status())[0].phase, 'ADMISSION_UNKNOWN');
+    assert.ok(h.fake.calls.filter(a => a[0] === 'group' && a[1] === 'add').length <= 1);
+  }
+});
+
+test('an existing paused session group stays paused, and legacy default-group jobs are never moved', async () => {
+  const h = await harness();
+  const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
+  h.fake.groups.set(group, { status: 'Paused', parallel_tasks: 2 });
+  h.fake.tasks[99] = { id: 99, group: 'default', created_at: '2026-10-22T00:00:00Z', label: 'legacy', status: { Queued: {} } };
+  await h.submit();
+  assert.equal((await h.status())[0].phase, 'QUEUED');
+  assert.deepEqual(h.fake.groups.get(group), { status: 'Paused', parallel_tasks: 2 });
+  assert.equal(h.fake.tasks[99].group, 'default');
+  assert.equal(h.fake.calls.filter(a => ['switch', 'parallel', 'start', 'restart', 'remove'].includes(a[0])).length, 0);
 });
 
 test('backend-owned duplicate reservations reject a second paid pass, including another session; no reservation cleanup/takeover', async () => {

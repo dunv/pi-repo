@@ -30,7 +30,7 @@ test('lost post-mutation add reply retains backend evidence and does not retry o
     if (args[0] === 'add') { added++; throw new Error('Lost reply after backend mutation'); }
     return '{}';
   });
-  await assert.rejects(b.add(['/bin/true'], '/repo', 'controlled-nonce-label'));
+  await assert.rejects(b.add(['/bin/true'], '/repo', 'controlled-nonce-label', 'session-group'));
   assert.equal(added, 1);
   // No recovery engine/timer exists in Backend; policy reconstructs the intent as UNKNOWN.
 });

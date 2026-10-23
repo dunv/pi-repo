@@ -92,10 +92,31 @@ export class Backend {
     const reply = await this.run(["group", "add", "--parallel", "1", group]);
     if (reply.trim() !== `New group "${group}" has been created`) throw new Error("Reservation refused or uncertain; no automatic retry or takeover");
   }
-  async add(argv: string[], cwd: string, label: string, group?: string): Promise<number> {
+  /** Ordinary submissions reuse a session group; never change an existing limit
+   * or status (an operator may have deliberately paused/reconfigured it). */
+  async sessionGroup(group: string) {
+    const inspect = async () => {
+      let groups: unknown;
+      try { groups = JSON.parse(await this.run(["group", "--json"])); }
+      catch { throw new Error("Session group state unavailable; no default-group fallback"); }
+      if (!object(groups)) throw new Error("Invalid Pueue group schema");
+      if (!Object.hasOwn(groups, group)) return false;
+      const entry = groups[group];
+      if (!object(entry) || entry.parallel_tasks !== 2 || !["Running", "Paused"].includes(String(entry.status))) {
+        throw new Error("Session group configuration differs; operator investigation required");
+      }
+      return true;
+    };
+    if (await inspect()) return;
+    const reply = await this.run(["group", "add", "--parallel", "2", group]);
+    if (reply.trim() !== `New group "${group}" has been created` || !await inspect()) {
+      throw new Error("Session group creation refused or uncertain; no automatic retry or default-group fallback");
+    }
+  }
+  async add(argv: string[], cwd: string, label: string, group: string): Promise<number> {
     if (!isAbsolute(cwd)) throw new Error("cwd must be absolute");
     const output = await this.run(["add", "--stashed", "--print-task-id", "--working-directory", cwd,
-      "--label", label, ...(group ? ["--group", group] : []), "--", command(argv)]);
+      "--label", label, "--group", group, "--", command(argv)]);
     if (!/^\d+\s*$/.test(output) || !Number.isSafeInteger(Number(output))) throw new Error("Admission UNKNOWN; reconcile the saved nonce, do not resubmit");
     return Number(output);
   }
