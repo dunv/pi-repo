@@ -1,8 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { MouseRegion, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { WIDGET, widgetLines } from "./widget.ts";
 import { noticeText } from "./notice.ts";
+import { commandPreview, displayLiteral, displayState, statusLabel, submission, submissionDetails, submissionFor } from "./presentation.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
 import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, view, type Job, type JobView, type Owner } from "./state.ts";
@@ -13,9 +14,27 @@ type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?:
 
 /** Injection is deliberately limited to the backend boundary for deterministic tests. */
 export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParameters<typeof Backend>[0]) => new Backend(c)) {
-  pi.registerMessageRenderer(NOTICE, (message, options, theme) =>
-    new Text(theme.fg("muted", noticeText(message.content, options.expanded)), options.outputPad, 0));
   let active: Active | undefined;
+  pi.registerMessageRenderer(NOTICE, (message, options, theme) => {
+    let expanded = options.expanded;
+    const state = displayState(message.content);
+    const component = {
+      render(width: number) {
+        const input = active && current(active) ? submissionFor(active.ctx.sessionManager.getBranch(), state.nonce) : undefined;
+        const [heading, ...details] = noticeText(message.content, expanded, input).split("\n");
+        const label = statusLabel(state);
+        const text = theme.fg(label.ink, `${expanded ? "▾" : "▸"} ${heading}`)
+          + (details.length ? `\n${theme.fg("muted", details.join("\n"))}` : "");
+        return new Text(text, options.outputPad, 0).render(width);
+      },
+      invalidate() {},
+    };
+    return new MouseRegion(component, event => {
+      if (event.type !== "click" || event.button !== "left" || event.y !== 0) return;
+      expanded = !expanded;
+      return { handled: true, render: true };
+    });
+  });
   function stop() {
     if (!active) return;
     if (active.ctx.mode === "tui") active.ctx.ui.setWidget(WIDGET, undefined);
@@ -137,6 +156,28 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   pi.registerTool({
     name: "pueue_submit", label: "Submit to Pueue", executionMode: "sequential",
     description: "Submit explicit authorized work to Pueue 4.0.4, not a review policy or permission grant. No extra submission popup by default; operators may opt in with PI_PUEUE_CONFIRM_SUBMIT=1. Existing authorization boundaries still apply. Literal argv only; NEVER put secrets in arguments. Ordinary work automatically uses this session's group (2 concurrent jobs, not a global limit). Serialize shared-checkout/build-state mutations and same-PR reviews. No execution deadline/retry. Optional reservationKey permanently reserves a separate one-shot backend group; never use it merely to get concurrency. Concurrency alone does not reject duplicates.",
+    renderShell: "self",
+    renderCall(args, theme, context) {
+      const input = submission(args);
+      return {
+        render: (width: number) => new Text(theme.fg("muted", truncateToWidth(`Pueue · ${input ? commandPreview(input) : "preparing submission…"}`, Math.max(1, width - 2 * context.outputPad))), context.outputPad, 0).render(width),
+        invalidate() {},
+      };
+    },
+    renderResult(reply, options, theme, context) {
+      const state = displayState(reply.content);
+      const input = submission(context.args);
+      const label = statusLabel(state);
+      const heading = context.isError ? "? Pueue · Submission not confirmed" : options.isPartial ? "◷ Pueue · Submitting…" : label.text;
+      const details = options.expanded ? [
+        ...(input ? submissionDetails(input) : ["Submission details unavailable."]),
+        ...(typeof state.nonce === "string" && /^[a-f0-9-]{36}$/.test(state.nonce) ? [`Job nonce: ${state.nonce}`] : []),
+      ] : [];
+      // Error diagnostics from the adapter remain visible (quoted to escape controls).
+      if (context.isError) for (const block of reply.content) if (block.type === "text") details.push(displayLiteral(block.text));
+      return new Text(theme.fg(context.isError ? "warning" : options.isPartial ? "muted" : label.ink, `${options.expanded ? "▾" : "▸"} ${heading}`)
+        + (details.length ? `\n${theme.fg("muted", details.join("\n"))}` : ""), context.outputPad, 0);
+    },
     parameters: Type.Object({ argv: Type.Array(Type.String(), { minItems: 1, maxItems: 256 }), cwd: Type.String(),
       reservationKey: Type.Optional(Type.String({ maxLength: 1024 })) }),
     async execute(_id, input, signal, _update, ctx) {
