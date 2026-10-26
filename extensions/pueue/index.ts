@@ -264,27 +264,47 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       return result({ status: view(j, [latest]), log });
     },
   });
-  // Deliberately not model-callable: only a user command plus confirmation requests SIGTERM.
+  async function cancel(nonce: string, ctx: ExtensionContext, signal?: AbortSignal) {
+    const a = requireActive(ctx), j = owned(a).find(j => j.nonce === nonce);
+    if (!j || j.id === undefined || !j.created || !j.admitted) throw new Error("No fully admitted job identity owned by this session branch; state UNKNOWN");
+    const check = () => {
+      if (!bound(a, j) || signal?.aborted) throw new Error("Cancellation interrupted: session changed or tool cancelled; no automatic retry");
+    };
+    check();
+    if (!ctx.hasUI || !await ctx.ui.confirm("Request SIGTERM?", `${j.nonce}\nThis does not prove stopped or prevent partial publication. No escalation.`)) return;
+    check();
+    // Persist intent BEFORE signalling, even if a handler subsequently exits zero or the reply is lost.
+    const next = { ...j, cancellationRequested: true };
+    pi.appendEntry(ENTRY, next);
+    updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? { ...row, cancellationRequested: true } : row), a.unavailable);
+    const tasks = await a.backend.tasks();
+    check();
+    const task = matching(j, tasks);
+    if (!task || !["RUNNING", "PAUSED"].includes(task.phase)) {
+      ctx.ui.notify("No verified running task; cancellation intent recorded, no signal sent. State may be UNKNOWN.", "warning");
+      return { ...view(next, tasks), signalRequested: false };
+    }
+    try { await a.backend.term(task.id); }
+    catch { throw new Error(`SIGTERM outcome UNKNOWN. Saved nonce: ${j.nonce}. Do not retry automatically; reconcile status.`); }
+    if (!bound(a, j)) throw new Error("Session changed after SIGTERM request; outcome UNKNOWN. Do not retry automatically");
+    ctx.ui.notify("SIGTERM requested. Stopping/completion and publication remain unverified.", "warning");
+    schedule(a);
+    return { nonce: j.nonce, id: j.id, cancellationRequested: true, signalRequested: true };
+  }
+  pi.registerTool({
+    name: "pueue_cancel", label: "Request Pueue cancellation", executionMode: "sequential",
+    description: "Request SIGTERM for a full-nonce job owned by this session branch. Requires explicit user confirmation in a UI-capable session. Only verified, fully admitted running/paused jobs can be signalled; no queued/stashed/uncertain cancellation, force-kill, escalation or automatic retry. Intent or signal acknowledgement does not prove descendants stopped or publication absent. Read status separately for completion.",
+    parameters: Type.Object({ nonce: Type.String({ minLength: 1 }) }),
+    annotations: { readOnlyHint: false, destructiveHint: true },
+    async execute(_id, input, signal, _update, ctx) {
+      const outcome = await cancel(input.nonce, ctx, signal);
+      if (!outcome) throw new Error("Cancellation requires explicit user confirmation in a UI-capable session; no signal sent");
+      return result(outcome);
+    },
+  });
   pi.registerCommand("pueue-cancel", {
     description: "Explicitly request SIGTERM for an owned running job by nonce; never escalates or assumes stopped",
-    async handler(args, ctx) {
-      const a = requireActive(ctx), j = owned(a).find(j => j.nonce === args.trim());
-      if (!j || j.id === undefined || !j.created || !j.admitted) throw new Error("No fully admitted job identity owned by this session branch; state UNKNOWN");
-      if (!ctx.hasUI || !await ctx.ui.confirm("Request SIGTERM?", `${j.nonce}\nThis does not prove stopped or prevent partial publication. No escalation.`)) return;
-      if (!bound(a, j)) return;
-      // Persist intent BEFORE signalling, even if a handler subsequently exits zero or the reply is lost.
-      const next = { ...j, cancellationRequested: true };
-      pi.appendEntry(ENTRY, next);
-      updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? { ...row, cancellationRequested: true } : row), a.unavailable);
-      const task = matching(j, await a.backend.tasks());
-      if (!task || !["RUNNING", "PAUSED"].includes(task.phase) || !bound(a, j)) {
-        ctx.ui.notify("No verified running task; cancellation intent recorded, no signal sent. State may be UNKNOWN.", "warning"); return;
-      }
-      await a.backend.term(task.id);
-      if (!bound(a, j)) return;
-      ctx.ui.notify("SIGTERM requested. Stopping/completion and publication remain unverified.", "warning");
-      schedule(a);
-    },
+    async handler(args, ctx) { await cancel(args.trim(), ctx); },
   });
 }
 export default extension;

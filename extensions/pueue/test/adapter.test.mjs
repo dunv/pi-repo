@@ -281,7 +281,69 @@ test('explicit cancellation uses SIGTERM only, persists intent even when handler
   assert.equal(state.cancellationRequested, true); assert.equal('publication' in state, false);
   await h.cancel(); // Already exited: intent remains, no second signal.
   assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 1);
-  assert.equal(h.tools.has('pueue_cancel'), false);
+  assert.equal(h.tools.has('pueue_cancel'), true);
+});
+
+test('model cancellation shares confirmation and SIGTERM-only intent safeguards', async () => {
+  const h = await harness(); await h.submit();
+  const cancel = () => h.call('pueue_cancel', { nonce: h.job().nonce });
+  h.hasUI = false;
+  await assert.rejects(cancel(), /confirmation/);
+  h.hasUI = true; h.confirm = false;
+  await assert.rejects(cancel(), /confirmation/);
+  assert.equal(h.job().cancellationRequested, undefined);
+  assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0);
+  h.confirm = true;
+  h.fake.tasks[0].status = { Paused: {} };
+  h.fake.hook = args => { if (args[0] === 'kill') assert.equal(h.job().cancellationRequested, true); };
+  const reply = JSON.parse((await cancel()).content[0].text);
+  assert.deepEqual(reply, { nonce: h.job().nonce, id: 0, cancellationRequested: true, signalRequested: true });
+  assert.deepEqual(h.fake.calls.filter(a => a[0] === 'kill'), [['kill', '--signal', 'SIGTERM', '0']]);
+  const again = JSON.parse((await cancel()).content[0].text);
+  assert.equal(again.signalRequested, false);
+  assert.equal(again.phase, 'EXITED'); assert.equal(again.exitCode, 0);
+  assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 1);
+});
+
+test('model cancellation rejects prefixes, foreign branches and uncertain admission; never signals queued or reused tasks', async () => {
+  for (const mode of ['prefix', 'foreign', 'admission', 'queued', 'stashed', 'missing', 'reused']) {
+    const h = await harness(); await h.submit();
+    let nonce = h.job().nonce;
+    if (mode === 'prefix') nonce = nonce.slice(0, 8);
+    if (mode === 'foreign') { h.history = []; await h.start(); }
+    if (mode === 'admission') h.history.filter(e => e.customType === ENTRY).at(-1).data.admitted = false;
+    if (mode === 'queued') h.fake.tasks[0].status = { Queued: {} };
+    if (mode === 'stashed') h.fake.tasks[0].status = { Stashed: {} };
+    if (mode === 'missing') delete h.fake.tasks[0];
+    if (mode === 'reused') h.fake.tasks[0].created_at = '2026-10-23T00:00:00Z';
+    const call = () => h.call('pueue_cancel', { nonce });
+    if (['prefix', 'foreign', 'admission'].includes(mode)) {
+      await assert.rejects(call(), /UNKNOWN/);
+      assert.equal(h.confirmations, 0);
+    } else {
+      const reply = JSON.parse((await call()).content[0].text);
+      assert.equal(reply.signalRequested, false);
+      assert.equal(reply.cancellationRequested, true);
+    }
+    assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, 0, mode);
+  }
+});
+
+test('model cancellation rechecks abort and branch binding after confirmation and status; lost signal reply never retries', async () => {
+  for (const point of ['before', 'confirmation', 'status', 'branch', 'lost-reply']) {
+    const h = await harness(); await h.submit();
+    const nonce = h.job().nonce, controller = new AbortController();
+    if (point === 'before') controller.abort();
+    if (point === 'confirmation') h.ctx.ui.confirm = async () => { controller.abort(); return true; };
+    h.fake.hook = args => {
+      if (args[0] === 'status' && point === 'status') controller.abort();
+      if (args[0] === 'status' && point === 'branch') h.history = [];
+      if (args[0] === 'kill' && point === 'lost-reply') throw new Error('SECRET lost signal reply');
+    };
+    await assert.rejects(h.call('pueue_cancel', { nonce }, controller.signal), e => !String(e).includes('SECRET'));
+    assert.equal(h.fake.calls.filter(a => a[0] === 'kill').length, point === 'lost-reply' ? 1 : 0);
+    if (point === 'lost-reply') assert.equal(h.job().cancellationRequested, true);
+  }
 });
 
 test('lost admission/enqueue replies and restart never re-admit; stashed evidence remains; errors exclude backend diagnostics', async () => {
