@@ -51,10 +51,17 @@ export function project(text: string): Task[] {
   try { state = JSON.parse(text); } catch { throw new Error("Invalid Pueue status response"); }
   if (!object(state) || !object(state.tasks)) throw new Error("Invalid Pueue state schema");
   const tasks: Task[] = [];
-  for (const raw of Object.values(state.tasks)) {
+  const ids = new Set<number>();
+  for (const [key, raw] of Object.entries(state.tasks)) {
+    // Never turn a partially parsed snapshot into apparent backend cleanup.
+    // Unlabelled human tasks are valid, but malformed identities fail the whole query.
     if (!object(raw) || !Number.isSafeInteger(raw.id) || Number(raw.id) < 0
+      || key !== String(raw.id) || ids.has(Number(raw.id))
       || typeof raw.created_at !== "string" || !Number.isFinite(Date.parse(raw.created_at))
-      || typeof raw.label !== "string" || !object(raw.status)) continue;
+      || !(raw.label === null || typeof raw.label === "string") || !object(raw.status)) {
+      throw new Error("Invalid Pueue task schema");
+    }
+    ids.add(Number(raw.id));
     let phase = "UNKNOWN", exitCode: number | undefined;
     for (const key of ["Stashed", "Queued", "Running", "Paused", "Locked"]) {
       if (object(raw.status[key])) phase = key.toUpperCase();
@@ -67,7 +74,7 @@ export function project(text: string): Task[] {
       }
       // Killed may be synthetic restore state. Other failures do not establish process termination.
     }
-    tasks.push({ id: Number(raw.id), created: raw.created_at, label: raw.label, phase, ...(exitCode === undefined ? {} : { exitCode }) });
+    tasks.push({ id: Number(raw.id), created: raw.created_at, label: raw.label ?? "", phase, ...(exitCode === undefined ? {} : { exitCode }) });
   }
   return tasks;
 }

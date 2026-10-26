@@ -52,10 +52,15 @@ export function view(job: Job, tasks: Task[]) {
   };
 }
 export type JobView = ReturnType<typeof view>;
+/** A successful complete snapshot defines the current list, not historical intent.
+ * Absence says nothing about completion, descendants, publication or retry safety. */
+export function trackedViews(owned: readonly Job[], tasks: Task[]): JobView[] {
+  return owned.filter(job => matching(job, tasks)).map(job => view(job, tasks));
+}
 export type StatusFilter = { nonce?: string; state?: "all" | "active" | "finished" };
 /** UNKNOWN is unresolved, not finished; active filters must retain uncertainty. */
-export function filterViews(rows: JobView[], filter: StatusFilter): JobView[] {
-  if (filter.nonce && !rows.some(row => row.nonce === filter.nonce)) throw new Error("Nonce not owned by this session branch");
+export function filterViews(rows: JobView[], filter: StatusFilter, owned: readonly { nonce: string }[] = rows): JobView[] {
+  if (filter.nonce && !owned.some(row => row.nonce === filter.nonce)) throw new Error("Nonce not owned by this session branch");
   return rows.filter(row => (!filter.nonce || row.nonce === filter.nonce)
     && (filter.state === "active" ? row.phase !== "EXITED" : filter.state === "finished" ? row.phase === "EXITED" : true));
 }

@@ -7,7 +7,7 @@ import { logPresentation } from "./log-presentation.ts";
 import { commandPreview, displayLiteral, displayState, statusLabel, submission, submissionDetails, submissionFor } from "./presentation.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
-import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, view, type Job, type JobView, type Owner } from "./state.ts";
+import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, trackedViews, view, type Job, type JobView, type Owner } from "./state.ts";
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
@@ -67,6 +67,12 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       invalidate() {},
     }) : undefined, { placement: "aboveEditor" });
   }
+  function unavailable(a: Active) {
+    // Retain only the current list: a query failure must not resurrect cleaned history.
+    updateWidget(a, a.rows.map(row => row.phase === "EXITED" ? row : {
+      ...row, phase: row.phase === "ADMISSION_UNKNOWN" ? row.phase : "UNKNOWN",
+    }), true);
+  }
   async function reconcile(a: Active) {
     if (!current(a)) return;
     if (a.busy) { a.dirty = true; return; }
@@ -76,9 +82,10 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       if (!ownedJobs.length) { updateWidget(a, []); return; }
       const tasks = await a.backend.tasks();
       if (!current(a)) return;
-      updateWidget(a, owned(a).map(j => view(j, tasks)));
+      updateWidget(a, trackedViews(owned(a), tasks));
       for (const j of ownedJobs) {
         if (!bound(a, j)) return;
+        if (!matching(j, tasks)) continue; // Backend cleanup is not an UNKNOWN/completion notice.
         const state = view(j, tasks);
         if (!["EXITED", "UNKNOWN", "ADMISSION_UNKNOWN"].includes(state.phase)) continue;
         // Preserve v1 keys across compact-payload upgrades; omission still means false.
@@ -94,10 +101,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       }
     } catch {
       // No raw diagnostics, no automatic retry timer. Resume or explicit status reconciles again.
-      if (current(a)) updateWidget(a, owned(a).map(j => {
-        const previous = a.rows.find(row => row.nonce === j.nonce);
-        return previous?.phase === "EXITED" ? previous : view(j, []);
-      }), true);
+      if (current(a)) unavailable(a);
       if (current(a) && a.ctx.hasUI) a.ctx.ui.notify("Pueue reconciliation unavailable; state remains UNKNOWN. Use pueue_status or resume later.", "warning");
     } finally {
       a.busy = false;
@@ -211,7 +215,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
         schedule(a); // Handles completion faster than the add reply or callback watcher setup.
         const tasks = await a.backend.tasks();
         if (!bound(a, j)) throw new Error("Session changed during admission status retrieval");
-        updateWidget(a, owned(a).map(job => view(job, tasks)));
+        updateWidget(a, trackedViews(owned(a), tasks));
         return result(view(j, tasks));
       } catch {
         throw new Error(`Admission may be UNKNOWN. Saved nonce: ${j.nonce}. Do not resubmit/retry automatically; reconcile from the originating session.`);
@@ -220,15 +224,19 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   });
   pi.registerTool({
     name: "pueue_status", label: "Pueue status", executionMode: "sequential",
-    description: "Read this session branch's backend job states; optionally filter by full nonce or state (default all). Active includes UNKNOWN/ADMISSION_UNKNOWN; finished means EXITED only. Exit 0 is not CI/review/publication success or merge permission; omitted verification fields remain unverified. Cancellation is intent, not proof descendants stopped. UNKNOWN never permits automatic retry/takeover. No model polling/sleep loops; callbacks/resume reconcile. No raw environments/commands.",
+    description: "Read this session branch's currently backend-tracked job states; optionally filter by full nonce or state (default all). Successfully queried absent identities are omitted (an owned absent nonce returns []); history is retained, absence is not completion or retry permission. Active includes UNKNOWN/ADMISSION_UNKNOWN; finished means EXITED only. Exit 0 is not CI/review/publication success or merge permission; omitted verification fields remain unverified. Cancellation is intent, not proof descendants stopped. UNKNOWN never permits automatic retry/takeover. No model polling/sleep loops; callbacks/resume reconcile. No raw environments/commands.",
     parameters: Type.Object({ nonce: Type.Optional(Type.String({ minLength: 1 })),
       state: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("active"), Type.Literal("finished")])) }), annotations: { readOnlyHint: true },
     async execute(_id, input, _signal, _update, ctx) {
-      const a = requireActive(ctx), tasks = await a.backend.tasks();
+      const a = requireActive(ctx);
+      let tasks;
+      try { tasks = await a.backend.tasks(); }
+      catch (error) { if (current(a)) unavailable(a); throw error; }
       if (!current(a)) throw new Error("Session changed");
-      const allRows = owned(a).map(j => view(j, tasks));
+      const ownedJobs = owned(a);
+      const allRows = trackedViews(ownedJobs, tasks);
       updateWidget(a, allRows);
-      const rows = filterViews(allRows, input);
+      const rows = filterViews(allRows, input, ownedJobs);
       schedule(a); // Explicit status also reconciles a lost callback; no polling.
       return result(rows);
     },
@@ -258,9 +266,10 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       let log;
       try { log = await sliceLog(a.backend.logPath(j.id), input.offset, input.limit); }
       catch { throw new Error("Backend log unavailable; evidence not deleted by extension"); }
-      const latest = matching(j, await a.backend.tasks());
+      const tasks = await a.backend.tasks();
+      const latest = matching(j, tasks);
       if (!latest || !bound(a, j)) throw new Error("Task identity changed during log read; result withheld");
-      updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? view(j, [latest]) : row), a.unavailable);
+      updateWidget(a, trackedViews(owned(a), tasks));
       return result({ status: view(j, [latest]), log });
     },
   });
@@ -279,6 +288,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     updateWidget(a, a.rows.map(row => row.nonce === j.nonce ? { ...row, cancellationRequested: true } : row), a.unavailable);
     const tasks = await a.backend.tasks();
     check();
+    updateWidget(a, trackedViews(owned(a), tasks));
     const task = matching(j, tasks);
     if (!task || !["RUNNING", "PAUSED"].includes(task.phase)) {
       ctx.ui.notify("No verified running task; cancellation intent recorded, no signal sent. State may be UNKNOWN.", "warning");

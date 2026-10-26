@@ -128,7 +128,7 @@ test('jobs widget appears only for owned active work, toggles without model mess
 test('widget keeps uncertainty visible, clears stale session/branch views and ignores delayed old queries', async () => {
   const h = await harness(); await h.submit();
   const key = 'pi-repo.pueue.jobs';
-  delete h.fake.tasks[0];
+  h.fake.finish(0, 'Killed');
   await h.status(); assert.match(h.widgets.get(key).render(160)[0], /1 unknown/);
   h.fake.fail = args => args[0] === 'status';
   await h.commands.get('pueue').handler('refresh', h.ctx);
@@ -148,6 +148,54 @@ test('widget keeps uncertainty visible, clears stale session/branch views and ig
   h.fake.hook = undefined; await h.start();
   release(); await refreshing;
   assert.equal(h.widgets.has(key), false);
+});
+
+test('backend cleanup mirrors current jobs across refresh/reload without deleting history, waking or retrying', async () => {
+  const h = await harness(); await h.submit(); await h.submit(); await h.submit();
+  const key = 'pi-repo.pueue.jobs';
+  const removed = h.history.find(e => e.customType === ENTRY).data.nonce;
+  h.fake.finish(0, 'Success'); h.fake.finish(1, { Failed: 7 });
+  delete h.fake.tasks[0]; delete h.fake.tasks[1]; // pueue clean, before completion was observed
+  const history = structuredClone(h.history);
+  await h.commands.get('pueue').handler('refresh', h.ctx);
+  assert.equal((await h.status()).length, 1);
+  assert.match(h.widgets.get(key).render(160)[0], /1 queued/);
+  assert.deepEqual(await h.status({ nonce: removed }), []);
+  assert.deepEqual(h.history, history);
+  assert.equal(h.messages.length, 0);
+  await assert.rejects(h.call('pueue_result', { nonce: removed }), /missing\/reused/);
+  const restored = await harness({ history: structuredClone(history), fake: h.fake, config: h.config });
+  assert.equal((await restored.status()).length, 1);
+  assert.equal(restored.messages.length, 0);
+  h.fake.fail = args => args[0] === 'status';
+  await assert.rejects(h.status());
+  assert.match(h.widgets.get(key).render(160)[0], /1 unknown.*status unavailable/);
+  assert.equal(h.widgets.get(key).render(160).length, 2, 'failure does not resurrect cleaned jobs');
+  h.fake.fail = undefined;
+  h.fake.tasks = {};
+  await h.commands.get('pueue').handler('refresh', h.ctx);
+  assert.equal(h.widgets.has(key), false);
+  h.fake.fail = args => args[0] === 'status';
+  await h.commands.get('pueue').handler('refresh', h.ctx);
+  assert.equal(h.widgets.has(key), false, 'later failure does not resurrect an empty current list');
+  assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 3);
+  assert.equal(h.fake.calls.filter(a => ['clean', 'remove', 'reset', 'kill'].includes(a[0])).length, 0);
+});
+
+test('malformed snapshots and backend errors retain uncertain current jobs rather than treating them as cleaned', async () => {
+  const h = await harness(); await h.submit();
+  const key = 'pi-repo.pueue.jobs';
+  const original = structuredClone(h.fake.tasks[0]);
+  for (const broken of [{ ...original, created_at: 'bad' }, { ...original, label: 123 }, null]) {
+    h.fake.tasks[0] = broken;
+    await assert.rejects(h.status(), /Invalid Pueue task schema/);
+    assert.match(h.widgets.get(key).render(160)[0], /1 unknown.*status unavailable/);
+    await h.commands.get('pueue').handler('refresh', h.ctx);
+    assert.match(h.widgets.get(key).render(160)[0], /status unavailable/);
+  }
+  h.fake.tasks[0] = original;
+  assert.equal((await h.status())[0].phase, 'RUNNING');
+  assert.doesNotMatch(h.widgets.get(key).render(160)[0], /unavailable/);
 });
 
 test('non-terminal modes do not install a widget and failed admission remains visibly unresolved', async () => {
@@ -187,7 +235,12 @@ test('minimal CLI environment, pinned version, safe CLI diagnostics and bounded 
   } finally { delete process.env.PI_REPO_TEST_SECRET; }
   await assert.rejects(new Backend(config, async () => 'pueue 4.0.3').check(), /4.0.4/);
   assert.throws(() => project('{ SECRET'), e => !String(e).includes('SECRET'));
-  assert.deepEqual(project('{"tasks":{"0":{"id":0,"created_at":"bad","envs":{"SECRET":"value"}}}}'), []);
+  assert.throws(() => project('{"tasks":{"0":{"id":0,"created_at":"bad","envs":{"SECRET":"value"}}}}'), /Invalid Pueue task schema/);
+  const unlabelled = { id: 0, created_at: '2026-10-22T00:00:00Z', label: null, status: { Queued: {} } };
+  assert.equal(project(JSON.stringify({ tasks: { 0: unlabelled } }))[0].phase, 'QUEUED');
+  for (const tasks of [{ 0: { ...unlabelled, label: 42 } }, { 1: unlabelled }, { 0: null }]) {
+    assert.throws(() => project(JSON.stringify({ tasks })), /Invalid Pueue task schema/);
+  }
 });
 
 test('admission persists nonce before add, stashed identity before enqueue; no task cancellation on Pi abort/shutdown', async () => {
@@ -252,7 +305,7 @@ test('submission confirmation configuration defaults off and accepts explicit 0/
   assert.equal(minimalEnvironment(configuration({ ...env, PI_PUEUE_CONFIRM_SUBMIT: '1' })).PI_PUEUE_CONFIRM_SUBMIT, undefined);
 });
 
-test('success/nonzero are backend exits only; killed/restored/missing/reused state stays UNKNOWN; no automatic resubmission', async () => {
+test('success/nonzero are backend exits only; uncertain results stay UNKNOWN, absent/reused identities are omitted; no automatic resubmission', async () => {
   const h = await harness(); await h.submit();
   for (const [backendResult, expected, code] of [['Success', 'EXITED', 0], [{ Failed: 13 }, 'EXITED', 13],
     ['Killed', 'UNKNOWN'], ['Errored', 'UNKNOWN'], [{ FailedToSpawn: 'SECRET' }, 'UNKNOWN']]) {
@@ -261,11 +314,11 @@ test('success/nonzero are backend exits only; killed/restored/missing/reused sta
     assert.equal('stoppedDescendants' in state, false);
   }
   const original = structuredClone(h.fake.tasks[0]);
-  h.fake.tasks = {}; assert.equal((await h.status())[0].phase, 'UNKNOWN');
+  h.fake.tasks = {}; assert.deepEqual(await h.status(), []);
   h.fake.tasks = { 0: { ...original, label: 'another-job' } };
-  assert.equal((await h.status())[0].phase, 'UNKNOWN');
+  assert.deepEqual(await h.status(), []);
   h.fake.tasks = { 0: { ...original, created_at: '2026-10-23T00:00:00Z' } };
-  assert.equal((await h.status())[0].phase, 'UNKNOWN');
+  assert.deepEqual(await h.status(), []);
   await assert.rejects(h.call('pueue_result', { nonce: h.job().nonce }), /missing\/reused/);
   await h.start();
   assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 1);
@@ -353,7 +406,9 @@ test('lost admission/enqueue replies and restart never re-admit; stashed evidenc
     else h.fake.hook = args => { if (args[0] === point) throw new Error('SECRET raw output'); };
     await assert.rejects(h.submit(), e => String(e).includes('UNKNOWN') && !String(e).includes('SECRET'));
     h.fake.hook = undefined; await h.start();
-    assert.equal((await h.status())[0].phase, 'ADMISSION_UNKNOWN');
+    const rows = await h.status();
+    if (point === 'add' && !afterMutation) assert.deepEqual(rows, []);
+    else assert.equal(rows[0].phase, 'ADMISSION_UNKNOWN');
     await assert.rejects(h.cancel(), /UNKNOWN/);
     assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 1);
     if (point === 'enqueue') assert.ok(afterMutation ? h.fake.tasks[0].status.Running : h.fake.tasks[0].status.Stashed);
@@ -406,7 +461,7 @@ test('session groups fail closed on unexpected state or lost creation replies, n
     await assert.rejects(h.submit(), e => /UNKNOWN/.test(String(e)) && !/SECRET/.test(String(e)));
     await h.start();
     assert.equal(h.fake.calls.filter(a => a[0] === 'add' || a[0] === 'enqueue' || a[0] === 'parallel').length, 0);
-    assert.equal((await h.status())[0].phase, 'ADMISSION_UNKNOWN');
+    assert.deepEqual(await h.status(), []); // No backend task was admitted.
     assert.ok(h.fake.calls.filter(a => a[0] === 'group' && a[1] === 'add').length <= 1);
   }
 });
@@ -442,9 +497,11 @@ test('completion triggers a follow-up on resume once; uncertainty stays passive 
   assert.match(h.messages[0].content, /"exitCode":7/);
   assert.deepEqual(JSON.parse(h.messages[0].content), { nonce: h.job().nonce, id: 0, phase: 'EXITED', exitCode: 7 });
   assert.match(h.tools.get('pueue_status').description, /not CI\/review\/publication success/);
-  h.fake.tasks = {}; await h.start(); await h.start();
+  h.fake.finish(0, 'Killed'); await h.start(); await h.start();
   assert.equal(h.messages.length, 2); assert.match(h.messages[1].content, /UNKNOWN/);
   assert.deepEqual(h.messages[1].options, { deliverAs: 'followUp', triggerTurn: false });
+  h.fake.tasks = {}; await h.start(); await h.start();
+  assert.equal(h.messages.length, 2, 'cleanup emits no notice or model wake');
 });
 
 test('session switch/fork/tree excludes other owners and abandoned branches; delayed query never routes to current unrelated session', async () => {
@@ -500,19 +557,20 @@ test('bounded log tail preserves final errors, exact offsets and full artifact; 
   await symlink(path, join(h.config.data, 'link')); await assert.rejects(sliceLog(join(h.config.data, 'link')));
 });
 
-test('status filters retain unresolved identities and reject non-owned nonces without deleting history', async () => {
+test('status filters mirror tracked identities and reject non-owned nonces without deleting history', async () => {
   const h = await harness();
   await h.submit(); const first = h.job().nonce;
   await h.submit(); const second = h.job().nonce;
   await h.submit(); const third = h.job().nonce;
   h.fake.finish(0, 'Success'); delete h.fake.tasks[2];
-  assert.equal((await h.status()).length, 3);
-  assert.deepEqual((await h.status({ state: 'active' })).map(r => r.nonce), [second, third]);
+  assert.equal((await h.status()).length, 2);
+  assert.deepEqual((await h.status({ state: 'active' })).map(r => r.nonce), [second]);
   assert.deepEqual((await h.status({ state: 'finished' })).map(r => r.nonce), [first]);
-  assert.deepEqual(await h.status({ nonce: third }), [{ nonce: third, id: 2, phase: 'UNKNOWN' }]);
+  assert.deepEqual(await h.status({ nonce: third }), []);
   assert.deepEqual(await h.status({ nonce: first, state: 'active' }), []);
   await assert.rejects(h.status({ nonce: 'another-session-nonce' }), /not owned/);
-  assert.equal((await h.status()).length, 3);
+  assert.equal((await h.status()).length, 2);
+  assert.ok(h.history.some(e => e.customType === ENTRY && e.data.nonce === third));
 });
 
 test('compact payload upgrades preserve legacy notice dedup keys and meaningful cancellation changes', async () => {
