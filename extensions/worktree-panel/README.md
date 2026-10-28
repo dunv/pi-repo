@@ -35,24 +35,9 @@ From the public GitHub repository, pinned to the current release:
 pi install git:github.com/dunv/pi-worktree-panel@v0.5.0
 ```
 
-Choose one installation route; don't combine a Pi-managed install with the Nix route below. There is no npm publication yet.
-
-### Nix / Home Manager
-
-The package has no runtime npm dependencies, so a pinned source checkout is sufficient.
-The example below pins the original v0.1.0 release; for the agent target tool, pin
-v0.2.0 or its immutable commit and update the source hash accordingly:
-
-```nix
-home.file.".pi/agent/extensions/pi-worktree-panel".source = pkgs.fetchFromGitHub {
-  owner = "dunv";
-  repo = "pi-worktree-panel";
-  rev = "13b10d86ac480e02fb0c8e92c2cd6d995327dea7"; # v0.1.0
-  hash = "sha256-DvfoOCZoUqAaTv+k3k9XxbghoAfhAKEnDwWxT4qYquQ=";
-};
-```
-
-Remove any existing `pi install` entry for this package before activating Home Manager, then run `/reload`. Pi automatically discovers the package's manifest in the linked directory. Nix-managed resources do not appear in `pi list`, which only reports packages recorded in Pi's settings.
+These standalone installation examples describe the original package. In pi-repo,
+install the root package instead; do not load both copies. There is no npm
+publication yet.
 
 ## Commands
 
@@ -171,8 +156,8 @@ to return focus to Pi. There is no separate file picker or diff command.
 
 The read-only viewer shows the comparison for the selected area. In the
 uncommitted area it shows staged and unstaged patches separately and untracked
-files as additions. Code hunks use filename-based syntax highlighting (including
-Nix), old/new line-number gutters, and green/red markers with subtle row tints.
+files as additions. Code hunks use filename-based syntax highlighting,
+old/new line-number gutters, and green/red markers with subtle row tints.
 At viewer widths of **87 columns or more**, diffs default to **side-by-side**:
 old code on the left, new code on the right, with independent line numbers and
 red/green cell backgrounds. Replacement blocks are paired by line position;
@@ -235,7 +220,7 @@ Node 24+ is required for the TypeScript-based tests. Pi loads `src/index.ts` dir
 pi remove /absolute/path/to/pi-worktree-panel
 ```
 
-Then `/reload` or restart Pi. For a GitHub install, remove the same `git:` source used to install it. For a Nix installation, remove the Home Manager declaration and activate the updated configuration instead.
+Then `/reload` or restart Pi. For a GitHub install, remove the same `git:` source used to install it.
 
 ## License
 

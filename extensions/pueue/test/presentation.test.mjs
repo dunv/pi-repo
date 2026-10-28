@@ -6,13 +6,13 @@ import { noticeText } from '../notice.ts';
 import { visibleWidth } from '@earendil-works/pi-tui';
 
 const nonce = '00000000-0000-4000-8000-000000000001';
-const input = { argv: ['/bin/nix', 'develop', '/checkout#dev', '--command', '/bin/echo', "a'b", 'x\ny', '\x1b[31m'], cwd: '/checkout' };
+const input = { argv: ['/bin/build-tool', 'run', '/checkout#dev', '--command', '/bin/echo', "a'b", 'x\ny', '\x1b[31m'], cwd: '/checkout' };
 const queued = { nonce, id: 4, phase: 'QUEUED' };
 const theme = { fg: (_ink, text) => text };
 
 test('submission presentation uses existing literal arguments/cwd, escapes controls, and labels runtime without inspecting env', () => {
   const text = submissionDetails(input).join('\n');
-  assert.match(text, /Command \(literal argv\): "\/bin\/nix" "develop"/);
+  assert.match(text, /Command \(literal argv\): "\/bin\/build-tool" "run"/);
   assert.match(text, /Working directory: "\/checkout"/);
   assert.match(text, /configured Pueue runtime, not the interactive shell/);
   assert.match(text, /x\\ny/);
@@ -36,7 +36,7 @@ test('completion details join only existing matching submit results and calls; m
   assert.equal(submissionFor([{ ...entries[1], message: { ...entries[1].message, toolName: 'another_tool' } }, entries[0]], nonce), undefined);
   assert.deepEqual(entries, before);
   assert.match(noticeText(JSON.stringify({ ...queued, phase: 'EXITED', exitCode: 0 }), true, input), /Command \(literal argv\)/);
-  assert.match(noticeText(JSON.stringify(queued), false, input), /\/bin\/nix/);
+  assert.match(noticeText(JSON.stringify(queued), false, input), /\/bin\/build-tool/);
 });
 
 test('submit renderers collapse details, expand argv/cwd and preserve model-facing payloads exactly', () => {

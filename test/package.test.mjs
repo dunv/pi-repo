@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { discoverAndLoadExtensions } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-test('root manifest exposes exactly three entries; Pi 1.3.0 Nix-style autodiscovery loads each once without starting resources', async () => {
+test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory autodiscovery loads each once without starting resources', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  assert.deepEqual(manifest.pi.extensions, ['./extensions/worktree-panel/index.ts', './extensions/pueue/index.ts', './extensions/repo-snapshot/index.ts']);
+  assert.deepEqual(manifest.pi.extensions, ['./extensions/worktree-panel/index.ts', './extensions/pueue/index.ts', './extensions/repo-snapshot/index.ts', './extensions/delegate/index.ts']);
   assert.equal(manifest.dependencies, undefined);
   for (const range of Object.values(manifest.peerDependencies)) assert.equal(range, '*');
   const temp = await mkdtemp(join(tmpdir(), 'pi-package-test-'));
@@ -19,9 +19,9 @@ test('root manifest exposes exactly three entries; Pi 1.3.0 Nix-style autodiscov
     await symlink(root, join(agentDir, 'extensions', 'pi-repo'));
     const loaded = await discoverAndLoadExtensions([], cwd, agentDir);
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
-    assert.equal(loaded.extensions.length, 3);
+    assert.equal(loaded.extensions.length, 4);
     const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.deepEqual(toolNames.sort(), ['delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(new Set(toolNames).size, toolNames.length);
   } finally { await rm(temp, { recursive: true, force: true }); }
 });

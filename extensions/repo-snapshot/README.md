@@ -54,11 +54,9 @@ Pi registration so it can be exercised without loading Pi.
 
 ## Installation and tests
 
-The root package manifest registers this extension alongside the worktree panel
-and Pueue adapter. NixOS pins the root `pi-repo` source in
-`/etc/nixos/common/daniel/pi.nix` and links the package once; do not separately
-install this subdirectory. After publishing a package revision, update its Nix
-revision/hash, activate the host configuration, then reload/restart Pi.
+The root package manifest registers this extension alongside the worktree panel,
+Pueue adapter and delegate tools. Install the root package once; do not separately
+install this subdirectory. Reload/restart Pi after updating the installed source.
 
 From the package root with Node >=24:
 
@@ -68,11 +66,9 @@ node --test extensions/repo-snapshot/test/*.test.mjs
 ```
 
 Tests include Pi registration and TypeBox structured-output validation. The root
-package suite checks actual Pi discovery through a Nix-style symlink. The
-extension was also strictly type-checked against Pi 1.3.0. Seven local default
-snapshot samples on 2026-10-22 had median collection times of 10 ms in `/etc/nixos`
-and 26 ms in `goMonorepo`. These are local warm-run observations, not an end-to-end
-agent speedup or a cold-cache/large-repository guarantee.
+package suite checks actual Pi discovery through an extension-directory symlink.
+The extension is strictly type-checked against Pi 1.3.0. Test timings are not an
+end-to-end agent speedup or a cold-cache/large-repository guarantee.
 
 Tests use private temporary Git repositories; no user repository commits,
 fetches or configuration changes. Production collection never fetches; the

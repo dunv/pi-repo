@@ -1,6 +1,6 @@
 # Pueue adapter (initial, source-audited implementation)
 
-**Backend: Rust Pueue 4.0.4 only.** Client version is checked at session start; operator must also pin the daemon to the same version. No installer, daemon startup, service management, fallback backend, settings mutation, or review policy is provided. A separately approved Nix deployment passed live smoke tests for connectivity, exit 0/literal arguments/exact logs and an intentional exit 7 with callback delivery. This is not full production/workflow acceptance; fake-backend tests cover the broader failure matrix.
+**Backend: Rust Pueue 4.0.4 only.** Client version is checked at session start; operator must also pin the daemon to the same version. No installer, daemon startup, service management, fallback backend, settings mutation, or review policy is provided. Fake-backend tests cover admission, completion, uncertainty and recovery; they are not full production/workflow acceptance.
 
 ## Interface and permissions
 
@@ -169,7 +169,7 @@ jobs use their separate one-slot group and do not consume the ordinary session's
 two slots. Neither mechanism establishes PR-wide ownership or merge permission.
 
 The two-slot limit is **per group, not global**. Several sessions can run heavy
-Bazel/Nix jobs at once; those tools already parallelize internally. Serialize jobs
+build jobs at once; build tools often parallelize internally. Serialize jobs
 that mutate the same checkout/build state, retain isolated worktrees/output bases
 where appropriate, and never overlap reviewers on the same PR. Do not launch a
 duplicate simply because a job is queued or UNKNOWN. Preserve the existing
@@ -181,23 +181,19 @@ Do not migrate/requeue/cancel pending jobs, restart the daemon or edit session
 history to adopt this change. Publication, source-pin update and activation are
 separate steps; local tests do not change the installed adapter.
 
-## Queued local workflows and credentials
+## Queued workflows and credentials
 
-The owning Nix module (`/etc/nixos/common/daniel/pi/pueue.nix`) supplies a deliberately small runtime: shell/core utilities, find/sed/grep, Git, Node, Nix, OpenSSH and Azure CLI with its DevOps extension. Project compilers/Bazel/JDKs still come from `nix develop --no-write-lock-file CHECKOUT --command ...`; do not depend on foreground PATH/JAVA_HOME. No extension profile API or new backend is needed.
+Supply explicit execution-time tool paths and noninteractive credential handling
+in a trusted launcher where needed. Do not depend on a foreground shell's PATH,
+agent sockets or cached login state being forwarded to queued jobs. Never place
+secrets in argv or Pueue's persisted admission environment. Missing credentials
+should fail without prompting or silently selecting another identity.
 
-Its optional explicit `pi-pueue-exec CHECKOUT EXPECTED_FULL_HEAD ABSOLUTE_COMMAND [ARG ...]` launcher is exec-only. Submit the immutable absolute launcher path as `argv[0]` and set `cwd` to that retained checkout root. At execution it checks cwd/root, full HEAD and tracked cleanliness, prepares PATH/non-interactive Git and then execs the command with literal argv. A missing/moved/dirty checkout or stale revision fails rather than running against another revision. Keep the checkout/worktree until terminal status and evidence retrieval; this is a start-time guard, **not a lease or snapshot**, and cannot protect concurrent edits/removal after the check. Untracked files are not certified. Existing review checkout/isolation/publishing guards still apply. Direct submissions without this launcher retain their existing behavior; they are not implicitly revision-guarded.
-
-The launcher's Git SSH command uses the existing OpenSSH config/identity files with `BatchMode=yes`, `IdentityAgent=none`, `ForwardAgent=no`. It does not change host-key policy or add keys. Disabling agent use is deliberate: GnuPG SSH signing can invoke pinentry even with SSH BatchMode. Missing/encrypted keys fail without prompting. No ambient socket is copied or saved. SSH file authentication worked in the local probe below; hosts needing a locked key/agent need a separately approved non-interactive mechanism, not a silent identity fallback.
-
-ADO reads use the existing human HOME-based Azure cache; dynamic extension installation is disabled. The launcher never calls login or copies a PAT into Pueue's persisted admission environment. Missing/expired auth fails at the CLI. This does **not** establish reviewer-account configuration or grant posting permission. No approved reviewer credential-file provisioning was found in the owning local configuration; that part remains unconfigured, rather than silently borrowing the human identity. Existing reviewer credential resolver, subprocess scrubbing and isolated `AZURE_CONFIG_DIR` remain the workload's responsibility. Do not wrap isolated reviewer/model subprocesses in a helper that restores scrubbed credentials.
-
-### Verification and remaining limits (2026-10-22)
-
-- Deterministic tests now model delayed message persistence (the former fake persisted synchronously), receipt-before-trigger ordering, feedback/reload, repeated/lost callbacks, active branches/forks and real Pi SessionManager reopen/branch APIs. The owning Nix tests cover runtime preparation, literal args/cwd, stale/dirty revisions and non-interactive auth policy.
-- Confirmed source defect: previously deduplication only consulted persisted custom messages, leaving a gap while Pi queued delivery. This defect is reproduced and fixed; the precise cause of the parent's repeated ID 10/11 notices is **not proven**. Their originating transcript was not available in this session; backend callback repetition, reload/tree reconstruction and feedback are distinct possibilities. No histories or backend evidence were edited.
-- Real installed-plugin local job **15**, nonce `0a7e8a17-9bc5-4faa-a3e3-8cb85560585f`, used the locally built Nix launcher against clean goMonorepo HEAD `10c1adc9b35ad448abc10f37cd3f8ec8282bb9bc`: all **26** Bazel targets passed; read-only `git ls-remote origin HEAD` and `ado threads 15124 --active` succeeded. Authoritative result: **EXITED/0**, retrieved through `pueue_result` (3376-byte full log, retained by Pueue). ADO success is human-read access only. Bazel reported shared-server startup-option contention; use a dedicated output base for future concurrent verification. No cancellation, paid review or remote mutation was exercised.
-- That live run used the currently installed adapter plus the newly built runtime, **not an activated extension update**. Completion fixes are regression-tested, not yet live-deployment accepted. Full unattended reviewer readiness is not claimed.
-- Publish/update the extension source pin only with separate approval, then activate the Nix wrapper/runtime and start a new Pi process (or explicitly load the source for a controlled test). **Do not restart the existing Pueue daemon**: keep-old means its existing admission PATH stays old; the explicit launcher supplies the new execution PATH without a restart. Callback format is unchanged. No source pin with an unpublished revision is installed by this change.
+For revision-sensitive work, a launcher can verify cwd/root, exact HEAD and source
+cleanliness before exec. Such a start-time guard is not a lease or snapshot and
+cannot prevent concurrent edits/removal. Retain the checkout and evidence until
+terminal status and review. Direct submissions are not implicitly revision-guarded.
+Do not restore credentials intentionally scrubbed by an isolated subprocess.
 
 ## Audit / verification
 

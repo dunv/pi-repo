@@ -1,28 +1,43 @@
 # pi-repo
 
-Source-only Pi extension package (Node 24+, tested with Pi 1.3.0).
+Source-only [Pi](https://pi.dev) extension package (Node 24+, tested with Pi 1.3.0).
 
-- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): history-preserving migration of the Git worktree overlay, with its full regression suite.
-- [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**. No supervisor, installer, automatic retry, paid review, publication, or merge policy.
-- [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only local Git snapshot with bounded structured output. No watcher, fetch, or per-prompt scan.
+- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-files panel and read-only diff viewer for linked worktrees and branches.
+- [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**, with session-owned jobs and retained evidence.
+- [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only Git snapshot. No watcher, fetch, or per-prompt scan.
+- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree implementation workers over Pueue, with explicit check plans and review/revision evidence.
 
 ## Installation
 
-The root `package.json` explicitly exposes exactly three entry points. For an isolated one-invocation test:
+Try the root package for one invocation:
 
 ```sh
 pi --no-extensions -e /absolute/path/to/pi-repo
 ```
 
-For a persistent local install, after separately authorizing replacement of the old installation:
+Or install it persistently:
 
 ```sh
 pi install /absolute/path/to/pi-repo
+# Alternatively, use a reviewed Git revision:
+pi install git:github.com/dunv/pi-repo@REVISION
 ```
 
-Choose **one** root-package route: Pi-managed package **or** a Nix-managed directory at `~/.pi/agent/extensions/pi-repo`. Do not also load its children or the old worktree-panel package. Root manifest discovery through a Nix-style symlink is tested with Pi's actual loader. No live settings or extension symlinks were changed during development.
+The root manifest exposes four entry points. Choose one installation route; do
+not also install its children or the former standalone worktree-panel/delegate
+extensions. Pi's actual loader tests discovery through an extension-directory
+symlink and checks that each tool is registered once.
 
-Pueue stays unconfigured until explicitly supplied the external paths described in its README. Loading the package does not install/start a daemon. GitHub destination: [dunv/pi-repo](https://github.com/dunv/pi-repo), created by Daniel as a public repository. Daniel approved a dedicated Nix-managed Pueue 4.0.4 backend; see [Nix integration notes](docs/nix-integration.md). New ordinary submissions automatically use a session-specific Pueue group with two concurrent jobs (not a global cap); permanent one-shot reservation groups remain separate. Existing jobs/groups are never migrated, unpaused or reconfigured. Agents should use ordinary submissions without manufacturing reservation keys, serialize shared-state mutations and avoid same-PR review overlap; see the adapter's scheduling guidance. This source change needs separate publication/pin update/loading before it affects installed sessions. Submission confirmation is optional and off by default (`PI_PUEUE_CONFIRM_SUBMIT=1` enables it). Submission results and completion notices use compact status styling, command previews and expandable argv/cwd/runtime details derived from existing session history; no extra notifications or model-data fields are added. Model-facing outputs omit repeated boilerplate/default fields; status supports nonce/state filters, and logs default to a 4 KiB tail with full artifacts retained.
+Pueue requires an externally configured matching backend and the explicit paths
+described in its README. Delegation additionally requires `PI_DELEGATE_RUNTIME`,
+including operator-defined verification commands. Loading the package does not
+start workers, install software, manage services, or change Pi settings.
+
+Ordinary Pueue submissions use session-specific groups with two slots, not a
+global machine cap. Delegate workers additionally share two worker locks and one
+heavy-check lock. There is no automatic retry, integration, publication, merge,
+or cleanup. Reports and exit zero are evidence, not acceptance. See the component
+READMEs for configuration, authorization boundaries and limitations.
 
 ## Development
 
@@ -32,8 +47,15 @@ npm run check
 npm pack --dry-run
 ```
 
-Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies. Dev-only host packages are pinned to 1.3.0. Tests use a deterministic fake Pueue backend and temporary Git repositories, never a real review or remote mutation. The inherited GitHub workflow runs these root checks.
+Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies.
+Dev-only host packages are pinned to 1.3.0. Tests use fake backends/executables,
+temporary Git repositories, real kernel locks and Pi's actual extension loader;
+no live daemon, model call or remote mutation. Delegate tests require Linux,
+Bash, Git and `flock`. The GitHub workflow runs the root checks.
 
 ## Provenance and license
 
-MIT, copyright Daniel Unverricht. This Git history contains the complete reachable history of `git@github.com:dunv/pi-worktree-panel.git` through `7a84ea8e795ffc5fb5dd6073a1495e768aae0df0`, fetched locally from the clean original checkout. Commit `9348679` only moved its tracked package files under `extensions/worktree-panel/`. Its README, changelog, manifest, lockfile, license and tests are retained; historical install instructions there describe the original independent package. New root packaging supersedes those install instructions. The original repository/checkout and installed extension remain untouched. Daniel subsequently confirmed `git@github.com:dunv/pi-repo.git` as the new destination; its public visibility was verified read-only before publication.
+MIT, copyright Daniel Unverricht. Git history retains the original
+[`pi-worktree-panel`](https://github.com/dunv/pi-worktree-panel) history through
+`7a84ea8e795ffc5fb5dd6073a1495e768aae0df0`. Root packaging supersedes the original
+standalone package installation instructions.
