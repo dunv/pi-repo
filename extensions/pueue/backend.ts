@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { open, lstat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type Config = {
   binary: string; config: string; data: string; namespace: string;
@@ -122,8 +123,15 @@ export class Backend {
   }
   async add(argv: string[], cwd: string, label: string, group: string): Promise<number> {
     if (!isAbsolute(cwd)) throw new Error("cwd must be absolute");
+    const workload = command(argv);
+    // Pueue already executes this through its configured POSIX shell. The helper
+    // is best-effort and silent; exec preserves the workload's PID/signals/status.
+    // Hint contents carry no authority (0 is just a bounded wake marker).
+    const wrapped = this.config.hints
+      ? `${quote(process.execPath)} ${quote(fileURLToPath(new URL("./callback.mjs", import.meta.url)))} ${quote(this.config.hints)} 0 >/dev/null 2>&1 || :; exec ${workload}`
+      : workload;
     const output = await this.run(["add", "--stashed", "--print-task-id", "--working-directory", cwd,
-      "--label", label, "--group", group, "--", command(argv)]);
+      "--label", label, "--group", group, "--", wrapped]);
     if (!/^\d+\s*$/.test(output) || !Number.isSafeInteger(Number(output))) throw new Error("Admission UNKNOWN; reconcile the saved nonce, do not resubmit");
     return Number(output);
   }

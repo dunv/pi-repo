@@ -34,9 +34,9 @@ has unresolved owned jobs, including separately reserved jobs. It starts expande
 - The widget mirrors the current backend-tracked owned jobs. A successful complete
   query removes absent identities from the widget/current status list without a
   completion/UNKNOWN notice or model wake. This also works on reload/resume with
-  old session history; it does not rewrite or delete that history. There is no
-  cleanup polling: after human `pueue clean`, use `/pueue refresh` (or the next
-  normal reconciliation) to update an already-open widget.
+  old session history; it does not rewrite or delete that history. After human
+  `pueue clean`, safety refreshes update an unresolved list within roughly a minute;
+  `/pueue refresh` updates immediately. Retrieve needed evidence before cleaning.
 - The widget disappears when every visible job is confirmed `EXITED` or absent, and clears on
   shutdown, session replacement or navigation to a branch without owned jobs.
   Backend-present `UNKNOWN`/`ADMISSION_UNKNOWN` jobs are unresolved, **not finished**,
@@ -45,10 +45,12 @@ has unresolved owned jobs, including separately reserved jobs. It starts expande
   status unavailable; it never interprets errors or malformed task identities as
   cleanup, retains no running claim, and does not resurrect already-absent jobs.
   Previously observed exits are not resurrected by that failure.
-- Submission, status/log reads, cancellation intent, callbacks and resume/tree
-  reconciliation update the display. No polling timer or model polling loop is added;
-  without callbacks, use `/pueue refresh` for backend changes while idle. Queued-to-running
-  transitions without a completion hint may also need an explicit refresh.
+- Submission, status/log reads, cancellation intent, start/completion hints and
+  resume/tree reconciliation update the display. A 60-second safety refresh runs
+  while this branch has unresolved jobs, covering missed hints and pause/resume.
+  It stops when all current jobs are exited/absent and on shutdown/session replacement.
+  These are extension-side queries, not model polling loops or model calls;
+  discovering an unseen completion still uses the existing completion follow-up.
 - Details show up to six active job rows plus an overflow count, backend IDs, short
   display-only nonce prefixes and cancellation intent. Full nonces remain mandatory
   for identity-bound operations. No commands, paths, environment, log content or raw
@@ -87,14 +89,33 @@ Set these launch environment variables **only after approving backend packaging/
 | `PI_PUEUE_DATA` | Absolute directory matching `shared.pueue_directory`; logs are read locally. |
 | `PI_PUEUE_NAMESPACE` | Stable lowercase UUID for this backend instance. Rotate on deliberate replacement/reset; do not reuse a namespace for another daemon. |
 | `PI_PUEUE_PATH` | Explicit colon-separated absolute executable-search directories for CLI and task environment. |
-| `PI_PUEUE_HINTS` | Optional absolute pre-created user-owned mode-0700 directory for completion wakeups. |
+| `PI_PUEUE_HINTS` | Optional absolute pre-created user-owned mode-0700 directory for start/completion wakeups. |
 | `PI_PUEUE_CONFIRM_SUBMIT` | Optional extra submission dialog: `1` enables; unset or `0` disables (default). Not forwarded to backend/task environments. |
 
 The CLI gets **only** `HOME`, the explicitly supplied `PATH`, and fixed `LANG=C.UTF-8`. No API tokens, proxy values, agent environment, shell startup variables, or SSH-agent socket are inherited. `HOME` must be an absolute non-secret path. Pueue serializes `add`'s environment: do not add secret values to this allowlist. Private raw `status --json` is parsed then projected; commands, envs and backend diagnostics are never returned/persisted. CLI capture is bounded to 4 MiB; oversized/unavailable status is an error/UNKNOWN, never evidence of completion. No CLI subprocess has an execution deadline or an operation-abort signal.
 
 Use a dedicated, user-private **local** daemon/config, explicit absolute Unix socket/runtime/data/alias paths, POSIX `sh -c` semantics, and no command aliases or secret `daemon.env_vars`. Arbitrary shell overrides and Windows are not supported. The adapter does not inspect credential/config files or modify daemon config. These operator preconditions cannot be validated solely by the CLI version string.
 
-## Completion hints
+## Start/completion hints and safety refreshes
+
+When `PI_PUEUE_HINTS` is configured, every new adapter submission is automatically
+wrapped in the existing Pueue POSIX shell: run the absolute current Node executable
+and this package's `callback.mjs` with the hint directory and constant `0` wake
+marker, then `exec` the original literal argv. This includes direct executables,
+project/reviewer launchers, and reserved jobs; no caller-selected wrapper is needed.
+The helper is silent and best-effort: failure does not block the workload. It adds
+one short-lived Node process/file write per start, not a persistent supervisor.
+The workload retains cwd, inherited allowlisted environment, signals and exit status.
+Keep the immutable package/helper and Node paths available until queued jobs start.
+Without a hint directory, submission command construction is unchanged.
+
+Start hints mean only that the execution envelope started, not that an inner
+revision/authentication guard or workload succeeded. The same authoritative status
+query handles all hints; the `0` marker is not a task identity. Existing queued
+jobs are not rewritten and rely on completion callbacks/safety refreshes.
+No daemon configuration change or restart is required for start hints.
+
+The existing completion callback remains:
 
 An operator may configure this **static** callback in the separately managed daemon configuration:
 
@@ -106,7 +127,7 @@ daemon:
 
 Use pinned, controlled absolute paths (properly shell-quoted if needed); interpolate **only** Pueue's numeric `{{id}}`. Never interpolate command, path, group, output, result, or callback log content. The helper validates numeric identity and private-directory permissions, then writes a tiny bounded `wake` file. No secrets or command text enter it. The identifier is only a wake hint, not trusted completion state: the session watcher coalesces events and queries authoritative backend state for its own saved nonce/ID/creation identities. Notifications include those bound job identifiers.
 
-Watchers start at `session_start`, stop idempotently at shutdown/tree replacement, and never kill admitted jobs. No watcher/process starts in the factory. There is one watcher/debounce per session, no per-job watchers, no `pueue wait`, and no polling timer. Lost/overwritten/missed callbacks reconcile on resume/start, tree navigation, or explicit status retrieval. Hints are optional: without them there is no live notification guarantee. A hint failure is not durable exactly-once delivery.
+Watchers start at `session_start`, stop idempotently at shutdown/tree replacement, and never kill admitted jobs. No watcher/process/timer starts in the factory. There is one watcher/debounce and at most one 60-second safety timer per session, no per-job watchers and no `pueue wait`. Safety refreshes query while the active branch has unresolved jobs (including UNKNOWN/ADMISSION_UNKNOWN), even without hints or after watcher failure; a missing/unsafe hint directory is never watched and does not disable reconciliation. Backend failures keep uncertainty visible without periodic UI warnings or workload retries. Lost hints also reconcile on resume/start, tree navigation or explicit status retrieval. Refresh timing is best-effort, not a deadline or durable exactly-once delivery guarantee. Queued/running/paused changes never trigger a model turn; newly confirmed completions retain receipt-based deduplication.
 
 Existing submission results and completion notices use compact status lines such as `◷ Pueue #1 · Queued`, `✓ Pueue #1 · Done · exit 0` or `✗ Pueue #1 · Failed · exit 7`. Only the status line is colored; command/details are muted, without a warning-colored background or internal message-type label. Unknown/admission-unknown states and cancellation intent remain explicit. No queued/running notifications are added: these labels render existing submission results, not new messages.
 

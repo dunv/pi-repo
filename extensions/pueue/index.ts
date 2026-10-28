@@ -11,10 +11,10 @@ import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, m
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
-type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?: FSWatcher; timer?: ReturnType<typeof setTimeout>; busy: boolean; dirty: boolean; closed: boolean; expanded: boolean; rows: JobView[]; unavailable: boolean };
+type Active = { ctx: ExtensionContext; backend: Backend; owner: Owner; watcher?: FSWatcher; timer?: ReturnType<typeof setTimeout>; safetyTimer?: ReturnType<typeof setTimeout>; busy: boolean; dirty: boolean; closed: boolean; expanded: boolean; rows: JobView[]; unavailable: boolean };
 
-/** Injection is deliberately limited to the backend boundary for deterministic tests. */
-export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParameters<typeof Backend>[0]) => new Backend(c)) {
+/** Backend and safety interval injection support local deterministic tests. */
+export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParameters<typeof Backend>[0]) => new Backend(c), safetyIntervalMs = 60_000) {
   let active: Active | undefined;
   pi.registerMessageRenderer(NOTICE, (message, options, theme) => {
     let expanded = options.expanded;
@@ -42,6 +42,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     active.closed = true;
     active.watcher?.close();
     if (active.timer) clearTimeout(active.timer);
+    if (active.safetyTimer) clearTimeout(active.safetyTimer);
     active = undefined; // No task signal, process kill, cleanup or daemon maintenance.
   }
   function current(a: Active) {
@@ -60,6 +61,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     if (!current(a)) return;
     a.rows = rows;
     a.unavailable = unavailable;
+    armSafety(a);
     if (a.ctx.mode !== "tui") return;
     const lines = widgetLines(rows, a.expanded, unavailable);
     a.ctx.ui.setWidget(WIDGET, lines ? (_tui, theme) => ({
@@ -73,7 +75,21 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       ...row, phase: row.phase === "ADMISSION_UNKNOWN" ? row.phase : "UNKNOWN",
     }), true);
   }
-  async function reconcile(a: Active) {
+  function armSafety(a: Active) {
+    if (!current(a)) return;
+    if (!a.rows.some(row => row.phase !== "EXITED")) {
+      if (a.safetyTimer) clearTimeout(a.safetyTimer);
+      a.safetyTimer = undefined;
+      return;
+    }
+    if (a.safetyTimer) return;
+    a.safetyTimer = setTimeout(() => {
+      a.safetyTimer = undefined;
+      void reconcile(a, true);
+    }, safetyIntervalMs);
+    a.safetyTimer.unref();
+  }
+  async function reconcile(a: Active, quiet = false) {
     if (!current(a)) return;
     if (a.busy) { a.dirty = true; return; }
     a.busy = true;
@@ -100,11 +116,13 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
           display: true, details: { key } }, { deliverAs: "followUp", triggerTurn });
       }
     } catch {
-      // No raw diagnostics, no automatic retry timer. Resume or explicit status reconciles again.
+      // Safety queries never spam UI warnings. Uncertainty remains visible;
+      // querying again is not workload retry or admission/takeover authority.
       if (current(a)) unavailable(a);
-      if (current(a) && a.ctx.hasUI) a.ctx.ui.notify("Pueue reconciliation unavailable; state remains UNKNOWN. Use pueue_status or resume later.", "warning");
+      if (!quiet && current(a) && a.ctx.hasUI) a.ctx.ui.notify("Pueue reconciliation unavailable; state remains UNKNOWN. Use pueue_status or resume later.", "warning");
     } finally {
       a.busy = false;
+      armSafety(a);
       if (a.dirty && current(a)) { a.dirty = false; schedule(a); }
     }
   }
@@ -129,13 +147,18 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       await a.backend.check();
       if (!current(a)) return;
       if (c.hints) {
-        await privateDirectory(c.hints);
-        if (!current(a)) return;
-        // Contents and callback result are NOT authority. A wake triggers an authoritative query
-        // of this session's nonce-bound jobs only. No per-job watchers or polling/sleep loops.
-        a.watcher = watch(c.hints, (_event, name) => { if (name?.toString() === "wake") schedule(a); });
-        a.watcher.on("error", () => { a.watcher?.close(); a.watcher = undefined; });
-        a.watcher.unref();
+        try {
+          await privateDirectory(c.hints);
+          if (!current(a)) return;
+          // Hints carry no authority. Query only this session's nonce-bound jobs.
+          a.watcher = watch(c.hints, (_event, name) => { if (name?.toString() === "wake") schedule(a); });
+          a.watcher.on("error", () => { a.watcher?.close(); a.watcher = undefined; });
+          a.watcher.unref();
+        } catch {
+          // Missing/unsafe/unavailable hints must not disable safety reconciliation.
+          a.watcher?.close();
+          a.watcher = undefined;
+        }
       }
       await reconcile(a);
     } catch (e) { if (current(a)) stop(); throw e; }
@@ -237,7 +260,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
       const allRows = trackedViews(ownedJobs, tasks);
       updateWidget(a, allRows);
       const rows = filterViews(allRows, input, ownedJobs);
-      schedule(a); // Explicit status also reconciles a lost callback; no polling.
+      schedule(a); // Explicit status also reconciles a lost callback.
       return result(rows);
     },
   });

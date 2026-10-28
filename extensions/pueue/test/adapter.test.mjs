@@ -58,7 +58,7 @@ class Fake {
   }
   finish(id, result) { this.tasks[id].status = { Done: { result, end: 'now' } }; }
 }
-async function harness({ history = [], session = 'origin', file = '/sessions/origin.jsonl', fake = new Fake(), config, delayedDelivery = false } = {}) {
+async function harness({ history = [], session = 'origin', file = '/sessions/origin.jsonl', fake = new Fake(), config, delayedDelivery = false, safetyIntervalMs } = {}) {
   config ??= (await fixture()).config;
   const env = { PI_PUEUE_BINARY: config.binary, PI_PUEUE_CONFIG: config.config,
     PI_PUEUE_DATA: config.data, PI_PUEUE_NAMESPACE: config.namespace, PI_PUEUE_PATH: config.path,
@@ -88,7 +88,7 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
       h.onSend?.(message);
     },
   };
-  extension(pi, c => new Backend(c, args => fake.run(args)));
+  extension(pi, c => new Backend(c, args => fake.run(args)), safetyIntervalMs);
   const stop = () => events.get('session_shutdown')({}, ctx);
   cleanups.push(stop);
   const start = () => events.get('session_start')({ reason: 'resume' }, ctx);
@@ -100,6 +100,86 @@ async function harness({ history = [], session = 'origin', file = '/sessions/ori
   await start();
   return Object.assign(h, { fake, config, events, tools, commands, ctx, messages, notifications, start, stop, call, submit, status, job, cancel });
 }
+
+test('start hint envelope preserves literal argv, cwd, exit status and best-effort execution', async () => {
+  const { dir, config } = await fixture();
+  config.hints = join(dir, "hints ' directory");
+  await mkdir(config.hints, { mode: 0o700 });
+  let shell;
+  const backend = new Backend(config, async args => { shell = args.at(-1); return '0'; });
+  const literal = "spaces ' quotes $HOME; $(false)\nnewline";
+  await backend.add([process.execPath, '-e', 'process.stdout.write(JSON.stringify([process.cwd(), ...process.argv.slice(1)]))', literal], dir, 'label', 'group');
+  const run = () => execFileSync('sh', ['-c', shell], { cwd: dir, env: minimalEnvironment(config), encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(run()), [dir, literal]);
+  assert.equal(await readFile(join(config.hints, 'wake'), 'utf8'), '0\n');
+  await rm(config.hints, { recursive: true });
+  assert.deepEqual(JSON.parse(run()), [dir, literal], 'missing hint directory must not block workload');
+  await backend.add([process.execPath, '-e', 'process.exit(17)'], dir, 'label', 'group');
+  assert.throws(run, error => error.status === 17);
+  config.hints = undefined;
+  const argv = [process.execPath, '-e', 'process.exit(0)'];
+  await backend.add(argv, dir, 'label', 'group');
+  assert.equal(shell, command(argv), 'unconfigured hints retain direct execution');
+});
+
+test('safety refresh catches transitions and missed completion without model polling, then stops', async () => {
+  const h = await harness({ safetyIntervalMs: 100 });
+  await h.submit();
+  await delay(180); // Drain submission debounce before measuring safety-only updates.
+  h.fake.tasks[0].status = { Paused: {} };
+  await delay(250);
+  assert.match(h.widgets.get('pi-repo.pueue.jobs').render(160)[0], /1 paused/);
+  assert.equal(h.messages.length, 0);
+  h.fake.fail = args => args[0] === 'status';
+  await delay(250);
+  assert.match(h.widgets.get('pi-repo.pueue.jobs').render(160)[0], /status unavailable/);
+  assert.equal(h.notifications.length, 0, 'periodic failures are quiet');
+  h.fake.fail = undefined;
+  h.fake.finish(0, 'Success');
+  await delay(250);
+  assert.equal(h.widgets.has('pi-repo.pueue.jobs'), false);
+  assert.equal(h.messages.filter(m => m.options.triggerTurn).length, 1);
+  const queries = h.fake.calls.filter(args => args[0] === 'status').length;
+  await delay(250);
+  assert.equal(h.fake.calls.filter(args => args[0] === 'status').length, queries);
+  await h.submit(); await delay(180);
+  h.stop();
+  const stopped = h.fake.calls.length;
+  await delay(250);
+  assert.equal(h.fake.calls.length, stopped, 'shutdown clears timers');
+});
+
+test('missing hints still permit non-UI safety reconciliation and backend cleanup', async () => {
+  const { config, dir } = await fixture();
+  config.hints = join(dir, 'missing');
+  const h = await harness({ config, safetyIntervalMs: 100 });
+  h.ctx.mode = 'json'; h.hasUI = false;
+  assert.equal(h.fake.calls.filter(args => args[0] === 'status').length, 0);
+  await h.submit(); await delay(180);
+  h.fake.tasks[0].status = { Queued: {} };
+  await delay(250);
+  assert.equal(h.messages.length, 0);
+  h.fake.tasks = {};
+  await delay(250);
+  const queries = h.fake.calls.length;
+  await delay(250);
+  assert.equal(h.fake.calls.length, queries, 'absent jobs stop safety queries without UI');
+  assert.equal(h.messages.length, 0, 'absence is not a completion notice');
+});
+
+test('start wake hint refreshes queued-to-running without a model notice', async () => {
+  const { config, dir } = await fixture();
+  config.hints = join(dir, 'hints');
+  await mkdir(config.hints, { mode: 0o700 });
+  const h = await harness({ config });
+  await h.submit(); await h.submit(); await h.submit(); await delay(180);
+  h.fake.finish(0, 'Success');
+  h.fake.tasks[2].status = { Running: { start: 'now' } };
+  await hint(config.hints, '0');
+  await delay(250);
+  assert.match(h.widgets.get('pi-repo.pueue.jobs').render(160)[0], /2 running/);
+  assert.equal(h.messages.length, 1, 'only the completed job generates a notice');
+});
 
 test('jobs widget appears only for owned active work, toggles without model messages, and hides on completion', async () => {
   const h = await harness();
