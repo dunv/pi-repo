@@ -31,6 +31,7 @@ export async function runtimeFrom(path) {
   for (const key of ['git', 'node', 'pi', 'flock', 'ssh', 'home', 'state', 'launcher']) {
     if (typeof runtime[key] !== 'string' || !isAbsolute(runtime[key])) throw new Error(`Invalid delegate runtime: ${key}`);
   }
+  if (runtime.claude !== undefined && (typeof runtime.claude !== 'string' || !isAbsolute(runtime.claude))) throw new Error('Invalid delegate runtime: claude');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;
 }
@@ -45,9 +46,34 @@ export async function assertWorktree(task, runtime, clean = false) {
     throw new Error('Worker must start from a clean worktree');
   }
 }
+export function modelFamily(provider, id) {
+  provider = provider.toLowerCase();
+  // Local and OpenAI providers are Pi-only, independent of their model tags.
+  if (/^(?:openai(?:-|$)|azure-openai(?:-|$))/.test(provider)
+    || ['evo-x2', 'ollama', 'llama.cpp'].includes(provider)) return { backend: 'pi' };
+  const native = id.replace(/^anthropic\//, '');
+  if (/^claude-[a-z0-9][a-z0-9.-]*$/.test(native)) return { backend: 'claude', native };
+  if (provider === 'anthropic' || provider.endsWith('-anthropic') || /^claude[-.]/i.test(id) || id.startsWith('anthropic/')
+    || /(^|[./])anthropic\.claude-/.test(id)) return { backend: 'claude', native: null };
+  return { backend: 'pi' };
+}
+export function workerBackend(input, runtime) {
+  const backend = input.backend ?? 'pi';
+  if (!['pi', 'claude'].includes(backend)) throw new Error('Unknown worker backend');
+  if (backend === 'claude') {
+    if (!/^claude-[a-z0-9][a-z0-9.-]*$/.test(input.model)) throw new Error('Claude backend requires an explicit claude-* model ID, not a Pi provider/model or alias');
+    if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinking)) throw new Error('Claude thinking must be an explicit supported effort: low, medium, high, xhigh, max');
+    if (runtime && (typeof runtime.claude !== 'string' || !isAbsolute(runtime.claude))) throw new Error('Claude backend unavailable: configure runtime.claude and restart Pi');
+  } else {
+    if (!/^[a-z0-9-]+\/.+$/i.test(input.model) || /[\x00-\x20]/.test(input.model)) throw new Error('Use an explicit provider/model ID');
+    const [provider, ...parts] = input.model.split('/');
+    if (modelFamily(provider, parts.join('/')).backend === 'claude') throw new Error('Anthropic models require Claude Code; Pi is forbidden');
+  }
+  return backend;
+}
 export function validateInput(input) {
   if (!isAbsolute(input.repo) || !input.brief?.trim() || input.brief.length > 32000) throw new Error('Absolute repo and bounded nonempty brief required');
-  if (!/^[a-z0-9-]+\/.+$/i.test(input.model) || /[\x00-\x20]/.test(input.model)) throw new Error('Use an explicit provider/model ID');
+  workerBackend(input);
   if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinking)) throw new Error('Explicit thinking level required');
   if (typeof input.profile !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(input.profile)) throw new Error('Choose an explicitly configured verification profile');
   if (!Array.isArray(input.checks) || input.checks.length > 8) throw new Error('At most eight planned checks');
@@ -69,8 +95,16 @@ export function verificationProfile(profile) {
   }
   return { command: profile.command, args: [...profile.args] };
 }
+export function initiatorLabel(owner) {
+  const name = typeof owner.name === 'string' ? owner.name : 'session';
+  const slug = name.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 28).replace(/-+$/g, '') || 'session';
+  const session = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(owner.session)
+    ? owner.session.slice(0, 8).toLowerCase() : digest(owner.session).slice(0, 8);
+  return `${slug}-s${session}`;
+}
 export async function prepare(input, runtime, owner) {
   validateInput(input);
+  const backend = workerBackend(input, runtime);
   const verification = verificationProfile(runtime.profiles?.[input.profile]);
   const repo = await realpath(input.repo);
   if ((await git(runtime, repo, ['rev-parse', '--show-toplevel'])).trim() !== repo) throw new Error('Select the repository root');
@@ -81,8 +115,9 @@ export async function prepare(input, runtime, owner) {
   await privateDir(directory);
   const worktrees = repo + '.worktrees';
   await mkdir(worktrees, { recursive: true });
-  const task = { version: 1, id, owner, repo, base, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${id}`),
-    directory, model: input.model, thinking: input.thinking, profile: input.profile, verification, checks: input.checks };
+  const label = initiatorLabel(owner);
+  const task = { version: 1, id, owner, initiatorLabel: label, repo, base, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
+    directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking, profile: input.profile, verification, checks: input.checks };
   // Persist intent before worktree creation. Failures retain evidence; never auto-remove/retry.
   await save(join(directory, 'task.json'), task);
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
@@ -101,7 +136,8 @@ export function attemptDirectory(task, attempt) {
 }
 export async function prepareRevision(task, input, runtime) {
   if (runtime.revisionProtocol !== 1) throw new Error('Revision launcher unavailable: activate the updated runtime and restart Pi first');
-  validateInput({ ...task, ...input, repo: task.repo, profile: task.profile, checks: task.checks });
+  const backend = workerBackend({ ...input, backend: input.backend ?? task.backend }, runtime);
+  validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
   verificationProfile(task.verification);
   if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error('Previous job nonce changed; review the latest task first');
   if (!/^[a-f0-9]{64}$/.test(input.expectedFingerprint) || await snapshot(task, runtime) !== input.expectedFingerprint) {
@@ -114,10 +150,10 @@ export async function prepareRevision(task, input, runtime) {
   await privateDir(join(task.directory, 'revisions'));
   await privateDir(directory);
   await save(join(directory, 'attempt.json'), { task: task.id, attempt, previousNonce: task.nonce,
-    expectedFingerprint: input.expectedFingerprint, model: input.model, thinking: input.thinking });
+    expectedFingerprint: input.expectedFingerprint, backend, route: input.route ?? null, model: input.model, thinking: input.thinking });
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
   if (await snapshot(task, runtime) !== input.expectedFingerprint) throw new Error(`Source changed preparing revision ${attempt}; retain evidence and reconcile`);
-  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, model: input.model, thinking: input.thinking };
+  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, backend, route: input.route ?? null, model: input.model, thinking: input.thinking };
 }
 export function tasksFrom(entries) {
   const tasks = new Map();
@@ -157,12 +193,13 @@ export async function writable(task, path) {
     }
   }
 }
-export async function runToFiles(executable, args, options, stdoutPath, stderrPath = stdoutPath, live = false) {
+export async function runToFiles(executable, args, options, stdoutPath, stderrPath = stdoutPath, live = false, inputPath) {
+  const stdin = inputPath ? await open(inputPath, 'r') : undefined;
   const out = await open(stdoutPath, 'wx', 0o600);
   const err = stderrPath === stdoutPath ? out : await open(stderrPath, 'wx', 0o600);
   try {
     return await new Promise((resolve, reject) => {
-      const child = spawn(executable, args, { ...options, stdio: ['ignore', live ? 'pipe' : out.fd, live ? 'pipe' : err.fd] });
+      const child = spawn(executable, args, { ...options, stdio: [stdin?.fd ?? 'ignore', live ? 'pipe' : out.fd, live ? 'pipe' : err.fd] });
       // Bound buffering via stream backpressure; never end the runner's own streams.
       const mirror = (source, file, destination) => pipeline(source, new Writable({
         write(chunk, _encoding, done) {
@@ -176,7 +213,7 @@ export async function runToFiles(executable, args, options, stdoutPath, stderrPa
       });
       Promise.all([exited, streams]).then(([result]) => resolve(result), reject);
     });
-  } finally { await out.close(); if (err !== out) await err.close(); }
+  } finally { await out.close(); if (err !== out) await err.close(); await stdin?.close(); }
 }
 export async function tail(path, limit = 8192) {
   const file = await open(path, 'r');

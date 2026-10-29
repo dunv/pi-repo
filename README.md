@@ -5,7 +5,7 @@ Source-only [Pi](https://pi.dev) extension package (Node 24+, tested with Pi 1.3
 - [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-files panel and read-only diff viewer for linked worktrees and branches.
 - [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**, with session-owned jobs and retained evidence.
 - [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only Git snapshot. No watcher, fetch, or per-prompt scan.
-- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree implementation workers over Pueue, with explicit check plans and review/revision evidence.
+- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans and review/revision evidence.
 
 ## Installation
 

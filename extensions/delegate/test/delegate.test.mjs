@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-import { prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, writable, json, save, envFor, tasksFrom, ENTRY } from '../core.mjs';
+import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, writable, json, save, envFor, tasksFrom, ENTRY } from '../core.mjs';
 import { run } from '../run.mjs';
 import { check } from '../check.mjs';
 import { toolSummary } from '../progress.mjs';
@@ -66,6 +66,30 @@ test('bounded explicit input: no fuzzy models, shell, flags or missing thinking'
     { checks: [{ kind: 'test', targets: ['--run_under=sh'] }] }, { checks: [{ kind: 'test', targets: ['//:ok; touch /tmp/no'] }] },
     { checks: [{ kind: 'shell', targets: ['//:ok'] }] }]) assert.throws(() => validateInput({ ...input('/fixture/repo'), ...override }));
 });
+
+test('initiator labels are bounded path-safe names plus stable distinct session identity', () => {
+  assert.match(initiatorLabel(who), /^session-s[a-f0-9]{8}$/);
+  assert.equal(initiatorLabel({ session: '1234abcd-1234-1234-1234-123456789abc', name: 'Cart fixes' }), 'cart-fixes-s1234abcd');
+  const owner = { ...who, name: '  Fix Checkout / Carts!  ' };
+  assert.match(initiatorLabel(owner), /^fix-checkout-carts-s[a-f0-9]{8}$/);
+  assert.equal(initiatorLabel(owner), initiatorLabel(owner));
+  assert.notEqual(initiatorLabel(owner), initiatorLabel({ ...owner, session: 'other-session' }));
+  for (const name of ['../outside/$(cmd)\u001b\n', '🚀', 'x'.repeat(500), '.git']) {
+    const label = initiatorLabel({ ...who, name });
+    assert.match(label, /^[a-z0-9-]+-s[a-f0-9]{8}$/);
+    assert.ok(label.length <= 38); assert.doesNotMatch(label, /[/.\s]/);
+  }
+});
+
+test('new worktree suffix exposes initiator and retains full UUID without renaming revisions', () => fixture(async f => {
+  const owner = { ...who, name: 'Fix checkout / totals' }, task = await prepare(input(f.repo), f.runtime, owner);
+  assert.equal(task.initiatorLabel, initiatorLabel(owner));
+  assert.equal(task.worktree, join(f.repo + '.worktrees', `delegate-${task.initiatorLabel}-${task.id}`));
+  assert.deepEqual((await json(join(task.directory, 'task.json'))).owner, owner);
+  const revision = await prepareRevision({ ...task, nonce: 'prior' }, { expectedNonce: 'prior',
+    expectedFingerprint: await snapshot(task, f.runtime), brief: 'Revise.', model: 'fixture/model', thinking: 'low' }, f.runtime);
+  assert.equal(revision.worktree, task.worktree); assert.equal(revision.initiatorLabel, task.initiatorLabel);
+}));
 
 test('prepare retains isolated uncommitted worktree, exact base and durable identity; parent unchanged', () => fixture(async f => {
   const head = f.git('rev-parse', 'HEAD').trim(), task = await prepare(input(f.repo), f.runtime, who);
@@ -299,7 +323,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
   const loaded = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], process.cwd());
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
-  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_review', 'delegate_revise', 'delegate_task']);
+  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
   const review = tools.find(t => t.name === 'delegate_review');
   await fixture(async f => {
     const entries = [], calls = [];
@@ -310,7 +334,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
     const registered = new Map([...instance.extensions[0].tools.values()].map(v => [v.definition.name, v.definition]));
     let phase = 'RUNNING', submissionFailure = false, serial = 0, exitCode = 0, cancellationRequested = false, absent = false;
     const ctx = { modelRegistry: { find: () => ({ id: 'model' }) }, sessionManager: {
-      getSessionFile: () => who.file, getSessionId: () => who.session, getBranch: () => entries,
+      getSessionFile: () => who.file, getSessionId: () => who.session, getSessionName: () => 'Checkout fixes (GMKtec)', getBranch: () => entries,
     }, executeTool: async (name, args) => {
       calls.push({ name, args });
       // Use Pi's real nested-call envelope, not an approximation of a tool result.
@@ -332,6 +356,9 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.deepEqual(calls[0].args.argv, [f.runtime.launcher, f.runtimePath, task.task]);
       assert.equal(entries.length, 2);
       assert.equal(task.model, 'fixture/model'); assert.equal(task.thinking, 'low');
+      assert.equal(task.initiator.name, 'Checkout fixes (GMKtec)');
+      assert.match(task.initiator.label, /^checkout-fixes-gmktec-s[a-f0-9]{8}$/);
+      assert.ok(task.worktree.endsWith(`delegate-${task.initiator.label}-${task.task}`));
       const theme = { fg: (_color, text) => text, bold: text => text };
       const submitTool = registered.get('delegate_task');
       const callText = submitTool.renderCall(input(f.repo), theme).render(120).join('\n');

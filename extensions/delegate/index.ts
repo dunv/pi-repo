@@ -3,7 +3,8 @@ import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import { readdir, writeFile } from "node:fs/promises";
-import { ENTRY, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, git, tail } from "./core.mjs";
+import { catalogue, resolveSelection } from "./catalogue.mjs";
+import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, git, tail } from "./core.mjs";
 
 const response = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
 function renderSubmission(result: { content: Array<{ type: string; text?: string }> }, expanded: boolean, partial: boolean, theme: Theme) {
@@ -14,9 +15,10 @@ function renderSubmission(result: { content: Array<{ type: string; text?: string
     if (!data.nonce) return new Text(raw, 0, 0);
     const phase = data.phase === "QUEUED" ? "Queued" : data.phase ?? "State unknown";
     return new Text(theme.fg("accent", `${phase} · Pueue #${data.id ?? "?"}`) +
-      (expanded ? `\nTask: ${data.task}${data.attempt ? `\nAttempt: ${data.attempt}` : ""}\nPueue nonce: ${data.nonce}\nWorktree: ${data.worktree}\nArtifacts: ${data.artifacts}` : ""), 0, 0);
+      (expanded ? `\nBackend: ${data.backend ?? "pi"}\nInitiator: ${data.initiator?.label ?? "unknown"}\nTask: ${data.task}${data.attempt ? `\nAttempt: ${data.attempt}` : ""}\nPueue nonce: ${data.nonce}\nWorktree: ${data.worktree}\nArtifacts: ${data.artifacts}` : ""), 0, 0);
   } catch { return new Text(raw, 0, 0); }
 }
+const backendSchema = Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("claude")], { description: "Optional explicit harness override for native model IDs. Normally omit: the exact delegate_models catalogue entry selects the harness. Overrides cannot bypass the Anthropic-to-Claude / local-and-OpenAI-to-Pi policy; conflicts fail, never fall back." }));
 const thinkingSchema = Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
 function nested(reply: Awaited<ReturnType<ExtensionToolContext["executeTool"]>>) {
   if (reply.isError) throw new Error("Pueue/panel operation failed; inspect its retained evidence, never automatically resubmit");
@@ -25,7 +27,11 @@ function nested(reply: Awaited<ReturnType<ExtensionToolContext["executeTool"]>>)
 function owner(ctx: ExtensionContext) {
   const file = ctx.sessionManager.getSessionFile();
   if (!file) throw new Error("Delegation requires a persistent session");
-  return { session: ctx.sessionManager.getSessionId(), file };
+  const name = ctx.sessionManager.getSessionName?.()?.trim().slice(0, 200);
+  return { session: ctx.sessionManager.getSessionId(), file, ...(name ? { name } : {}) };
+}
+function initiator(task: any) {
+  return { session: task.owner.session, name: task.owner.name ?? null, label: task.initiatorLabel ?? initiatorLabel(task.owner) };
 }
 function owned(ctx: ExtensionContext, id: string): any {
   const task: any = tasksFrom(ctx.sessionManager.getBranch()).get(id), who = owner(ctx);
@@ -51,18 +57,34 @@ export default function (pi: ExtensionAPI) {
       if (typeof state.nonce !== "string") throw new Error("Missing admission identity");
       pi.appendEntry(ENTRY, { ...task, nonce: state.nonce });
       await writeFile(join(directory, "submission.json"), JSON.stringify({ nonce: state.nonce }) + "\n", { mode: 0o600, flag: "wx" });
-      return response({ task: task.id, attempt: task.attempt, ...state, model: task.model, thinking: task.thinking,
+      return response({ task: task.id, attempt: task.attempt, ...state, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", model: task.model, thinking: task.thinking,
         worktree: task.worktree, artifacts: directory });
     } catch {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
   pi.registerTool({
+    name: "delegate_models", label: "List delegate model routes", exposure: "model-only", executionMode: "sequential",
+    description: "List the shared delegate catalogue: Pi local/OpenAI models and Claude Code routes for Anthropic models. Anthropic registry entries are discovery aliases for Claude Code, never Pi API routes; Pi Anthropic auth is not used. Operator-declared Claude Code routes are included. Select an exact entry id as delegate_task/delegate_revise model and omit backend for deterministic routing. No model calls, authentication probes, health checks or fallback. Metadata is not worker readiness: host authentication may differ from the scrubbed child environment, and CLI model/auth support remains unverified. Endpoint origins only, no credentials. Filter by backend/provider/query and page with offset/limit.",
+    parameters: Type.Object({ backend: backendSchema, provider: Type.Optional(Type.String({ maxLength: 128 })),
+      query: Type.Optional(Type.String({ maxLength: 200 })), offset: Type.Optional(Type.Integer({ minimum: 0 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }),
+    renderCall(args, theme) {
+      return new Text(theme.fg("toolTitle", theme.bold("Delegate model catalogue")) + (args.query ? `\n${args.query}` : ""), 0, 0);
+    },
+    async execute(_id, input, _signal, _update, ctx) {
+      const runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const entries = catalogue(runtime, ctx.modelRegistry, input), offset = input.offset ?? 0, limit = input.limit ?? 50;
+      return response({ entries: entries.slice(offset, offset + limit), total: entries.length, offset,
+        nextOffset: offset + limit < entries.length ? offset + limit : null, fallback: false, workerReadinessVerified: false });
+    },
+  });
+  pi.registerTool({
     name: "delegate_task", label: "Delegate isolated task", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_submit"],
-    description: "Delegate an explicitly authorized bounded implementation task to child Pi through existing Pueue. Orchestrator supplies an exact provider/model ID, thinking level, self-contained brief (scope, relevant files, acceptance criteria, mechanical/logic-heavy review assessment), and only necessary checks through an operator-configured verification profile. Requires a clean Git source checkout; uses its current committed HEAD, never chooses a release target or route for you. Creates a retained sibling worktree with uncommitted changes. Worker cannot call shell, publish, commit or delegate through its tools; this is NOT an OS sandbox. Two worker slots per machine and one heavy-check lock across delegated tasks; unrelated Pueue work is not globally limited. No automatic retries/integration/cleanup. Exit zero is not acceptance. Keep brief/argv free of secrets. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem. After Pueue completion, use delegate_review and perform the review yourself: read the entire trackedPatch and every untracked file, inspect relevant source/context and current check evidence against the brief, and report findings or a concise review verdict. Do not ask the user to manually review diffs by default. Worker reports and exit zero are not review. Publication/integration still require their existing authorization. SDK setup is never automatic.",
+    description: "Delegate an explicitly authorized bounded implementation task to Pi (backend:pi) or Claude Code (backend:claude) through existing Pueue. Select an exact delegate_models entry ID as model and omit backend for deterministic routing: local/OpenAI provider/model IDs invoke Pi; Anthropic provider/model aliases and configured claude-code/claude-* entries invoke Claude Code. Anthropic through Pi is forbidden, even with an explicit override; local/OpenAI through Claude is forbidden. No inferred model matching or fallback. Explicit backend plus native model ID remains supported. Claude thinking is CLI effort (low/medium/high/xhigh/max), with runtime.claude required. Orchestrator supplies model, thinking level, self-contained brief (scope, relevant files, acceptance criteria, mechanical/logic-heavy review assessment), and only necessary checks through an operator-configured verification profile. Requires a clean Git source checkout; uses its current committed HEAD, never chooses a release target or deployment route for you. Creates a retained sibling worktree with uncommitted changes. Worker cannot call shell, publish, commit or delegate through its tools; this is NOT an OS sandbox. Two worker slots per machine and one heavy-check lock across delegated tasks; unrelated Pueue work is not globally limited. No automatic retries/integration/cleanup. Exit zero is not acceptance. Keep brief/argv free of secrets. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem. After Pueue completion, use delegate_review and perform the review yourself: read the entire trackedPatch and every untracked file, inspect relevant source/context and current check evidence against the brief, and report findings or a concise review verdict. Do not ask the user to manually review diffs by default. Worker reports and exit zero are not review. Publication/integration still require their existing authorization. SDK setup is never automatic.",
     parameters: Type.Object({ repo: Type.String(), brief: Type.String({ minLength: 1, maxLength: 32000 }),
-      model: Type.String(), thinking: thinkingSchema,
+      backend: backendSchema, model: Type.String(), thinking: thinkingSchema,
       profile: Type.String({ pattern: "^[a-zA-Z0-9_-]{1,64}$", description: "Name of an operator-configured verification profile in PI_DELEGATE_RUNTIME" }),
       checks: Type.Array(Type.Object({ kind: Type.Union([Type.Literal("test"), Type.Literal("build")]),
         targets: Type.Array(Type.String(), { minItems: 1, maxItems: 32 }) }), { maxItems: 8 }) }),
@@ -76,21 +98,20 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch;
       const runtimePath = process.env.PI_DELEGATE_RUNTIME, runtime = await runtimeFrom(runtimePath);
-      const [provider, ...parts] = input.model.split("/");
-      if (!ctx.modelRegistry.find(provider, parts.join("/"))) throw new Error("Exact model not found in the host model registry");
+      const selection = resolveSelection(input, runtime, ctx.modelRegistry);
       if (signal?.aborted) throw new Error("Delegation cancelled before preparation");
       guard(start);
-      const task = await prepare(input, runtime, owner(ctx));
+      const task = await prepare(selection, runtime, owner(ctx));
       return submit(task, runtime, runtimePath!, start, signal, ctx);
     },
   });
   pi.registerTool({
     name: "delegate_revise", label: "Revise retained task", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status", "pueue_submit"],
-    description: "Start one explicitly authorized revision of an owned task in its SAME worktree/build output directory. Supply the latest job nonce and current fingerprint from delegate_review, a self-contained revision brief, exact provider/model and thinking. Requires previous worker confirmed EXITED/0 without cancellation or integrity error; missing/uncertain/failed evidence blocks automatic continuation. Preserves existing uncommitted changes and all earlier artifacts. New attempt has a fresh context/session and inherits the original planned checks/profile. One durable claim per previous job prevents duplicate revisions, including after branch navigation or lost admission. No automatic retries, cleanup, publication or integration. Review is still required; this is not an OS sandbox. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem.",
+    description: "Start one explicitly authorized revision of an owned task in its SAME worktree/build output directory. Supply the latest job nonce and current fingerprint from delegate_review, a self-contained revision brief, exact model and thinking. Anthropic always uses Claude Code; local/OpenAI always use Pi. Overrides cannot bypass this policy. An exact delegate_models entry ID automatically selects its harness, independently of the previous attempt; there is no fallback. Explicit backend plus native model ID remains supported within policy; native claude-* IDs always select Claude Code. Claude uses CLI effort low/medium/high/xhigh/max, not Pi thinking semantics. Requires previous worker confirmed EXITED/0 without cancellation or integrity error; missing/uncertain/failed evidence blocks automatic continuation. Preserves existing uncommitted changes and all earlier artifacts. New attempt has a fresh context/session and inherits the original planned checks/profile. One durable claim per previous job prevents duplicate revisions, including after branch navigation or lost admission. No automatic retries, cleanup, publication or integration. Review is still required; this is not an OS sandbox. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem.",
     parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1 }),
       expectedFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }), brief: Type.String({ minLength: 1, maxLength: 32000 }),
-      model: Type.String(), thinking: thinkingSchema }),
+      backend: backendSchema, model: Type.String(), thinking: thinkingSchema }),
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold("Subagent · revision")) +
         `\n${args.model ?? "…"} · requested thinking: ${args.thinking ?? "…"}`, 0, 0);
@@ -102,8 +123,7 @@ export default function (pi: ExtensionAPI) {
       const start = epoch, task = owned(ctx, input.task), runtimePath = process.env.PI_DELEGATE_RUNTIME;
       const runtime = await runtimeFrom(runtimePath);
       if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error("Previous job nonce changed or binding unavailable; review the latest task");
-      const [provider, ...parts] = input.model.split("/");
-      if (!ctx.modelRegistry.find(provider, parts.join("/"))) throw new Error("Exact model not found in the host model registry");
+      const selection = resolveSelection(input, runtime, ctx.modelRegistry, task);
       const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
       if (rows.length !== 1 || rows[0].phase !== "EXITED" || rows[0].exitCode !== 0 || rows[0].cancellationRequested) {
         throw new Error("Previous worker is not confirmed EXITED/0 without cancellation; investigate, do not automatically retry");
@@ -112,7 +132,7 @@ export default function (pi: ExtensionAPI) {
       if (previous.code !== 0 || previous.signal || previous.integrityError || !previous.fingerprint) throw new Error("Previous worker evidence incomplete; investigate before revision");
       guard(start);
       if (signal?.aborted) throw new Error("Revision cancelled before preparation");
-      const revision = await prepareRevision(task, input, runtime);
+      const revision = await prepareRevision(task, selection, runtime);
       return submit(revision, runtime, runtimePath!, start, signal, ctx);
     },
   });
@@ -170,7 +190,7 @@ export default function (pi: ExtensionAPI) {
       if (!input.task) {
         const who = owner(ctx);
         return response([...tasksFrom(ctx.sessionManager.getBranch()).values()].filter((t: any) => t.owner.session === who.session && t.owner.file === who.file)
-          .map((t: any) => ({ task: t.id, attempt: t.attempt, nonce: t.nonce, model: t.model, thinking: t.thinking, worktree: t.worktree, artifacts: attemptDirectory(t, t.attempt) })));
+          .map((t: any) => ({ task: t.id, attempt: t.attempt, nonce: t.nonce, initiator: initiator(t), route: t.route, backend: t.backend ?? "pi", model: t.model, thinking: t.thinking, worktree: t.worktree, artifacts: attemptDirectory(t, t.attempt) })));
       }
       const start = epoch;
       const task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
@@ -192,7 +212,7 @@ export default function (pi: ExtensionAPI) {
       if (input.openDiff === true) await ctx.executeTool("worktree_panel_target", { path: task.worktree }, { signal });
       let report;
       try { report = await tail(join(directory, "report.md")); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
-      return response({ task: task.id, attempt: task.attempt, status: rows[0], worker, fingerprint, trackedPatch, untracked, checks, report,
+      return response({ task: task.id, attempt: task.attempt, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", status: rows[0], worker, fingerprint, trackedPatch, untracked, checks, report,
         worktree: task.worktree, reviewRequired: true, reviewer: "main-agent", accepted: false,
         missingChecks: task.checks.map((_: unknown, i: number) => i).filter((i: number) => !checks.some(c => c.index === i && c.passed && c.current)) });
     },
