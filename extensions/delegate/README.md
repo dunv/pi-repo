@@ -109,6 +109,14 @@ Preparation/admission failures retain artifacts for manual reconciliation.
 
 ## Review and evidence
 
+The UI action **Collect changes and report** gathers the files/report for review;
+it does not perform or record a review verdict. Its neutral line reads
+**Changes collected · review verdict is separate**. This is a static collection
+snapshot, not a warning, a pending-review tracker or an approval signal. The main
+agent's subsequent review message supplies the verdict. Actual missing worker
+results, failures, cancellations, stale source and integrity errors retain their
+warning/error styling. Zero planned checks means none were requested, not failure.
+
 A report or exit zero is **not acceptance**. The main agent must read the entire
 tracked patch and every new file, inspect relevant context and current check
 records against the brief, then report findings or a concise verdict. Do not

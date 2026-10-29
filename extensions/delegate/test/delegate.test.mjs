@@ -381,11 +381,16 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       const reviewTool = registered.get('delegate_review');
       const reviewReply = await reviewTool.execute('review', { task: task.task }, undefined, undefined, ctx);
       const reviewed = JSON.parse(reviewReply.content[0].text);
+      const colours = [];
+      const reviewTheme = { ...theme, fg: (colour, text) => { colours.push({ colour, text }); return text; } };
+      assert.match(reviewTool.renderCall({ task: task.task }, theme).render(120).join('\n'), /collect changes and report/);
       const renderReview = (data, expanded = false) => reviewTool.renderResult(
-        { content: [{ type: 'text', text: JSON.stringify(data) }] }, { expanded, isPartial: false }, theme).render(120).join('\n');
+        { content: [{ type: 'text', text: JSON.stringify(data) }] }, { expanded, isPartial: false }, reviewTheme).render(120).join('\n');
       const reviewText = renderReview(reviewed);
       assert.match(reviewText, /EXITED · exit 0/);
-      assert.match(reviewText, /main-agent review pending \(not accepted\)/);
+      assert.match(reviewText, /Changes collected · review verdict is separate/);
+      assert.doesNotMatch(reviewText, /Evidence collected|review pending|not accepted/);
+      assert.equal(colours.some(c => c.text.includes('Changes collected')), false, 'Collection status is plain text, not a warning or an approval signal');
       assert.match(reviewText, /needed for indices: 0/);
       assert.match(reviewText, /New files: 1.*new\.txt/);
       assert.doesNotMatch(reviewText, /fingerprint|tracked.diff|"task":/);
@@ -395,7 +400,9 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.match(expandedReview, /Worker duration:/);
       assert.match(renderReview({ ...reviewed, missingChecks: [], checks: [] }), /Checks: none planned/);
       assert.match(renderReview({ ...reviewed, worker: undefined }), /Worker result evidence unavailable/);
+      assert.ok(colours.some(c => c.colour === 'warning' && c.text === 'Worker result evidence unavailable.'));
       assert.match(renderReview({ ...reviewed, worker: { code: 7, integrityError: 'fixture problem' } }), /Integrity error: fixture problem/);
+      assert.ok(colours.some(c => c.colour === 'error' && c.text === 'Integrity error: fixture problem'));
       assert.match(renderReview([]), /No delegated tasks/);
       assert.match(renderReview([{ task: task.task, model: task.model, thinking: task.thinking }]), /fixture\/model/);
       const reviewError = reviewTool.renderResult({ content: [{ type: 'text', text: 'Worker is not authoritatively EXITED' }] },

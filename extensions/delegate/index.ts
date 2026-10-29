@@ -137,17 +137,17 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
-    name: "delegate_review", label: "Review delegated diff", exposure: "model-only", executionMode: "sequential",
+    name: "delegate_review", label: "Collect delegate changes", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status", "worktree_panel_target"],
     description: "Omit task to list this active branch's owned task IDs/nonces (no backend query). With a full task UUID, after authoritative Pueue EXITED, collect its untrusted report, tracked diff artifact, new-file list and current-fingerprint check evidence; optionally point the existing diff panel at its worktree with openDiff:true (default false). Does not accept, integrate, retry, delete, or infer success from exit zero. New files are shown by the panel; ignored files are not certified. The main agent must review the entire trackedPatch, every untracked file, relevant source/context and current check evidence against the brief, then report findings or a concise verdict; do not require manual user diff review by default. No polling.",
     parameters: Type.Object({ task: Type.Optional(Type.String()), openDiff: Type.Optional(Type.Boolean()) }),
     renderCall(args, theme) {
-      return new Text(theme.fg("toolTitle", theme.bold(args.task ? "Subagent · collect review evidence" : "Subagents · list tasks")) +
+      return new Text(theme.fg("toolTitle", theme.bold(args.task ? "Subagent · collect changes and report" : "Subagents · list tasks")) +
         (args.task ? `\nTask: ${args.task}` : ""), 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme) {
       const raw = result.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-      if (isPartial) return new Text("Collecting subagent evidence…", 0, 0);
+      if (isPartial) return new Text("Collecting subagent changes and report…", 0, 0);
       try {
         const data = JSON.parse(raw);
         if (Array.isArray(data)) {
@@ -162,7 +162,7 @@ export default function (pi: ExtensionAPI) {
         const missing = data.missingChecks ?? [], checks = data.checks ?? [], files = data.untracked ?? [];
         const lines = [
           theme.fg("accent", `Pueue #${data.status.id ?? "?"} · ${data.status.phase} · exit ${data.status.exitCode ?? "unknown"}`),
-          theme.fg("warning", "Evidence collected · main-agent review pending (not accepted)"),
+          "Changes collected · review verdict is separate",
           `Checks: ${missing.length ? `missing/current passing evidence needed for indices: ${missing.join(", ")}` : checks.length ? "all planned checks have current passing evidence" : "none planned"}`,
           `New files: ${files.length}${files.length ? ` · ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`,
         ];
