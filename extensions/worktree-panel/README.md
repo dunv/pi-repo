@@ -2,7 +2,7 @@
 
 A lightweight right-side changed-files overlay for [Pi](https://pi.dev).
 
-Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git unless a target is explicitly selected. Branches without worktrees can also be displayed in read-only mode with `/worktree-branch feature/foo`. The panel uses Pi's supported overlay API, stays passive until explicitly focused, and requires no Herdr installation to display.
+Automatically appears when Pi starts inside a **linked Git worktree**, including its subdirectories. Hidden in the main checkout and outside Git unless a target is explicitly selected. Select a main checkout explicitly with `/worktree-preview .` to show its committed and uncommitted changes. Branches without worktrees can also be displayed in read-only mode with `/worktree-branch feature/foo`. The panel uses Pi's supported overlay API, stays passive until explicitly focused, and requires no Herdr installation to display.
 
 ```text
 ╭──────────────────────────────────────────╮
@@ -54,7 +54,8 @@ Esc/q. Your draft stays in the editor. The shortcut appears in `/hotkeys`.
 | `/worktree-panel width 52` | Set width to 30–80 columns; default 64 |
 | `/worktree-panel next` / `prev` | Page through long file lists |
 | `/worktree-refresh` | Refresh Git status immediately |
-| `/worktree-preview /absolute/path` | Display another linked worktree for testing |
+| `/worktree-preview /absolute/path` | Display any Git checkout (main or linked) |
+| `/worktree-preview .` | Show committed and uncommitted changes in the current checkout |
 | `/worktree-preview off` | Return to the session's working directory |
 | `/worktree-branch feature/foo` | Show committed changes for a branch in Pi's current repository, no worktree required |
 | `/worktree-branch origin/feature/foo` | Show a locally available remote-tracking branch (no fetch) |
@@ -65,9 +66,9 @@ Preview changes **only the displayed worktree and diff/editor target**, not Pi's
 ## Agent workflow integration
 
 The model-callable `worktree_panel_target` tool accepts `{ "path": "/absolute/worktree" }`
-to target a linked worktree (subdirectories are normalized to its root), or
-`{ "path": null }` to restore the session directory. Without `branch`, relative paths, main checkouts,
-and non-worktrees are rejected without changing the existing target. With `branch`,
+to target a Git checkout, main or linked (subdirectories are normalized to its root), or
+`{ "path": null }` to restore the session directory. Without `branch`, relative paths,
+bare repositories, and non-repositories are rejected without changing the existing target. With `branch`,
 an absolute repository path selects read-only ref mode (see below).
 
 Call it after creating/resuming a feature worktree and clear it before cleanup.
@@ -83,6 +84,25 @@ another tool call. Explicit `path: null` or `/worktree-preview off` clears the s
 override. New sessions do not inherit another session's target. Removed worktrees
 produce an explicit unavailable-target message rather than silently switching repos.
 In non-TUI modes it records the target but does not display a panel.
+
+## Main checkout changes
+
+If `v3` is checked out in the main checkout and has uncommitted changes, run:
+
+```text
+/worktree-preview .
+/worktree-open
+```
+
+Or select it through `worktree_panel_target` with
+`{ "path": "/absolute/repository" }` (omit `branch`). This shows both committed and
+uncommitted areas, including staged, unstaged, and untracked files. The editor
+works as in linked worktrees. The selection persists across reload/restart.
+Main checkouts remain hidden by default; `/worktree-preview off` clears this
+explicit selection. Nothing checks out or switches branches.
+
+`/worktree-branch v3` remains read-only and committed-only, even when `v3` is
+currently checked out. Use the checkout path to see its uncommitted changes.
 
 ## Refs without worktrees
 
@@ -116,7 +136,7 @@ The `branch` field and `/worktree-branch` command retain their names for compati
 but now accept any of the commit-resolving targets above.
 
 Pass this to `worktree_panel_target`. Supplying `branch` allows main-checkout
-paths; omitting it retains the existing linked-worktree validation. A rejected
+paths; omitting it selects the checkout's committed and uncommitted changes. A rejected
 request leaves the saved target unchanged.
 
 ## Two diff areas

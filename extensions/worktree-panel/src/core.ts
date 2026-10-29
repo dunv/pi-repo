@@ -46,6 +46,12 @@ export function parseStatus(text: string): ChangedFile[] {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/** Resolve any working checkout, including the main checkout; reject bare/non-repositories. */
+export async function checkoutRoot(cwd: string): Promise<string | undefined> {
+  try { return (await git(cwd, ["rev-parse", "--show-toplevel"])).trimEnd(); }
+  catch { return undefined; }
+}
+
 // Only linked worktrees: a submodule's .git file alone is NOT sufficient.
 export async function linkedRoot(cwd: string): Promise<string | undefined> {
   try {

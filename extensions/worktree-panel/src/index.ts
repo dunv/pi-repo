@@ -4,7 +4,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { basename, isAbsolute, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { linkedRoot, readSnapshot, readDiff, branchTarget, readBranchSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot, type DiffSource } from "./core.ts";
+import { checkoutRoot, linkedRoot, readSnapshot, readDiff, branchTarget, readBranchSnapshot, display, shellQuote, editorArgs, fileTarget, type Snapshot, type DiffSource } from "./core.ts";
 
 import { WorktreePanel } from "./panel.ts";
 import { DiffViewer } from "./diff.ts";
@@ -29,7 +29,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
 
   async function snapshot(cwd: string): Promise<Snapshot | undefined> {
     if (previewBranch) return readBranchSnapshot(preview ?? cwd, previewBranch);
-    const root = await linkedRoot(preview ?? cwd);
+    const root = preview ? await checkoutRoot(preview) : await linkedRoot(cwd);
     return root ? readSnapshot(root) : undefined;
   }
   let signature = "";
@@ -275,17 +275,17 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the panel at a linked Git worktree, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
+    description: "Point the panel at any Git checkout (main or linked) for committed and uncommitted changes, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
     parameters: Type.Object({
-      path: Type.Union([Type.String({ description: "Absolute linked-worktree path, or repository path when branch is supplied" }), Type.Null()]),
+      path: Type.Union([Type.String({ description: "Absolute Git checkout path (main or linked), or repository path when branch is supplied" }), Type.Null()]),
       branch: Type.Optional(Type.String({ minLength: 1, description: "Branch, tag, custom ref, or commit revision (e.g. feature/foo, v3, refs/releases/v3, HEAD~1); read-only, no worktree needed" })),
     }),
     async execute(_id, { path, branch }, _signal, _onUpdate, ctx) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
       if (branch !== undefined && (path === null || !branch)) throw new Error("Ref requires a repository path and a nonempty name");
       const target = branch !== undefined && path !== null ? await branchTarget(path, branch) : undefined;
-      const root = target?.root ?? (path === null ? undefined : await linkedRoot(path));
-      if (path !== null && !root) throw new Error("That path is not inside a linked Git worktree");
+      const root = target?.root ?? (path === null ? undefined : await checkoutRoot(path));
+      if (path !== null && !root) throw new Error("That path is not inside a Git checkout");
       pi.appendEntry(TARGET_ENTRY, { path: root ?? null, ...(target ? { branch: target.branch } : {}) });
       epoch++;
       preview = root;
@@ -362,14 +362,14 @@ export default function worktreePanel(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("worktree-preview", {
-    description: "Set the saved panel worktree by path; 'off' restores session cwd",
+    description: "Set the saved panel checkout (main or linked) by path; 'off' restores session cwd",
     handler: async (args, ctx) => {
       if (!interactive(ctx)) return;
       const path = args.trim();
       if (!path) { ctx.ui.notify("Usage: /worktree-preview /absolute/path or /worktree-preview off", "info"); return; }
-      const root = path === "off" ? undefined : await linkedRoot(resolve(ctx.cwd, path));
+      const root = path === "off" ? undefined : await checkoutRoot(resolve(ctx.cwd, path));
       if (path !== "off" && !root) {
-        ctx.ui.notify("That path is not inside a linked Git worktree", "warning"); return;
+        ctx.ui.notify("That path is not inside a Git checkout", "warning"); return;
       }
       pi.appendEntry(TARGET_ENTRY, { path: root ?? null });
       epoch++;

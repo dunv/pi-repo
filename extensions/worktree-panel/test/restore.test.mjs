@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { git } from '../src/core.ts';
+import { git, readSnapshot, readDiff } from '../src/core.ts';
 import { restoreTarget, TARGET_ENTRY } from '../src/target.ts';
 import worktreePanel from '../src/index.ts';
 
@@ -111,6 +111,72 @@ test('tool-selected worktree opens from main cwd and survives reload/resume, res
     await h.open();
     assert.match(h.notifications.at(-1), /Worktree target is unavailable/);
     assert.equal(h.views.length, 0);
+  } finally {
+    h?.stop();
+    await rm(main, { recursive: true, force: true });
+  }
+});
+
+test('explicit main checkout shows v3 working changes and survives restore without changing Git state', async () => {
+  const main = await mkdtemp(join(tmpdir(), 'panel-main-'));
+  let h;
+  try {
+    await git(main, ['init', '-b', 'master']);
+    await git(main, ['config', 'user.email', 'test@example.invalid']);
+    await git(main, ['config', 'user.name', 'Test']);
+    await writeFile(join(main, 'file.txt'), 'base\n');
+    await git(main, ['add', '.']);
+    await git(main, ['commit', '-m', 'base']);
+    await git(main, ['checkout', '-b', 'v3']);
+    await writeFile(join(main, 'file.txt'), 'committed\n');
+    await git(main, ['commit', '-am', 'v3 change']);
+    await writeFile(join(main, 'file.txt'), 'staged\n');
+    await git(main, ['add', 'file.txt']);
+    await writeFile(join(main, 'file.txt'), 'unstaged\n');
+    await writeFile(join(main, 'new.txt'), 'untracked\n');
+    const before = await git(main, ['status', '--porcelain=v1']);
+    const head = await git(main, ['rev-parse', 'HEAD']);
+    const index = await git(main, ['write-tree']);
+    const history = [];
+    h = harness(main, history);
+    h.start('startup');
+    await h.open();
+    assert.equal(h.views.length, 0); // Still opt-in for main checkouts.
+    for (const select of [() => h.target(main), () => h.preview('.')]) {
+      await select();
+      assert.equal(restoreTarget(history), main);
+      await h.open();
+      const text = h.views.at(-1).render(100).join('\n');
+      assert.match(text, /v3/);
+      assert.match(text, /Committed vs master/);
+      assert.match(text, /Uncommitted/);
+      assert.match(text, /file.txt/);
+      h.views.at(-1).handleInput('\u001b[F'); // End: reveal the last uncommitted file.
+      assert.match(h.views.at(-1).render(100).join('\n'), /new.txt/);
+      h.stop();
+      h = harness(main, history);
+      h.start('reload');
+      await h.open();
+      h.views.at(-1).handleInput('\u001b[F');
+      assert.match(h.views.at(-1).render(100).join('\n'), /new.txt/);
+    }
+    const snapshot = await readSnapshot(main);
+    const file = snapshot.files.find(f => f.path === 'file.txt');
+    assert.equal(file.status, 'MM');
+    const diff = await readDiff(main, file);
+    assert.match(diff, /Staged/);
+    assert.match(diff, /Unstaged/);
+    assert.match(diff, /\+staged/);
+    assert.match(diff, /\+unstaged/);
+    const untracked = snapshot.files.find(f => f.path === 'new.txt');
+    assert.match(await readDiff(main, untracked), /\+untracked/);
+    await h.preview('off');
+    await h.open();
+    assert.equal(restoreTarget(history), undefined);
+    assert.match(h.notifications.at(-1), /No worktree target selected/);
+    assert.equal(await git(main, ['status', '--porcelain=v1']), before);
+    assert.equal(await git(main, ['rev-parse', 'HEAD']), head);
+    assert.equal(await git(main, ['write-tree']), index);
   } finally {
     h?.stop();
     await rm(main, { recursive: true, force: true });

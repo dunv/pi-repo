@@ -26,7 +26,7 @@ function harness(cwd) {
   };
 }
 
-test('panel target validates linked worktrees, normalizes subdirs and clears without changing cwd', async () => {
+test('panel target accepts main and linked checkouts, normalizes subdirs and clears without changing cwd', async () => {
   const base = await mkdtemp(join(tmpdir(), 'panel-target-'));
   const main = join(base, 'main');
   const tree = join(base, 'tree');
@@ -36,21 +36,26 @@ test('panel target validates linked worktrees, normalizes subdirs and clears wit
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial');
   git('worktree', 'add', '-b', 'feature/test', tree);
   await mkdir(join(tree, 'sub'));
+  await mkdir(join(main, 'sub'));
+  const bare = join(base, 'bare');
+  git('init', '--bare', bare);
   const before = process.cwd();
   const h = harness(main);
   try {
     const result = await h.call(join(tree, 'sub'));
     assert.deepEqual(result.details, { path: tree, cwdChanged: false, panelAvailable: false });
-    for (const invalid of ['relative/path', main, join(base, 'missing')]) {
-      await assert.rejects(h.call(invalid), /absolute|linked Git worktree/);
+    const mainResult = await h.call(join(main, 'sub'));
+    assert.deepEqual(mainResult.details, { path: main, cwdChanged: false, panelAvailable: false });
+    for (const invalid of ['relative/path', base, bare, join(base, 'missing')]) {
+      await assert.rejects(h.call(invalid), /absolute|Git checkout/);
     }
     assert.equal(process.cwd(), before);
-    assert.equal(h.entries.length, 1); // Rejected paths never overwrite saved state.
-    assert.equal(restoreTarget(h.entries), tree);
+    assert.equal(h.entries.length, 2); // Rejected paths never overwrite saved state.
+    assert.equal(restoreTarget(h.entries), main);
     const cleared = await h.call(null);
     assert.equal(cleared.details.path, null);
     assert.equal(cleared.details.cwdChanged, false);
-    assert.equal(h.entries.length, 2);
+    assert.equal(h.entries.length, 3);
     assert.equal(restoreTarget(h.entries), undefined);
   } finally {
     h.stop();
