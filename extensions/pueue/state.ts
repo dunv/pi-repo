@@ -57,12 +57,16 @@ export type JobView = ReturnType<typeof view>;
 export function trackedViews(owned: readonly Job[], tasks: Task[]): JobView[] {
   return owned.filter(job => matching(job, tasks)).map(job => view(job, tasks));
 }
+/** Terminal in Pueue's queue, not proof of stopped descendants or retry safety. */
+export function terminal(phase: string): boolean {
+  return phase === "EXITED" || phase === "KILLED";
+}
 export type StatusFilter = { nonce?: string; state?: "all" | "active" | "finished" };
 /** UNKNOWN is unresolved, not finished; active filters must retain uncertainty. */
 export function filterViews(rows: JobView[], filter: StatusFilter, owned: readonly { nonce: string }[] = rows): JobView[] {
   if (filter.nonce && !owned.some(row => row.nonce === filter.nonce)) throw new Error("Nonce not owned by this session branch");
   return rows.filter(row => (!filter.nonce || row.nonce === filter.nonce)
-    && (filter.state === "active" ? row.phase !== "EXITED" : filter.state === "finished" ? row.phase === "EXITED" : true));
+    && (filter.state === "active" ? !terminal(row.phase) : filter.state === "finished" ? terminal(row.phase) : true));
 }
 function noticeKey(e: SessionEntry): string | undefined {
   const data = e.type === "custom_message" && e.customType === NOTICE ? e.details

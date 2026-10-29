@@ -8,6 +8,7 @@ const content = state => JSON.stringify(state) + '\nLong model-facing permission
 test('compact notices show exit status/uncertainty without internal labels or warning walls', () => {
   assert.equal(noticeText(content({ id: 1, phase: 'EXITED', exitCode: 0 })), '✓ Pueue #1 · Done · exit 0');
   assert.equal(noticeText(content({ id: 2, phase: 'EXITED', exitCode: 7 })), '✗ Pueue #2 · Failed · exit 7');
+  assert.equal(noticeText(content({ id: 2, phase: 'KILLED' })), '■ Pueue #2 · Killed (backend terminal; termination unverified)');
   assert.equal(noticeText(content({ id: 2, phase: 'UNKNOWN' })), '? Pueue #2 · Status unknown');
   assert.equal(noticeText(content({ phase: 'ADMISSION_UNKNOWN' })), '? Pueue · Admission unknown');
   assert.match(noticeText(content({ id: 1, phase: 'EXITED', exitCode: 0, cancellationRequested: true })), /cancellation requested$/);

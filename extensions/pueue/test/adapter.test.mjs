@@ -208,7 +208,7 @@ test('jobs widget appears only for owned active work, toggles without model mess
 test('widget keeps uncertainty visible, clears stale session/branch views and ignores delayed old queries', async () => {
   const h = await harness(); await h.submit();
   const key = 'pi-repo.pueue.jobs';
-  h.fake.finish(0, 'Killed');
+  h.fake.finish(0, 'Errored');
   await h.status(); assert.match(h.widgets.get(key).render(160)[0], /1 unknown/);
   h.fake.fail = args => args[0] === 'status';
   await h.commands.get('pueue').handler('refresh', h.ctx);
@@ -388,7 +388,7 @@ test('submission confirmation configuration defaults off and accepts explicit 0/
 test('success/nonzero are backend exits only; uncertain results stay UNKNOWN, absent/reused identities are omitted; no automatic resubmission', async () => {
   const h = await harness(); await h.submit();
   for (const [backendResult, expected, code] of [['Success', 'EXITED', 0], [{ Failed: 13 }, 'EXITED', 13],
-    ['Killed', 'UNKNOWN'], ['Errored', 'UNKNOWN'], [{ FailedToSpawn: 'SECRET' }, 'UNKNOWN']]) {
+    ['Killed', 'KILLED'], ['Errored', 'UNKNOWN'], [{ FailedToSpawn: 'SECRET' }, 'UNKNOWN']]) {
     h.fake.finish(0, backendResult);
     const [state] = await h.status(); assert.equal(state.phase, expected); assert.equal(state.exitCode, code);
     assert.equal('stoppedDescendants' in state, false);
@@ -403,6 +403,34 @@ test('success/nonzero are backend exits only; uncertain results stay UNKNOWN, ab
   await h.start();
   assert.equal(h.fake.calls.filter(a => a[0] === 'add').length, 1);
   assert.equal(h.fake.calls.filter(a => ['clean', 'remove', 'reset', 'restart', 'shutdown'].includes(a[0])).length, 0);
+});
+
+test('killed jobs are backend-terminal without exit evidence, wake, retry or repeated signalling', async () => {
+  for (const requested of [false, true]) {
+    const h = await harness(); await h.submit();
+    if (requested) await h.cancel();
+    h.fake.finish(0, 'Killed');
+    await h.commands.get('pueue').handler('refresh', h.ctx);
+    const expected = { nonce: h.job().nonce, id: 0, phase: 'KILLED', ...(requested ? { cancellationRequested: true } : {}) };
+    assert.deepEqual(await h.status({ state: 'active' }), []);
+    assert.deepEqual(await h.status({ state: 'finished' }), [expected]);
+    assert.equal(h.widgets.has('pi-repo.pueue.jobs'), false);
+    assert.deepEqual(JSON.parse(h.messages.at(-1).content), expected);
+    assert.equal(h.messages.at(-1).options.triggerTurn, false);
+    const count = h.messages.length;
+    h.fake.fail = args => args[0] === 'status';
+    await h.commands.get('pueue').handler('refresh', h.ctx);
+    assert.equal(h.widgets.has('pi-repo.pueue.jobs'), false, 'failed refresh cannot resurrect a terminal row');
+    h.fake.fail = undefined;
+    await h.start(); await h.start();
+    assert.equal(h.messages.length, count, 'terminal receipt survives reload');
+    await h.cancel();
+    assert.equal(h.fake.calls.filter(args => args[0] === 'kill').length, requested ? 1 : 0);
+    assert.equal(h.fake.calls.filter(args => args[0] === 'add').length, 1);
+    const uncertain = { ...h.job(), admitted: false };
+    assert.equal(view(uncertain, await new Backend(h.config, args => h.fake.run(args)).tasks()).phase, 'ADMISSION_UNKNOWN');
+    h.stop();
+  }
 });
 
 test('explicit cancellation uses SIGTERM only, persists intent even when handler exits zero; generic abort never signals', async () => {
@@ -578,7 +606,7 @@ test('completion triggers a follow-up on resume once; uncertainty stays passive 
   assert.deepEqual(JSON.parse(h.messages[0].content), { nonce: h.job().nonce, id: 0, phase: 'EXITED', exitCode: 7 });
   assert.match(h.tools.get('pueue_status').description, /not CI\/review\/publication success/);
   h.fake.finish(0, 'Killed'); await h.start(); await h.start();
-  assert.equal(h.messages.length, 2); assert.match(h.messages[1].content, /UNKNOWN/);
+  assert.equal(h.messages.length, 2); assert.match(h.messages[1].content, /KILLED/);
   assert.deepEqual(h.messages[1].options, { deliverAs: 'followUp', triggerTurn: false });
   h.fake.tasks = {}; await h.start(); await h.start();
   assert.equal(h.messages.length, 2, 'cleanup emits no notice or model wake');

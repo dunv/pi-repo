@@ -419,7 +419,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
         brief: 'Explicit authorized revision; preserve worktree and prior changes.', model: 'fixture/model', thinking: 'low' };
       const revise = registered.get('delegate_revise');
       const submitsBeforeRevision = calls.filter(c => c.name === 'pueue_submit').length;
-      for (const state of ['RUNNING', 'QUEUED', 'UNKNOWN', 'ADMISSION_UNKNOWN']) {
+      for (const state of ['RUNNING', 'QUEUED', 'UNKNOWN', 'ADMISSION_UNKNOWN', 'KILLED']) {
         phase = state;
         await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /not confirmed/);
       }

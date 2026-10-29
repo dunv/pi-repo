@@ -6,8 +6,8 @@ const row = (phase, id = 0) => ({ nonce: '00000000-0000-4000-8000-000000000001',
 
 test('widget hides empty/finished history and counts all unresolved states', () => {
   assert.equal(widgetLines([], true), undefined);
-  assert.equal(widgetLines([row('EXITED')], true), undefined);
-  const rows = ['RUNNING', 'QUEUED', 'PAUSED', 'STASHED', 'UNKNOWN', 'ADMISSION_UNKNOWN', 'EXITED'].map(row);
+  assert.equal(widgetLines([row('EXITED'), row('KILLED')], true), undefined);
+  const rows = ['RUNNING', 'QUEUED', 'PAUSED', 'STASHED', 'UNKNOWN', 'ADMISSION_UNKNOWN', 'EXITED', 'KILLED'].map(row);
   const expanded = widgetLines(rows, true);
   assert.equal(expanded.length, 7);
   assert.match(expanded[0], /1 running · 1 queued · 1 paused · 1 stashed · 1 unknown · 1 admission unknown/);

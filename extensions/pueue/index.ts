@@ -7,7 +7,7 @@ import { logPresentation } from "./log-presentation.ts";
 import { commandPreview, displayLiteral, displayState, statusLabel, submission, submissionDetails, submissionFor } from "./presentation.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
-import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, trackedViews, view, type Job, type JobView, type Owner } from "./state.ts";
+import { ENTRY, NOTICE, RECEIPT, completionNoticed, filterViews, intent, jobs, matching, noticed, reservation, sessionGroup, terminal, trackedViews, view, type Job, type JobView, type Owner } from "./state.ts";
 
 // Static policy belongs in tool declarations, not repeated beside every row/result.
 const result = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
@@ -71,13 +71,13 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   }
   function unavailable(a: Active) {
     // Retain only the current list: a query failure must not resurrect cleaned history.
-    updateWidget(a, a.rows.map(row => row.phase === "EXITED" ? row : {
+    updateWidget(a, a.rows.map(row => terminal(row.phase) ? row : {
       ...row, phase: row.phase === "ADMISSION_UNKNOWN" ? row.phase : "UNKNOWN",
     }), true);
   }
   function armSafety(a: Active) {
     if (!current(a)) return;
-    if (!a.rows.some(row => row.phase !== "EXITED")) {
+    if (!a.rows.some(row => !terminal(row.phase))) {
       if (a.safetyTimer) clearTimeout(a.safetyTimer);
       a.safetyTimer = undefined;
       return;
@@ -103,7 +103,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
         if (!bound(a, j)) return;
         if (!matching(j, tasks)) continue; // Backend cleanup is not an UNKNOWN/completion notice.
         const state = view(j, tasks);
-        if (!["EXITED", "UNKNOWN", "ADMISSION_UNKNOWN"].includes(state.phase)) continue;
+        if (!["EXITED", "KILLED", "UNKNOWN", "ADMISSION_UNKNOWN"].includes(state.phase)) continue;
         // Preserve v1 keys across compact-payload upgrades; omission still means false.
         const key = `${j.nonce}:${state.phase}:${state.exitCode ?? "none"}:${!!state.cancellationRequested}`;
         if (noticed(a.ctx.sessionManager.getBranch(), key)) continue;
@@ -247,7 +247,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   });
   pi.registerTool({
     name: "pueue_status", label: "Pueue status", executionMode: "sequential",
-    description: "Read this session branch's currently backend-tracked job states; optionally filter by full nonce or state (default all). Successfully queried absent identities are omitted (an owned absent nonce returns []); history is retained, absence is not completion or retry permission. Active includes UNKNOWN/ADMISSION_UNKNOWN; finished means EXITED only. Exit 0 is not CI/review/publication success or merge permission; omitted verification fields remain unverified. Cancellation is intent, not proof descendants stopped. UNKNOWN never permits automatic retry/takeover. No model polling/sleep loops; callbacks/resume reconcile. No raw environments/commands.",
+    description: "Read this session branch's currently backend-tracked job states; optionally filter by full nonce or state (default all). Successfully queried absent identities are omitted (an owned absent nonce returns []); history is retained, absence is not completion or retry permission. Active includes UNKNOWN/ADMISSION_UNKNOWN; finished includes EXITED and KILLED. KILLED is backend-terminal, possibly synthesized by restore, not proof processes stopped or permission to retry/take over; no exit code is inferred. Exit 0 is not CI/review/publication success or merge permission; omitted verification fields remain unverified. Cancellation is intent, not proof descendants stopped. UNKNOWN never permits automatic retry/takeover. No model polling/sleep loops; callbacks/resume reconcile. No raw environments/commands.",
     parameters: Type.Object({ nonce: Type.Optional(Type.String({ minLength: 1 })),
       state: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("active"), Type.Literal("finished")])) }), annotations: { readOnlyHint: true },
     async execute(_id, input, _signal, _update, ctx) {

@@ -43,6 +43,9 @@ export function statusLabel(state: DisplayState) {
     icon = state.exitCode === 0 ? "✓" : "✗";
     label = `${state.exitCode === 0 ? "Done" : "Failed"} · exit ${state.exitCode}`;
     ink = state.exitCode === 0 ? "success" : "error";
+  } else if (state.phase === "KILLED") {
+    icon = "■";
+    label = "Killed (backend terminal; termination unverified)";
   } else {
     const phases: Record<string, [string, string]> = { QUEUED: ["◷", "Queued"], RUNNING: ["▶", "Running"], PAUSED: ["Ⅱ", "Paused"], STASHED: ["◷", "Stashed"], ADMISSION_UNKNOWN: ["?", "Admission unknown"] };
     const phase = typeof state.phase === "string" && Object.hasOwn(phases, state.phase) ? phases[state.phase] : undefined;

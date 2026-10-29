@@ -73,7 +73,10 @@ export function project(text: string): Task[] {
       else if (object(result) && Number.isSafeInteger(result.Failed)) {
         phase = "EXITED"; exitCode = Number(result.Failed);
       }
-      // Killed may be synthetic restore state. Other failures do not establish process termination.
+      else if (result === "Killed") phase = "KILLED";
+      // KILLED is backend-terminal only: restore can synthesize it, so it proves
+      // neither process/descendant termination nor safe retry. No exit code is inferred.
+      // Other failures remain unresolved.
     }
     tasks.push({ id: Number(raw.id), created: raw.created_at, label: raw.label ?? "", phase, ...(exitCode === undefined ? {} : { exitCode }) });
   }
