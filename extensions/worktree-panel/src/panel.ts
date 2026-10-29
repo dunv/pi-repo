@@ -140,7 +140,7 @@ export class WorktreePanel {
     const line = (text: string, tone: SurfaceTone = "body") => surface.fill(border("│ ") + pad(text) + border(" │"), tone);
     const frame = (left: string, right: string) => surface.fill(border(left + "─".repeat(Math.max(1, width - 2)) + right));
     const title = this.data.branchOnly
-      ? `Branch (read-only) · ${display(this.data.branch)}`
+      ? `Ref (read-only) · ${display(this.data.branch)}`
       : `${this.preview ? "[preview] " : ""}Worktree · ${display(basename(this.data.root))}${compact ? ` · ${display(this.data.branch)}` : ""}`;
     const result = [frame("╭", "╮"), line(surface.fg("accent", title, true), "header")];
     if (!compact) {

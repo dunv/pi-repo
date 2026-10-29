@@ -72,26 +72,35 @@ export function parseNameStatus(text: string): ChangedFile[] {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-/** Resolve only local/remote branch refs, never arbitrary revision expressions or options. */
+/** Keep named refs live; pin other commit revisions to an immutable object ID. */
 export async function branchTarget(cwd: string, branch: string): Promise<{ root: string; branch: string }> {
   const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trimEnd();
-  const refs = branch.startsWith("refs/heads/") || branch.startsWith("refs/remotes/")
-    ? [branch] : [`refs/heads/${branch}`, `refs/remotes/${branch}`];
+  if (!branch || branch.startsWith("-") || /[\x00-\x1f\x7f]/.test(branch)) {
+    throw new Error(`Ref unavailable: ${display(branch)}`);
+  }
+  const refs = branch.startsWith("refs/")
+    ? [branch] : [`refs/heads/${branch}`, `refs/remotes/${branch}`, `refs/tags/${branch}`, `refs/${branch}`];
   for (const ref of refs) {
     try {
       await git(root, ["check-ref-format", ref]);
       await git(root, ["show-ref", "--verify", "--", ref]);
+      await git(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
       return { root, branch: ref };
-    } catch { /* Try the next fully qualified branch ref. */ }
+    } catch { /* Try the next fully qualified ref. */ }
   }
-  throw new Error(`Branch unavailable: ${display(branch)}`);
+  try {
+    const commit = (await git(root, ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`])).trim();
+    return { root, branch: commit };
+  } catch {
+    throw new Error(`Ref unavailable: ${display(branch)}`);
+  }
 }
 
 export async function readBranchSnapshot(cwd: string, branch: string): Promise<Snapshot> {
   const target = await branchTarget(cwd, branch);
   // Resolve once: the file list and every selected diff use the same immutable commit.
-  const head = (await git(target.root, ["rev-parse", "--verify", `${target.branch}^{commit}`])).trim();
-  return { root: target.root, branch: target.branch.replace(/^refs\/(heads|remotes)\//, ""),
+  const head = (await git(target.root, ["rev-parse", "--verify", "--end-of-options", `${target.branch}^{commit}`])).trim();
+  return { root: target.root, branch: target.branch.replace(/^refs\/(heads|remotes|tags)\//, ""),
     files: [], committed: await readCommitted(target.root, head), branchOnly: true };
 }
 

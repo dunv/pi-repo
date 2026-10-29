@@ -275,14 +275,14 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the panel at a linked Git worktree, or set branch plus an absolute repository path for read-only committed branch diffs without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
+    description: "Point the panel at a linked Git worktree, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
     parameters: Type.Object({
       path: Type.Union([Type.String({ description: "Absolute linked-worktree path, or repository path when branch is supplied" }), Type.Null()]),
-      branch: Type.Optional(Type.String({ minLength: 1, description: "Local or remote branch (e.g. feature/foo or origin/feature/foo); read-only, no worktree needed" })),
+      branch: Type.Optional(Type.String({ minLength: 1, description: "Branch, tag, custom ref, or commit revision (e.g. feature/foo, v3, refs/releases/v3, HEAD~1); read-only, no worktree needed" })),
     }),
     async execute(_id, { path, branch }, _signal, _onUpdate, ctx) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
-      if (branch !== undefined && (path === null || !branch)) throw new Error("Branch requires a repository path and a nonempty name");
+      if (branch !== undefined && (path === null || !branch)) throw new Error("Ref requires a repository path and a nonempty name");
       const target = branch !== undefined && path !== null ? await branchTarget(path, branch) : undefined;
       const root = target?.root ?? (path === null ? undefined : await linkedRoot(path));
       if (path !== null && !root) throw new Error("That path is not inside a linked Git worktree");
@@ -345,10 +345,10 @@ export default function worktreePanel(pi: ExtensionAPI) {
     handler: async (_args, ctx) => { if (interactive(ctx)) schedule(0); },
   });
   pi.registerCommand("worktree-branch", {
-    description: "Show read-only committed diffs for a local/remote branch without a worktree; off clears target",
+    description: "Show read-only committed diffs for a branch, tag, custom ref, or commit revision; off clears target",
     handler: async (args, ctx) => {
       const branch = args.trim();
-      if (!branch) { ctx.ui.notify("Usage: /worktree-branch feature/foo (or origin/feature/foo), or off", "info"); return; }
+      if (!branch) { ctx.ui.notify("Usage: /worktree-branch <branch, tag, ref, or commit revision>, or off", "info"); return; }
       try {
         const target = branch === "off" ? undefined : await branchTarget(ctx.cwd, branch);
         pi.appendEntry(TARGET_ENTRY, { path: target?.root ?? null, ...(target ? { branch: target.branch } : {}) });
@@ -358,7 +358,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
         clear();
         context = interactive(ctx) ? ctx : undefined;
         schedule(0);
-      } catch (error) { ctx.ui.notify(`Cannot select branch: ${String(error)}`, "warning"); }
+      } catch (error) { ctx.ui.notify(`Cannot select ref: ${String(error)}`, "warning"); }
     },
   });
   pi.registerCommand("worktree-preview", {

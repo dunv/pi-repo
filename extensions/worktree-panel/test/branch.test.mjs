@@ -48,13 +48,49 @@ test('branch-only snapshots and pinned diffs require no worktree or checkout', a
   assert.equal((await git(root, ['worktree', 'list', '--porcelain'])).match(/^worktree /gm).length, 1);
 }));
 
-test('branch targets accept local and remote refs, reject revisions and missing branches', async () => fixture(async root => {
+test('ref targets accept local and remote refs, reject options and missing refs', async () => fixture(async root => {
   await git(root, ['update-ref', 'refs/remotes/origin/demo', 'refs/heads/feature/demo']);
   assert.equal((await branchTarget(root, 'origin/demo')).branch, 'refs/remotes/origin/demo');
   assert.equal((await branchTarget(root, 'refs/heads/feature/demo')).branch, 'refs/heads/feature/demo');
-  for (const bad of ['missing', '--help', 'feature/demo~1', 'refs/tags/demo', 'feature/demo^{commit}']) {
-    await assert.rejects(branchTarget(root, bad), /Branch unavailable/);
+  for (const bad of ['', 'missing', '--help', '--all', 'refs/tags/missing', 'HEAD:file.txt', 'HEAD\n']) {
+    await assert.rejects(branchTarget(root, bad), /Ref unavailable/);
   }
+}));
+
+test('tags, custom refs and commit revisions show pinned committed diffs without checkout', async () => fixture(async root => {
+  const before = await git(root, ['status', '--porcelain=v1']);
+  const head = (await git(root, ['rev-parse', 'HEAD'])).trim();
+  const feature = (await git(root, ['rev-parse', 'feature/demo'])).trim();
+  await git(root, ['tag', 'v3', feature]);
+  await git(root, ['tag', '-a', 'annotated', '-m', 'release', feature]);
+  await git(root, ['update-ref', 'refs/releases/v3', feature]);
+  for (const ref of ['v3', 'refs/tags/v3', 'annotated', 'refs/releases/v3', 'releases/v3', feature, feature.slice(0, 10), 'feature/demo^{commit}']) {
+    const data = await readBranchSnapshot(root, ref);
+    assert.equal(data.branchOnly, true);
+    assert.deepEqual(data.files, []);
+    assert.equal(data.committed.source.head, feature);
+    assert.match(await readDiff(root, data.committed.files[0], data.committed.source), /\+feature/);
+  }
+  assert.equal((await branchTarget(root, 'feature/demo~1')).branch, head);
+  assert.equal((await branchTarget(root, 'HEAD')).branch, head);
+  // Existing branch precedence stays intact even when tags share the name.
+  await git(root, ['tag', 'feature/demo', head]);
+  assert.equal((await branchTarget(root, 'feature/demo')).branch, 'refs/heads/feature/demo');
+  // Named refs follow updates, but an opened comparison stays immutable.
+  const target = await branchTarget(root, 'v3');
+  assert.equal(target.branch, 'refs/tags/v3');
+  const data = await readBranchSnapshot(root, target.branch);
+  await git(root, ['update-ref', target.branch, head]);
+  assert.equal((await readBranchSnapshot(root, target.branch)).committed.files.length, 0);
+  assert.match(await readDiff(root, data.committed.files[0], data.committed.source), /\+feature/);
+  await git(root, ['update-ref', '-d', target.branch]);
+  await assert.rejects(readBranchSnapshot(root, target.branch), /Ref unavailable/);
+  const blob = (await git(root, ['rev-parse', 'HEAD:file.txt'])).trim();
+  await git(root, ['tag', 'blob-tag', blob]);
+  await assert.rejects(branchTarget(root, 'blob-tag'), /Ref unavailable/);
+  assert.equal(await git(root, ['status', '--porcelain=v1']), before);
+  assert.equal((await git(root, ['rev-parse', 'HEAD'])).trim(), head);
+  assert.equal((await git(root, ['worktree', 'list', '--porcelain'])).match(/^worktree /gm).length, 1);
 }));
 
 test('branch panel has only committed area, pagination and no editor action', async () => fixture(async root => {
@@ -66,7 +102,7 @@ test('branch panel has only committed area, pagination and no editor action', as
   });
   panel.setActive(true);
   let text = panel.render(100).join('\n');
-  assert.match(text, /Branch \(read-only\)/);
+  assert.match(text, /Ref \(read-only\)/);
   assert.doesNotMatch(text, /Uncommitted|e edit|dirty.txt/);
   panel.handleInput('e');
   assert.equal(edits.length, 0);
@@ -108,12 +144,12 @@ test('branch tool/command persistence, reset and unavailable-target handling', a
     load();
     events.get('session_start')({}, ctx);
     await open();
-    assert.match(views.at(-1).render(100).join('\n'), /Branch \(read-only\)/);
+    assert.match(views.at(-1).render(100).join('\n'), /Ref \(read-only\)/);
     await git(root, ['branch', '-D', 'feature/demo']);
     const count = views.length;
     await open();
     assert.equal(views.length, count);
-    assert.match(notices.at(-1), /Branch unavailable/);
+    assert.match(notices.at(-1), /Ref unavailable/);
     await commands.get('worktree-branch').handler('master', ctx);
     assert.equal(restorePanelTarget(history).branch, 'refs/heads/master');
     await commands.get('worktree-preview').handler('off', ctx);

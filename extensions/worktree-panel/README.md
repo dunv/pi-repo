@@ -68,7 +68,7 @@ The model-callable `worktree_panel_target` tool accepts `{ "path": "/absolute/wo
 to target a linked worktree (subdirectories are normalized to its root), or
 `{ "path": null }` to restore the session directory. Without `branch`, relative paths, main checkouts,
 and non-worktrees are rejected without changing the existing target. With `branch`,
-an absolute repository path selects read-only branch mode (see below).
+an absolute repository path selects read-only ref mode (see below).
 
 Call it after creating/resuming a feature worktree and clear it before cleanup.
 It shares the `/worktree-preview` override and `[preview]` label: only the panel
@@ -84,28 +84,36 @@ override. New sessions do not inherit another session's target. Removed worktree
 produce an explicit unavailable-target message rather than silently switching repos.
 In non-TUI modes it records the target but does not display a panel.
 
-## Branches without worktrees
+## Refs without worktrees
 
 Run `/worktree-branch feature/foo` from the repository's main checkout or a linked
 worktree. Local branches are preferred over matching remote-tracking names;
-fully qualified `refs/heads/...` and `refs/remotes/...` names are also accepted.
-Arbitrary commit expressions and tags are not accepted. To target a branch named
-`off`, use `refs/heads/off`.
+tags (including annotated tags), custom refs, commit IDs, and commit expressions
+are also accepted. For example, use `/worktree-branch v3`,
+`/worktree-branch refs/releases/v3`, or `/worktree-branch HEAD~1`.
+Short names are tried as local branches, remote-tracking branches, tags, then
+`refs/<name>`, in that order. Use a fully qualified ref to disambiguate.
+To target a branch named `off`, use `refs/heads/off`.
+Targets must resolve to commits; blobs, trees, missing refs, and options are rejected.
 
-The panel is labeled **Branch (read-only)** and shows only committed changes,
+The panel is labeled **Ref (read-only)** and shows only committed changes,
 using the same base-ref selection described below. Enter opens a pinned diff;
 there is no uncommitted area or editor action. Neither the checkout, index,
 working files, nor Pi's cwd are changed, and no worktree is created. Refreshes
-track branch-tip updates; already opened diffs retain their commit snapshot.
-Removed branches report an unavailable target without falling back to HEAD.
-Branch targets persist per session branch just like worktree targets.
+track named-ref updates; already opened diffs retain their commit snapshot.
+Other revision expressions (including `HEAD`) and commit IDs are pinned to their
+resolved commit at selection time. Removed refs report an unavailable target
+without falling back to HEAD. Ref targets persist per session branch just like worktree targets.
 `/worktree-branch off`, `/worktree-preview off`, or tool `path: null` clears either mode.
 
 The agent can select a branch in another repository with:
 
 ```json
-{ "path": "/absolute/repository", "branch": "feature/foo" }
+{ "path": "/absolute/repository", "branch": "v3" }
 ```
+
+The `branch` field and `/worktree-branch` command retain their names for compatibility,
+but now accept any of the commit-resolving targets above.
 
 Pass this to `worktree_panel_target`. Supplying `branch` allows main-checkout
 paths; omitting it retains the existing linked-worktree validation. A rejected

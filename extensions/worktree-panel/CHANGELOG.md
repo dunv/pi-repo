@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow read-only panel targets to select tags, custom refs, and commit revisions as well as branches. Keep named refs live, pin revision expressions at selection, and reject non-commit targets and option-like inputs.
+
 - Add `/worktree-branch` and optional `branch` on `worktree_panel_target` for persisted read-only local/remote branch diffs without creating or checking out a worktree. Show committed changes only, disable file editing, and pin selected comparisons to commit IDs.
 
 - Support master-only repositories by falling back to master/origin/master when develop/origin/develop is absent; keep develop preferred and show the selected ref in comparisons.
