@@ -102,17 +102,25 @@ export async function branchTarget(cwd: string, branch: string): Promise<{ root:
   }
 }
 
-export async function readBranchSnapshot(cwd: string, branch: string): Promise<Snapshot> {
+export async function readBranchSnapshot(cwd: string, branch: string, comparisonBase?: string): Promise<Snapshot> {
   const target = await branchTarget(cwd, branch);
   // Resolve once: the file list and every selected diff use the same immutable commit.
   const head = (await git(target.root, ["rev-parse", "--verify", "--end-of-options", `${target.branch}^{commit}`])).trim();
   return { root: target.root, branch: target.branch.replace(/^refs\/(heads|remotes|tags)\//, ""),
-    files: [], committed: await readCommitted(target.root, head), branchOnly: true };
+    files: [], committed: await readCommitted(target.root, head, comparisonBase), branchOnly: true };
 }
 
-async function readCommitted(root: string, revision = "HEAD"): Promise<CommittedChanges> {
-  let ref = "develop";
+async function readCommitted(root: string, revision = "HEAD", comparisonBase?: string): Promise<CommittedChanges> {
+  let ref = comparisonBase?.replace(/^refs\/(heads|remotes|tags)\//, "") ?? "develop";
   let tip: string | undefined;
+  if (comparisonBase !== undefined) {
+    try {
+      const target = await branchTarget(root, comparisonBase);
+      tip = (await git(root, ["rev-parse", "--verify", "--end-of-options", `${target.branch}^{commit}`])).trim();
+    } catch {
+      return { ref, files: [], error: `Comparison base unavailable: ${display(comparisonBase)}` };
+    }
+  }
   const candidates = [
     ["develop", "refs/heads/develop"],
     ["origin/develop", "refs/remotes/origin/develop"],
@@ -120,6 +128,7 @@ async function readCommitted(root: string, revision = "HEAD"): Promise<Committed
     ["origin/master", "refs/remotes/origin/master"],
   ];
   for (const [name, full] of candidates) {
+    if (tip) break;
     try {
       tip = (await git(root, ["rev-parse", "--verify", `${full}^{commit}`])).trim();
       ref = name;
@@ -138,11 +147,11 @@ async function readCommitted(root: string, revision = "HEAD"): Promise<Committed
   }
 }
 
-export async function readSnapshot(root: string): Promise<Snapshot> {
+export async function readSnapshot(root: string, comparisonBase?: string): Promise<Snapshot> {
   const [status, branch, committed] = await Promise.all([
     git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
     git(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    readCommitted(root),
+    readCommitted(root, "HEAD", comparisonBase),
   ]);
   let name = branch.trim();
   if (name === "HEAD") name = `detached ${(await git(root, ["rev-parse", "--short", "HEAD"])).trim()}`;

@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 
 export const TARGET_ENTRY = "worktree-panel-target";
 
-export type PanelTarget = { path: string; branch?: string };
+export type PanelTarget = { path: string; branch?: string; base?: string };
 
 /** Read only the active session branch; null resets override any older target. */
 export function restorePanelTarget(entries: readonly SessionEntry[]): PanelTarget | undefined {
@@ -20,7 +20,8 @@ export function restorePanelTarget(entries: readonly SessionEntry[]): PanelTarge
     if (path === null) target = undefined;
     else if (typeof path === "string" && isAbsolute(path)) {
       const branch = "branch" in data && typeof data.branch === "string" ? data.branch : undefined;
-      target = { path, ...(branch ? { branch } : {}) };
+      const base = "base" in data && typeof data.base === "string" ? data.base : undefined;
+      target = { path, ...(branch ? { branch } : {}), ...(base ? { base } : {}) };
     }
   }
   return target;

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add independent `base` on `worktree_panel_target` and `/worktree-base <ref|auto>` for persisted committed comparisons against any commit-resolving base, without changing the target or hiding checkout changes. Keep merge-base semantics and pinned comparisons; unavailable explicit bases never fall back to develop/master.
+
 - Allow explicit main-checkout targets through `/worktree-preview` and `worktree_panel_target` to show committed and uncommitted changes. Keep automatic display restricted to linked worktrees and read-only ref mode committed-only.
 
 - Allow read-only panel targets to select tags, custom refs, and commit revisions as well as branches. Keep named refs live, pin revision expressions at selection, and reject non-commit targets and option-like inputs.

@@ -54,7 +54,7 @@ test('existing commands focus the same panel; Enter opens diff and Esc restores 
     await git(ctx.cwd, ['add', 'committed.txt']);
     await git(ctx.cwd, ['commit', '-m', 'branch change']);
     await writeFile(join(ctx.cwd, 'new.txt'), 'new content\n');
-    assert.deepEqual([...commands.keys()].sort(), ['worktree-branch', 'worktree-open', 'worktree-panel', 'worktree-preview', 'worktree-refresh']);
+    assert.deepEqual([...commands.keys()].sort(), ['worktree-base', 'worktree-branch', 'worktree-open', 'worktree-panel', 'worktree-preview', 'worktree-refresh']);
     assert.deepEqual([...shortcuts.keys()], ['alt+w']);
     await shortcuts.get('alt+w').handler(ctx);
     assert.equal(views.length, 1);

@@ -48,7 +48,8 @@ function harness(cwd, history) {
     tree: () => events.get('session_tree')({}, ctx),
     open: () => commands.get('worktree-open').handler('', ctx),
     preview: path => commands.get('worktree-preview').handler(path, ctx),
-    target: path => tools.get('worktree_panel_target').execute('test', { path }, undefined, undefined, ctx),
+    target: (path, base) => tools.get('worktree_panel_target').execute('test', { path, base }, undefined, undefined, ctx),
+    base: ref => commands.get('worktree-base').handler(ref, ctx),
     stop: () => events.get('session_shutdown')(),
     views, notifications,
   };
@@ -127,6 +128,7 @@ test('explicit main checkout shows v3 working changes and survives restore witho
     await writeFile(join(main, 'file.txt'), 'base\n');
     await git(main, ['add', '.']);
     await git(main, ['commit', '-m', 'base']);
+    await git(main, ['tag', 'v3-base']);
     await git(main, ['checkout', '-b', 'v3']);
     await writeFile(join(main, 'file.txt'), 'committed\n');
     await git(main, ['commit', '-am', 'v3 change']);
@@ -142,13 +144,13 @@ test('explicit main checkout shows v3 working changes and survives restore witho
     h.start('startup');
     await h.open();
     assert.equal(h.views.length, 0); // Still opt-in for main checkouts.
-    for (const select of [() => h.target(main), () => h.preview('.')]) {
+    for (const select of [() => h.target(main, 'v3-base'), async () => { await h.preview('.'); await h.base('v3-base'); }]) {
       await select();
       assert.equal(restoreTarget(history), main);
       await h.open();
       const text = h.views.at(-1).render(100).join('\n');
       assert.match(text, /v3/);
-      assert.match(text, /Committed vs master/);
+      assert.match(text, /Committed vs v3-base/);
       assert.match(text, /Uncommitted/);
       assert.match(text, /file.txt/);
       h.views.at(-1).handleInput('\u001b[F'); // End: reveal the last uncommitted file.
@@ -158,7 +160,9 @@ test('explicit main checkout shows v3 working changes and survives restore witho
       h.start('reload');
       await h.open();
       h.views.at(-1).handleInput('\u001b[F');
-      assert.match(h.views.at(-1).render(100).join('\n'), /new.txt/);
+      const restored = h.views.at(-1).render(100).join('\n');
+      assert.match(restored, /new.txt/);
+      assert.match(restored, /Committed vs v3-base/);
     }
     const snapshot = await readSnapshot(main);
     const file = snapshot.files.find(f => f.path === 'file.txt');

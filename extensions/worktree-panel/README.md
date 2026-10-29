@@ -60,6 +60,8 @@ Esc/q. Your draft stays in the editor. The shortcut appears in `/hotkeys`.
 | `/worktree-branch feature/foo` | Show committed changes for a branch in Pi's current repository, no worktree required |
 | `/worktree-branch origin/feature/foo` | Show a locally available remote-tracking branch (no fetch) |
 | `/worktree-branch off` | Clear the saved target and return to the session directory |
+| `/worktree-base v3` | Compare committed changes against the merge base with v3; keep the current target and uncommitted area |
+| `/worktree-base auto` | Restore automatic develop/master comparison-base selection |
 
 Preview changes **only the displayed worktree and diff/editor target**, not Pi's working directory or the agent's tools. It is explicitly labeled `[preview]`. Width/visibility reset on reload/restart. The target is saved per session branch and restored automatically.
 
@@ -139,6 +141,43 @@ Pass this to `worktree_panel_target`. Supplying `branch` allows main-checkout
 paths; omitting it selects the checkout's committed and uncommitted changes. A rejected
 request leaves the saved target unchanged.
 
+## Choosing the comparison base
+
+The target and comparison base are independent. To keep a checkout selected and
+show both areas with `v3` as the base, pass to `worktree_panel_target`:
+
+```json
+{ "path": "/absolute/checkout", "base": "v3" }
+```
+
+Omit `branch` to retain checkout mode, including uncommitted changes. `branch`
+selects a read-only target ref, not the comparison base. Both `branch` and `base`
+can be supplied when a committed-only comparison of two refs is wanted.
+
+For the current checkout, use:
+
+```text
+/worktree-preview .
+/worktree-base v3
+/worktree-open
+```
+
+`/worktree-base` changes only the comparison base and preserves the selected
+checkout or read-only ref target. It also works directly in a main checkout.
+`auto` restores the default base-ref selection; use a fully qualified ref such
+as `refs/heads/auto` for a ref literally named auto.
+
+Base refs accept branches, tags, custom refs, and commit revisions. Named refs
+track updates; revision expressions are pinned at selection. The base is saved
+per session branch and restored on reload/restart. Missing or unrelated bases
+make only the committed area unavailable; the uncommitted area remains usable,
+and no automatic-base fallback occurs. Opened committed diffs retain both their
+base and target commit snapshots.
+
+A new `worktree_panel_target` call without `base`, `/worktree-preview`, or
+`/worktree-branch` restores automatic base selection. Rejected selections leave
+the existing target and base unchanged.
+
 ## Two diff areas
 
 In worktree mode the panel shows two independently paginated areas:
@@ -152,7 +191,8 @@ In worktree mode the panel shows two independently paginated areas:
   viewer keeps staged and unstaged patches separate; untracked files are additions.
 
 A file can appear in both areas with different diffs. A clean worktree does not
-hide committed branch changes. Base refs are tried in this order: `develop`,
+hide committed branch changes. Unless an explicit comparison base is selected,
+base refs are tried in this order: `develop`,
 `origin/develop`, `master`, `origin/master`. Thus develop remains the default,
 while master-only repositories work automatically. The heading and diff viewer
 show the selected ref. Nothing is fetched automatically. If none of these refs

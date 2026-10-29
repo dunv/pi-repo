@@ -26,11 +26,12 @@ export default function worktreePanel(pi: ExtensionAPI) {
   let context: ExtensionContext | undefined;
   let preview: string | undefined;
   let previewBranch: string | undefined;
+  let previewBase: string | undefined;
 
   async function snapshot(cwd: string): Promise<Snapshot | undefined> {
-    if (previewBranch) return readBranchSnapshot(preview ?? cwd, previewBranch);
+    if (previewBranch) return readBranchSnapshot(preview ?? cwd, previewBranch, previewBase);
     const root = preview ? await checkoutRoot(preview) : await linkedRoot(cwd);
-    return root ? readSnapshot(root) : undefined;
+    return root ? readSnapshot(root, previewBase) : undefined;
   }
   let signature = "";
   let epoch = 0;
@@ -261,6 +262,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
     const saved = restorePanelTarget(ctx.sessionManager.getBranch());
     preview = saved?.path;
     previewBranch = saved?.branch;
+    previewBase = saved?.base;
     if (!interactive(ctx)) return;
     context = ctx;
     schedule(0);
@@ -275,29 +277,33 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the panel at any Git checkout (main or linked) for committed and uncommitted changes, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
+    description: "Point the panel at any Git checkout (main or linked) for committed and uncommitted changes, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Set base to choose the committed comparison base independently; omit it for automatic develop/master selection. Without branch, uncommitted changes stay visible. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
     parameters: Type.Object({
       path: Type.Union([Type.String({ description: "Absolute Git checkout path (main or linked), or repository path when branch is supplied" }), Type.Null()]),
       branch: Type.Optional(Type.String({ minLength: 1, description: "Branch, tag, custom ref, or commit revision (e.g. feature/foo, v3, refs/releases/v3, HEAD~1); read-only, no worktree needed" })),
+      base: Type.Optional(Type.String({ minLength: 1, description: "Comparison base ref or commit (e.g. v3). Only affects committed changes (merge base to target HEAD); omit for automatic develop/master. Does not select a different checkout or hide uncommitted changes." })),
     }),
-    async execute(_id, { path, branch }, _signal, _onUpdate, ctx) {
+    async execute(_id, { path, branch, base }, _signal, _onUpdate, ctx) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");
       if (branch !== undefined && (path === null || !branch)) throw new Error("Ref requires a repository path and a nonempty name");
       const target = branch !== undefined && path !== null ? await branchTarget(path, branch) : undefined;
       const root = target?.root ?? (path === null ? undefined : await checkoutRoot(path));
       if (path !== null && !root) throw new Error("That path is not inside a Git checkout");
-      pi.appendEntry(TARGET_ENTRY, { path: root ?? null, ...(target ? { branch: target.branch } : {}) });
+      if (base !== undefined && (!root || !base)) throw new Error("Base requires a repository path and a nonempty ref");
+      const comparisonBase = base !== undefined ? (await branchTarget(root!, base)).branch : undefined;
+      pi.appendEntry(TARGET_ENTRY, { path: root ?? null, ...(target ? { branch: target.branch } : {}), ...(comparisonBase ? { base: comparisonBase } : {}) });
       epoch++;
       preview = root;
       previewBranch = target?.branch;
+      previewBase = comparisonBase;
       clear();
       context = interactive(ctx) ? ctx : undefined;
       schedule(0);
       return {
         content: [{ type: "text", text: root
-          ? `Panel target: ${root}${target ? ` · ${target.branch} (read-only)` : ""}. Cwd unchanged.`
+          ? `Panel target: ${root}${target ? ` · ${target.branch} (read-only)` : ""}${comparisonBase ? ` · base ${comparisonBase}` : ""}. Cwd unchanged.`
           : "Panel target reset to session cwd. Cwd unchanged." }],
-        details: { path: root ?? null, ...(target ? { branch: target.branch } : {}), cwdChanged: false, panelAvailable: interactive(ctx) },
+        details: { path: root ?? null, ...(target ? { branch: target.branch } : {}), ...(comparisonBase ? { base: comparisonBase } : {}), cwdChanged: false, panelAvailable: interactive(ctx) },
       };
     },
   });
@@ -355,10 +361,30 @@ export default function worktreePanel(pi: ExtensionAPI) {
         epoch++;
         preview = target?.root;
         previewBranch = target?.branch;
+        previewBase = undefined;
         clear();
         context = interactive(ctx) ? ctx : undefined;
         schedule(0);
       } catch (error) { ctx.ui.notify(`Cannot select ref: ${String(error)}`, "warning"); }
+    },
+  });
+  pi.registerCommand("worktree-base", {
+    description: "Set the committed comparison base without changing the target; auto restores develop/master selection",
+    handler: async (args, ctx) => {
+      const base = args.trim();
+      if (!base) { ctx.ui.notify("Usage: /worktree-base <ref or commit revision>, or auto", "info"); return; }
+      try {
+        const root = await checkoutRoot(preview ?? ctx.cwd);
+        if (!root) throw new Error("Selected path is not inside a Git checkout");
+        const comparisonBase = base === "auto" ? undefined : (await branchTarget(root, base)).branch;
+        pi.appendEntry(TARGET_ENTRY, { path: root, ...(previewBranch ? { branch: previewBranch } : {}), ...(comparisonBase ? { base: comparisonBase } : {}) });
+        epoch++;
+        preview = root;
+        previewBase = comparisonBase;
+        clear();
+        context = interactive(ctx) ? ctx : undefined;
+        schedule(0);
+      } catch (error) { ctx.ui.notify(`Cannot select comparison base: ${String(error)}`, "warning"); }
     },
   });
   pi.registerCommand("worktree-preview", {
@@ -375,6 +401,7 @@ export default function worktreePanel(pi: ExtensionAPI) {
       epoch++;
       preview = root;
       previewBranch = undefined;
+      previewBase = undefined;
       context = ctx;
       clear();
       schedule(0);
