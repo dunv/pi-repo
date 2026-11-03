@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { runClaude } from './claude.mjs';
+import { assertContained } from './containment.mjs';
+import { assertRecoveryHandoff } from './recovery.mjs';
 import { runtimeFrom, json, save, assertWorktree, runToFiles, envFor, snapshot, attemptDirectory, workerBackend, initiatorLabel } from './core.mjs';
 
 export async function run(runtimePath, id, attempt) {
@@ -12,6 +14,8 @@ export async function run(runtimePath, id, attempt) {
   const plan = attempt === undefined ? task : await json(join(directory, 'attempt.json'));
   if (attempt !== undefined && (plan.task !== id || plan.attempt !== attempt)) throw new Error('Revision identity mismatch');
   const backend = workerBackend(plan, runtime);
+  if (runtime.containmentProtocol === 1) await assertContained(task, attempt);
+  if (plan.recovery) await assertRecoveryHandoff(task, plan, runtime);
   await assertWorktree(task, runtime, attempt === undefined);
   if (attempt !== undefined && await snapshot(task, runtime) !== plan.expectedFingerprint) {
     throw new Error('Revision source changed after handoff; retain evidence and reconcile');

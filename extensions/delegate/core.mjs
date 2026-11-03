@@ -32,6 +32,8 @@ export async function runtimeFrom(path) {
     if (typeof runtime[key] !== 'string' || !isAbsolute(runtime[key])) throw new Error(`Invalid delegate runtime: ${key}`);
   }
   if (runtime.claude !== undefined && (typeof runtime.claude !== 'string' || !isAbsolute(runtime.claude))) throw new Error('Invalid delegate runtime: claude');
+  if (runtime.containmentProtocol !== undefined && (runtime.containmentProtocol !== 1
+    || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;
 }
@@ -134,7 +136,7 @@ export function attemptDirectory(task, attempt) {
   if (typeof attempt !== 'string' || !/^[a-f0-9-]{36}$/.test(attempt)) throw new Error('Full revision UUID required');
   return join(task.directory, 'revisions', attempt);
 }
-export async function prepareRevision(task, input, runtime) {
+export async function prepareRevision(task, input, runtime, recovery) {
   if (runtime.revisionProtocol !== 1) throw new Error('Revision launcher unavailable: activate the updated runtime and restart Pi first');
   const backend = workerBackend({ ...input, backend: input.backend ?? task.backend }, runtime);
   validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
@@ -150,10 +152,12 @@ export async function prepareRevision(task, input, runtime) {
   await privateDir(join(task.directory, 'revisions'));
   await privateDir(directory);
   await save(join(directory, 'attempt.json'), { task: task.id, attempt, previousNonce: task.nonce,
-    expectedFingerprint: input.expectedFingerprint, backend, route: input.route ?? null, model: input.model, thinking: input.thinking });
+    expectedFingerprint: input.expectedFingerprint, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
+    ...(recovery ? { recovery } : {}) });
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
   if (await snapshot(task, runtime) !== input.expectedFingerprint) throw new Error(`Source changed preparing revision ${attempt}; retain evidence and reconcile`);
-  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, backend, route: input.route ?? null, model: input.model, thinking: input.thinking };
+  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
+    recovery };
 }
 export function tasksFrom(entries) {
   const tasks = new Map();

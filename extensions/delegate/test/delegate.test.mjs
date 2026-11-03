@@ -342,7 +342,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
   const loaded = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], process.cwd());
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
-  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_feedback', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
+  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_feedback', 'delegate_models', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task']);
   const review = tools.find(t => t.name === 'delegate_review');
   await fixture(async f => {
     const entries = [], calls = [];

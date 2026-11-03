@@ -89,8 +89,12 @@ Pi-only levels such as `off` are rejected, not silently converted.
   Supply a self-contained bounded brief with
   scope/paths/acceptance criteria and review assessment, and only necessary
   `{kind: "test"|"build", targets: ["package:test"]}` checks (`[]` is allowed).
+- `delegate_resume {task, expectedNonce, expectedFingerprint, brief}` explicitly
+  recovers a stopped failed/canceled attempt after fresh user confirmation. It
+  preserves the frozen invocation/check plan. See [Explicit recovery](#explicit-recovery).
 - `delegate_review {}` lists active-branch owned tasks without querying the backend.
-  `delegate_review {task, openDiff?: false}` requires authoritative Pueue EXITED,
+  `delegate_review {task, openDiff?: false}` requires authoritative Pueue EXITED
+  (or KILLED with independently verified empty attempt containment),
   collects cumulative tracked diff, new-file list, untrusted report and current
   check evidence. Optional panel targeting does not change the agent's cwd.
 - `delegate_feedback {task, expectedNonce, reviewStatus, usefulness, correctness,
@@ -143,6 +147,77 @@ output base. At startup, both Pi and Claude workers log the JSON-quoted absolute
 path to that attempt's `brief.md` (including revisions), not its contents. The
 brief remains a private 0600 artifact; prompt text is not copied into startup logs.
 No automatic pruning, artifact deletion or worktree cleanup.
+
+## Explicit recovery
+
+`delegate_resume` is a separate path from successful `delegate_revise`. It never
+changes a previous result to success, clears cancellation intent, restarts a Pueue
+job or continues an old Claude session. Every recovery:
+
+1. Requires the latest owned task/nonce on the active session branch and a known
+   backend-terminal failed/canceled job. Absent, UNKNOWN, admission-unknown,
+   running, queued and paused states remain blocked. Successful uncanceled attempts
+   use `delegate_revise` instead.
+2. Independently verifies a trusted `containment.json` startup record against the
+   current boot and exact per-attempt cgroup identity. `cgroup.events: populated 0`
+   covers the whole subtree, including double-fork/`setsid` descendants. A removed
+   recorded cgroup also proves emptiness: Linux cannot remove populated cgroups.
+   A missing events file, replaced directory, reboot, missing startup record or
+   unknown liveness fails closed. KILLED, a missing PID or an exit code alone does
+   **not** establish stopped descendants.
+3. Checks the CURRENT retained worktree fingerprint, root/branch/base and unstaged
+   index. Reviewed foreground fixes are allowed: supply their current fingerprint,
+   not the failed worker's old fingerprint. Collect/review the complete current diff
+   and all new files first. KILLED/cancellation collections require stopped evidence.
+4. Shows a fresh user confirmation with the old job, model/thinking, fingerprint
+   and complete recovery brief. No model-supplied `authorized: true` exists. A
+   non-UI caller cannot recover. Denial, abort or session change admits nothing.
+5. Requeries backend state, rechecks containment and recomputes the fingerprint
+   after confirmation. Exclusive per-parent claims are shared with `delegate_revise`,
+   preventing duplicate continuations across races, stale branch history and lost
+   replies. Claims and uncertain preparations are never automatically released.
+6. Starts a new attempt under `revisions/<new-uuid>/`, with a fresh Pi context or
+   Claude session UUID, reusing the original worktree and `build-output/`. Backend,
+   route, model, thinking, frozen profile command and planned checks are inherited
+   from manifests, not caller-selectable or refreshed from a changed catalogue.
+   Previous results, briefs, logs, check evidence and cancellation history remain
+   intact. The new manifest records authorization, previous attempt/nonce, backend
+   cancellation/exit state and independent stopped evidence.
+7. Rechecks stopped evidence and the handoff fingerprint at actual worker startup.
+   Full patch/new-file/context/check review and caller feedback are still mandatory;
+   recovery grants no acceptance, integration, publication or cleanup permission.
+
+**Legacy limitation:** recovery cannot retroactively prove that descendants of an
+unscoped worker stopped. Old jobs without trusted per-attempt startup containment
+remain blocked; do not manufacture a record, edit their result/status or infer
+liveness from KILLED. Jobs canceled before a scope was recorded are blocked too.
+Retain evidence and investigate manually rather than weakening this gate.
+
+### Scoped runtime for recovery
+
+Enable `containmentProtocol: 1`, configure an absolute `systemdRun` executable and
+materialize `launch.sh` with `@runner@` pointing to **`scope.mjs`**, not `run.mjs`.
+All other launcher replacements and `revisionProtocol: 1` remain unchanged. The
+scope wrapper uses the configured local user's systemd manager over derived
+`/run/user/<uid>/bus` paths; it does not inherit a foreground D-Bus address, tokens
+or agent sockets. The user manager and unified cgroup v2 must be available.
+
+Each attempt gets a unique `pi-delegate-<task>-<attempt-or-initial>.scope`. The
+runner records its kernel cgroup/boot/inode identity before any worker starts,
+then refuses to execute outside that recorded scope. All normal forked descendants,
+including MCP and verification commands, inherit it. Failed scope setup starts no
+model and never falls back to uncontained execution. `systemd-run --scope` is an
+execution envelope, not another retry scheduler; Pueue still owns admission,
+logs/status and cancellation intent. Recovery itself never signals/stops a scope.
+Old immutable launchers/configurations remain necessary for existing queued jobs.
+
+This is **not an OS sandbox** against hostile same-user code or privileged cgroup
+migration: trusted verification commands must not escape the scope, enlist external
+services to mutate the worktree later or migrate processes to another cgroup.
+External endpoint side effects are not rolled back or proven absent. Do not run
+foreground checks/edits concurrently with a worker; source fingerprints do not
+lease external state or certify ignored caches. New runtime deployment/reloading
+is explicit; merely loading the tool does not start processes or migrate old jobs.
 
 ## Caller feedback
 
@@ -401,10 +476,13 @@ wrapper can translate this interface to the project's build/test tools. The outp
 path is stable across revisions; the wrapper is responsible for using it. A
 wrapper that interprets targets as code defeats this capability boundary.
 
+For recoverable attempts use the scoped runtime described above. Unscoped
+runtimes can still run legacy tasks/revisions, but cannot use `delegate_resume`.
+
 Materialize the `launch.sh` template into an executable launcher: replace `@bash@`
 with the absolute Bash path (unquoted, without whitespace, in the shebang), and
 shell-quote replacements for `@state@`, `@flock@`, `@node@` and `@runner@` (packaged
-`run.mjs`). Set the launcher's absolute path in the runtime. State must be private and user-owned;
+`scope.mjs` for recoverable attempts; legacy `run.mjs` otherwise). Set the launcher's absolute path in the runtime. State must be private and user-owned;
 executables/templates/runtime configuration must be trusted. No foreground
 environment is implicitly copied. Never embed secrets in templates or commands.
 Do not load a separate delegate extension alongside the root package. Restart Pi
@@ -419,6 +497,11 @@ never manufacture a manifest or resubmit uncertain work to upgrade it.
 
 Run `npm run check` from the package root. Tests use temporary Git repositories,
 fake Pi/Claude/check executables, actual stdio MCP protocol exchanges, real kernel locks, and the installed development Pi
-1.3.0 loader (optional `PI_TEST_SDK` override). No live daemon, model, real
+1.3.0 loader (optional `PI_TEST_SDK` override). Recovery tests cover user denial,
+non-UI/abort/stale-state rejection, independent containment evidence, frozen plans,
+foreground fixes and cross-tool/concurrent duplicate claims. Optional
+`PI_TEST_SCOPES=1 node --test extensions/delegate/test/recovery.test.mjs` also
+exercises the local user systemd manager with a fake worker and no model calls;
+ordinary checks skip that explicit live-manager smoke test. No live Pueue daemon, model, real
 monorepo build, activation or publication is involved. Linux with Git, Bash and
 `flock` is required for these tests, matching the current runtime scope.

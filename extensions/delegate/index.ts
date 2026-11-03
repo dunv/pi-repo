@@ -4,6 +4,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import { readdir, writeFile } from "node:fs/promises";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
+import { assertStopped } from "./containment.mjs";
+import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
 import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, git, tail } from "./core.mjs";
 
@@ -138,6 +140,43 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
+    name: "delegate_resume", label: "Recover stopped delegate", exposure: "model-only", executionMode: "sequential",
+    reachesTools: () => ["pueue_status", "pueue_submit"],
+    description: "Explicitly recover one failed/canceled owned attempt into a fresh context in its SAME worktree/build directory. Requires a fresh interactive user confirmation on every call, a known terminal backend job, and trusted attempt-specific cgroup-v2 evidence proving the old worker and all contained descendants stopped; KILLED or missing PIDs alone are insufficient. Legacy/unrecorded workers, UNKNOWN/absent/active jobs and uncertain liveness fail closed. Supply the latest nonce, a self-contained recovery brief and the reviewed CURRENT source fingerprint from delegate_review; foreground fixes are allowed. Backend/model/thinking, frozen profile/check plan and route are preserved, not caller-selectable. Earlier artifacts, failure results and cancellation history remain unchanged. The same permanent per-parent claim as delegate_revise prevents duplicate continuations after races, stale branches or uncertain admission; no automatic retry/takeover. A fresh attempt is not Claude --resume and never falsifies the old attempt as successful. Use delegate_revise for successful uncanceled attempts. After completion perform full delegate_review of the entire tracked patch, all new files, relevant context and current checks, report a verdict and record delegate_feedback. No automatic acceptance/integration/publication/cleanup.",
+    parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1, maxLength: 200 }),
+      expectedFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }), brief: Type.String({ minLength: 1, maxLength: 32000 }) }),
+    renderCall(args, theme) {
+      return new Text(theme.fg("toolTitle", theme.bold("Subagent · explicit recovery")) + `\nTask: ${args.task}`, 0, 0);
+    },
+    renderResult(result, { expanded, isPartial }, theme) { return renderSubmission(result, expanded, isPartial, theme); },
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, task = owned(ctx, input.task), runtimePath = process.env.PI_DELEGATE_RUNTIME;
+      const runtime = await runtimeFrom(runtimePath);
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Recovery canceled or latest attempt changed");
+      };
+      check();
+      if (!ctx.hasUI) throw new Error("Recovery requires fresh interactive user authorization; non-UI recovery is disabled");
+      let rows = nested(await ctx.executeTool("pueue_status", { nonce: input.expectedNonce }, { signal }));
+      const gate = await recoveryGate(task, input, runtime, rows);
+      check();
+      const approved = await ctx.ui.confirm("Authorize one delegate recovery?", [
+        `Task: ${task.id}`, `Previous job: ${task.nonce} · ${gate.execution.phase} · cancellation: ${gate.execution.cancellationRequested}`,
+        `Backend/model: ${gate.selection.backend} / ${gate.selection.model} · thinking: ${gate.selection.thinking}`,
+        `Reviewed fingerprint: ${input.expectedFingerprint}`, `Brief (JSON-escaped): ${JSON.stringify(input.brief)}`,
+        "Starts a fresh attempt with the same profile/check plan. Previous failure/cancellation remains recorded. Full review is still required.",
+      ].join("\n"));
+      if (!approved) throw new Error("Recovery not authorized; no attempt prepared");
+      check();
+      const authorization = recoveryAuthorization(task, input);
+      // Re-query and recheck after the dialog; confirmation grants no stale-state bypass.
+      rows = nested(await ctx.executeTool("pueue_status", { nonce: input.expectedNonce }, { signal }));
+      const resumed = await prepareRecovery(task, input, runtime, rows, authorization, check);
+      return submit(resumed, runtime, runtimePath!, start, signal, ctx);
+    },
+  });
+  pi.registerTool({
     name: "delegate_feedback", label: "Record caller delegation feedback", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status"],
     description: "Record the calling agent's own assessment of a terminal delegated attempt after reviewing its patch, new files, context and checks, or investigating its failure. Supply task and exact expectedNonce from submission/review (historical attempts on this active session branch are supported). Record usefulness, correctness, instruction-following, review effort, whether you would delegate again, rationale, evidence, problems and improvements. Use partial/not_reviewed and not_assessed when evidence is incomplete; exit zero is not review. KILLED permits diagnostic feedback, not a claim that descendants stopped. Writes private versioned append-only JSON under the task feedback directory, automatically linking frozen invocation parameters and attempt artifacts. No prompts/file bodies/secrets in feedback text. Corrections use supersedes with a prior feedback UUID for the same attempt; old records remain. Missing feedback is not assessed. This is not acceptance, source verification, publication, integration or permission to retry. No model calls or worker/worktree mutation.",
@@ -167,7 +206,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_review", label: "Collect delegate changes", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status", "worktree_panel_target"],
-    description: "Omit task to list this active branch's owned task IDs/nonces (no backend query). With a full task UUID, after authoritative Pueue EXITED, collect its untrusted report, tracked diff artifact, new-file list and current-fingerprint check evidence; optionally point the existing diff panel at its worktree with openDiff:true (default false). Does not accept, integrate, retry, delete, or infer success from exit zero. New files are shown by the panel; ignored files are not certified. The main agent must review the entire trackedPatch, every untracked file, relevant source/context and current check evidence against the brief, then report findings or a concise verdict; do not require manual user diff review by default. After your review, call delegate_feedback to record how useful this attempt was, review effort, evidence, problems and improvements; incomplete/failed work must not be rated as reviewed or correct without evidence. No polling.",
+    description: "Omit task to list this active branch's owned task IDs/nonces (no backend query). With a full task UUID, after authoritative Pueue EXITED (or KILLED with independently verified empty attempt containment), collect its untrusted report, tracked diff artifact, new-file list and current-fingerprint check evidence; optionally point the existing diff panel at its worktree with openDiff:true (default false). Does not accept, integrate, retry, delete, or infer success from exit zero. New files are shown by the panel; ignored files are not certified. The main agent must review the entire trackedPatch, every untracked file, relevant source/context and current check evidence against the brief, then report findings or a concise verdict; do not require manual user diff review by default. After your review, call delegate_feedback to record how useful this attempt was, review effort, evidence, problems and improvements; incomplete/failed work must not be rated as reviewed or correct without evidence. No polling.",
     parameters: Type.Object({ task: Type.Optional(Type.String()), openDiff: Type.Optional(Type.Boolean()) }),
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(args.task ? "Subagent · collect changes and report" : "Subagents · list tasks")) +
@@ -224,7 +263,9 @@ export default function (pi: ExtensionAPI) {
       const task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
       if (!task.nonce) throw new Error("Admission binding unavailable; reconcile originating Pueue history manually");
       const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
-      if (rows.length !== 1 || rows[0].phase !== "EXITED") throw new Error("Worker is not authoritatively EXITED; retain evidence and do not retry");
+      if (rows.length !== 1 || !["EXITED", "KILLED"].includes(rows[0].phase)) throw new Error("Worker is not authoritatively terminal; retain evidence and do not retry");
+      if (rows[0].phase === "KILLED" || rows[0].cancellationRequested
+        || (runtime.containmentProtocol === 1 && rows[0].exitCode !== 0)) await assertStopped(task);
       const fingerprint = await snapshot(task, runtime);
       const directory = attemptDirectory(task, task.attempt), trackedPatch = join(directory, "tracked.diff");
       await writeFile(trackedPatch, await git(runtime, task.worktree, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"]), { mode: 0o600 });
