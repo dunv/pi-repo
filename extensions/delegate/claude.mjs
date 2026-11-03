@@ -1,6 +1,8 @@
 // Claude Code is a separate harness, not a Pi provider. Keep its capabilities
 // behind the same trusted source-write / planned-check boundary via one MCP.
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, appendFile } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
+import { claudeMetrics, metricsLine } from './metrics.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { save, runToFiles, envFor } from './core.mjs';
@@ -17,11 +19,19 @@ export async function runClaude(runtime, runtimePath, task, plan, directory, att
     '--permission-prompts', 'none', '--no-chrome', '--output-format', 'json',
     '--session-id', attempt ?? task.id, '--name', `delegate-${task.id}`,
     '--append-system-prompt', await readFile(join(here, 'policy.md'), 'utf8')];
+  const start = performance.now();
   const result = await runToFiles(runtime.claude, args, { cwd: task.worktree, env: envFor(runtime) },
     join(directory, 'claude-result.json'), join(directory, 'worker.log'), true, join(directory, 'brief.md'));
+  const elapsedMs = performance.now() - start;
   let reply;
   try {
     reply = JSON.parse(await readFile(join(directory, 'claude-result.json'), 'utf8'));
+    const record = claudeMetrics(reply, elapsedMs);
+    await appendFile(join(directory, 'metrics.jsonl'), JSON.stringify({ schemaVersion: 1,
+      timestamp: new Date().toISOString(), ...record }) + '\n', { mode: 0o600 });
+    const line = metricsLine(record);
+    await appendFile(join(directory, 'worker.log'), line, { mode: 0o600 });
+    process.stderr.write(line);
     if (typeof reply.result !== 'string' || reply.is_error !== false || reply.subtype !== 'success') throw new Error('Claude result is not a confirmed success');
     await writeFile(join(directory, 'report.md'), reply.result + '\n', { flag: 'wx', mode: 0o600 });
   } catch (error) {

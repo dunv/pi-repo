@@ -222,6 +222,33 @@ file/replacement bodies or tool result bodies. Paths/patterns and assistant text
 may still be sensitive. Reports and worker logs retain full output. Actual model
 usage stays in the child transcript, not the parent's token totals.
 
+### Timing and usage telemetry
+
+Pi workers print a line per assistant response: elapsed time, first-output latency,
+reported output tokens, observed provider-request count and outcome. The response
+clock starts at turn start, so it includes context preparation and provider waits,
+not just server inference; it stops before tools execute. First output means the
+first nonempty text, thinking or tool-call delta, **not** first visible text or an
+exact token timestamp. Thinking content is never logged. Request counts are not
+retry counts: provider-internal retries may be invisible.
+
+At settlement a worker summary reports elapsed time, summed response time, union
+of tool execution intervals, check time (a subset of tool time), response count,
+tool errors and output tokens. Unattributed overhead is not called model time.
+Checks include lock waiting. Abruptly killed workers may lack a final summary.
+Claude remains nonstreaming: only final CLI aggregate API time, turns and usage
+are surfaced when available; missing fields show `n/a`, never invented zeros.
+
+Each attempt retains private `metrics.jsonl` alongside `worker.log`, including
+revisions in their own artifact directory. Records carry `schemaVersion: 1`, a UTC
+record timestamp, backend and record type (`response` or `summary`). Durations are
+milliseconds; `firstOutputMs: null` means no output delta was observed. Usage fields
+`input`, `output`, `cacheRead`, `cacheWrite` are included only when the harness
+reports finite nonnegative values. Summary usage sums the observed Pi responses;
+it is not a guarantee of provider billing totals. No prompts, provider payloads,
+thinking, tool bodies, credentials or error text are added to these records.
+These diagnostics neither change the model context nor certify success/review.
+
 ## Deployment
 
 The operator supplies executable paths, a private state directory, noninteractive

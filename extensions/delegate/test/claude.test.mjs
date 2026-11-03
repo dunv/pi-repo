@@ -103,6 +103,11 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   assert.equal(config.mcpServers.delegate.command, f.runtime.node);
   assert.equal((await json(join(task.directory, 'result.json'))).backend, 'claude');
   assert.match(await readFile(join(task.directory, 'report.md'), 'utf8'), /parent review/);
+  const metrics = JSON.parse((await readFile(join(task.directory, 'metrics.jsonl'), 'utf8')).trim());
+  assert.equal(metrics.backend, 'claude'); assert.equal(metrics.type, 'summary');
+  assert.equal(metrics.schemaVersion, 1); assert.deepEqual(metrics.usage, {});
+  assert.equal(metrics.apiMs, undefined); assert.ok(metrics.elapsedMs >= 0);
+  assert.match(await readFile(join(task.directory, 'worker.log'), 'utf8'), /Claude summary:.*API n\/a/);
   assert.equal(f.git('status', '--porcelain'), '');
   await assert.rejects(run(f.runtimePath, task.id), /EEXIST/);
   const bound = { ...task, nonce: 'previous' };

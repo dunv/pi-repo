@@ -4,7 +4,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeFrom, json, writable, envFor } from "./core.mjs";
+import { runtimeFrom, json, writable, envFor, attemptDirectory } from "./core.mjs";
+import { appendFile } from "node:fs/promises";
+import { observeMetrics, metricsLine } from "./metrics.mjs";
 import { toolSummary } from "./progress.mjs";
 
 const exec = promisify(execFile);
@@ -14,6 +16,12 @@ export default function (pi: ExtensionAPI) {
   // so Pueue/Pui can follow it without changing report.md or exposing thinking.
   const progress = (text: string) => new Promise<void>((resolve, reject) => {
     process.stderr.write(text, error => error ? reject(error) : resolve());
+  });
+  observeMetrics(pi, async (record: object) => {
+    const { task } = await context();
+    await appendFile(join(attemptDirectory(task, attempt), "metrics.jsonl"),
+      JSON.stringify({ schemaVersion: 1, timestamp: new Date().toISOString(), ...record }) + "\n", { mode: 0o600 });
+    await progress("\n" + metricsLine(record));
   });
   pi.on("message_update", async event => {
     const update = event.assistantMessageEvent;

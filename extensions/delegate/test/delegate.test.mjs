@@ -291,13 +291,16 @@ test('real worker extension forwards revision identity to check artifacts while 
     const originalWrite = process.stderr.write;
     process.stderr.write = (chunk, callback) => { progress += chunk; callback?.(); return true; };
     try {
+      await emit('agent_start'); await emit('turn_start'); await emit('before_provider_request');
       await emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Live answer' } });
       await emit('message_update', { assistantMessageEvent: { type: 'thinking_delta', delta: 'PRIVATE THINKING' } });
       await emit('message_update', { assistantMessageEvent: { type: 'text_end' } });
+      await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse', usage: { output: 12 } } });
       await emit('tool_execution_start', { toolCallId: 'a', toolName: 'read', args: { path: 'first.md', secret: 'PRIVATE ARGUMENT' } });
       await emit('tool_execution_start', { toolCallId: 'b', toolName: 'read', args: { path: 'second.md', offset: 12 } });
       await emit('tool_execution_end', { toolCallId: 'b', toolName: 'read', durationMs: 4.2, isError: false });
       await emit('tool_execution_end', { toolCallId: 'a', toolName: 'read', isError: true, result: 'PRIVATE RESULT' });
+      await emit('agent_settled', { aborted: false });
     } finally { process.stderr.write = originalWrite; }
     assert.match(progress, /Live answer\n/);
     assert.match(progress, /Tool #1 starting: read.*first.md/);
@@ -305,6 +308,13 @@ test('real worker extension forwards revision identity to check artifacts while 
     assert.match(progress, /Tool #2 finished: read \(4ms\)/);
     assert.match(progress, /Tool #1 finished: read \(error\)/);
     assert.doesNotMatch(progress, /PRIVATE/);
+    assert.match(progress, /Model #1 finished:/); assert.match(progress, /Worker summary:/);
+    const metricsText = await readFile(join(attemptDirectory(task, revision.attempt), 'metrics.jsonl'), 'utf8');
+    const metrics = metricsText.trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(metrics.length, 2); assert.equal(metrics[0].schemaVersion, 1);
+    assert.equal(metrics[0].usage.output, 12); assert.equal(metrics[1].toolErrors, 1);
+    assert.doesNotMatch(metricsText, /PRIVATE|Live answer/);
+    await assert.rejects(readFile(join(task.directory, 'metrics.jsonl')), /ENOENT/);
     const tool = instance.extensions[0].tools.get('delegate_check').definition;
     const reply = await tool.execute('check', { index: 0 });
     const record = JSON.parse(reply.content[0].text);
