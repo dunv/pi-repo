@@ -2,12 +2,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, chmod, readlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, writable, json, save, envFor, tasksFrom, ENTRY } from '../core.mjs';
+import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, sourceSnapshot, writable, json, save, envFor, tasksFrom, ENTRY } from '../core.mjs';
 import { run } from '../run.mjs';
 import { check } from '../check.mjs';
 import { toolSummary } from '../progress.mjs';
@@ -124,11 +124,134 @@ test('verification profiles are explicit, validated and frozen per task', () => 
   assert.deepEqual(log.args.slice(-3), ['build', 'src/unit.test.ts', 'package:test']);
 }));
 
-test('source dirty/untracked changes fail before creating a task; ignored caches do not', () => fixture(async f => {
-  await writeFile(join(f.repo, 'new.txt'), 'untracked');
-  await assert.rejects(prepare(input(f.repo), f.runtime, who), /uncommitted/);
-  await rm(join(f.repo, 'new.txt')); await writeFile(join(f.repo, 'ignored'), 'cache');
-  await prepare(input(f.repo), f.runtime, who);
+test('dirty source snapshot preserves working contents and source staging, with worker-only diffs', () => fixture(async f => {
+  const head = f.git('rev-parse', 'HEAD').trim();
+  await writeFile(join(f.repo, 'source.txt'), 'staged version\n'); f.git('add', 'source.txt');
+  await writeFile(join(f.repo, 'source.txt'), 'working version\n');
+  await writeFile(join(f.repo, 'staged.txt'), 'staged addition\n'); f.git('add', 'staged.txt');
+  await writeFile(join(f.repo, 'binary\nname'), Buffer.from([0, 255, 42]));
+  await writeFile(join(f.repo, 'executable'), '#!/bin/sh\n'); await chmod(join(f.repo, 'executable'), 0o755);
+  await symlink('source.txt', join(f.repo, 'link'));
+  await writeFile(join(f.repo, 'ignored'), 'cache');
+  const before = await sourceSnapshot(f.repo, f.runtime), status = f.git('status', '--porcelain'), index = f.git('diff', '--cached', '--binary');
+  const task = await prepare(input(f.repo), f.runtime, who);
+  assert.equal(task.sourceHead, head); assert.notEqual(task.base, head);
+  assert.equal(task.sourceFingerprint, before); assert.equal(await sourceSnapshot(f.repo, f.runtime), before);
+  assert.equal(f.git('rev-parse', 'HEAD').trim(), head); assert.equal(f.git('status', '--porcelain'), status);
+  assert.equal(f.git('diff', '--cached', '--binary'), index);
+  assert.equal(await readFile(join(task.worktree, 'source.txt'), 'utf8'), 'working version\n');
+  assert.equal(await readFile(join(task.worktree, 'staged.txt'), 'utf8'), 'staged addition\n');
+  assert.deepEqual(await readFile(join(task.worktree, 'binary\nname')), Buffer.from([0, 255, 42]));
+  assert.equal(await readlink(join(task.worktree, 'link')), 'source.txt');
+  await assert.rejects(readFile(join(task.worktree, 'ignored')), /ENOENT/);
+  const workerGit = (...args) => execFileSync(gitBin, ['-C', task.worktree, ...args], { encoding: 'utf8' });
+  assert.equal(workerGit('status', '--porcelain'), '');
+  assert.match(workerGit('ls-files', '--stage', 'executable'), /^100755 /);
+  await writeFile(join(task.worktree, 'source.txt'), 'worker changed\n');
+  await writeFile(join(task.worktree, 'staged.txt'), 'worker modified inherited addition\n');
+  const patch = workerGit('diff', 'HEAD');
+  assert.match(patch, /-working version/); assert.match(patch, /-staged addition/);
+  assert.doesNotMatch(patch, /staged version|binary|executable|original/);
+  assert.equal(await sourceSnapshot(f.repo, f.runtime), before);
+  const revision = await prepareRevision({ ...task, nonce: 'prior' }, { expectedNonce: 'prior',
+    expectedFingerprint: await snapshot(task, f.runtime), brief: 'Revise.', model: 'fixture/model', thinking: 'low' }, f.runtime);
+  assert.equal(revision.base, task.base); assert.equal(revision.sourceFingerprint, before);
+}));
+
+test('staged/unstaged deletions, renames and forced ignored additions survive snapshots', () => fixture(async f => {
+  await writeFile(join(f.repo, 'delete-staged'), 'old'); await writeFile(join(f.repo, 'delete-working'), 'old');
+  f.git('add', '.'); f.git('-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '-qm', 'files');
+  f.git('rm', '-q', 'delete-staged'); await rm(join(f.repo, 'delete-working'));
+  f.git('mv', 'source.txt', 'renamed.txt');
+  await writeFile(join(f.repo, 'ignored'), 'forced addition'); f.git('add', '-f', 'ignored');
+  const before = await sourceSnapshot(f.repo, f.runtime), task = await prepare(input(f.repo), f.runtime, who);
+  for (const name of ['delete-staged', 'delete-working', 'source.txt']) await assert.rejects(readFile(join(task.worktree, name)), /ENOENT/);
+  assert.equal(await readFile(join(task.worktree, 'renamed.txt'), 'utf8'), 'original\n');
+  assert.equal(await readFile(join(task.worktree, 'ignored'), 'utf8'), 'forced addition');
+  assert.equal(await sourceSnapshot(f.repo, f.runtime), before);
+}));
+
+test('ignored caches do not change the baseline; workers see the frozen dirty handoff', () => fixture(async f => {
+  await writeFile(join(f.repo, 'ignored'), 'cache');
+  const clean = await prepare(input(f.repo), f.runtime, who);
+  assert.equal(clean.base, clean.sourceHead);
+  await writeFile(join(f.repo, 'source.txt'), 'handoff version\n');
+  const task = await prepare(input(f.repo), f.runtime, who);
+  await writeFile(join(f.repo, 'source.txt'), 'parent continued\n');
+  assert.notEqual(await sourceSnapshot(f.repo, f.runtime), task.sourceFingerprint);
+  assert.equal(await run(f.runtimePath, task.id), 0);
+  assert.equal((await json(join(f.dir, 'pi-argv.json'))).priorSource, 'handoff version\n');
+  assert.equal(await readFile(join(f.repo, 'source.txt'), 'utf8'), 'parent continued\n');
+}));
+
+test('conflicted indexes and assume-unchanged entries fail closed without changing source', () => fixture(async f => {
+  f.git('update-index', '--assume-unchanged', 'source.txt');
+  await assert.rejects(prepare(input(f.repo), f.runtime, who), /assume-unchanged/);
+  f.git('update-index', '--no-assume-unchanged', 'source.txt');
+  const blob = f.git('rev-parse', 'HEAD:source.txt').trim();
+  execFileSync(gitBin, ['-C', f.repo, 'update-index', '--index-info'], { input: `0 ${'0'.repeat(40)}\tsource.txt\n100644 ${blob} 1\tsource.txt\n100644 ${blob} 2\tsource.txt\n100644 ${blob} 3\tsource.txt\n` });
+  const before = f.git('ls-files', '--unmerged');
+  await assert.rejects(prepare(input(f.repo), f.runtime, who), /conflicts/);
+  assert.equal(f.git('ls-files', '--unmerged'), before);
+  assert.equal(f.git('branch', '--list', 'delegate/*'), '');
+}));
+
+test('staging-only differences retain source index but do not become worker changes', () => fixture(async f => {
+  await writeFile(join(f.repo, 'source.txt'), 'index version\n'); f.git('add', 'source.txt');
+  await writeFile(join(f.repo, 'source.txt'), 'original\n');
+  const before = await sourceSnapshot(f.repo, f.runtime), cached = f.git('diff', '--cached');
+  const task = await prepare(input(f.repo), f.runtime, who);
+  assert.equal(task.base, task.sourceHead);
+  assert.equal(await sourceSnapshot(f.repo, f.runtime), before);
+  assert.equal(f.git('diff', '--cached'), cached);
+  f.git('add', 'source.txt');
+  assert.notEqual(await sourceSnapshot(f.repo, f.runtime), before, 'Staging changes count as drift even with identical working files');
+}));
+
+test('oversized new source fails before worktree creation without staging parent files', () => fixture(async f => {
+  await writeFile(join(f.repo, 'large'), Buffer.alloc(64 * 1024 * 1024 + 1));
+  await assert.rejects(prepare(input(f.repo), f.runtime, who), /oversized/i);
+  assert.equal(f.git('branch', '--list', 'delegate/*'), '');
+  assert.equal(f.git('diff', '--cached'), '');
+}));
+
+test('source movement during preparation retains evidence but never returns an admissible task', () => fixture(async f => {
+  const wrapper = join(f.dir, 'git-wrapper');
+  await writeFile(wrapper, `#!${process.execPath}\nconst cp=require('node:child_process'),fs=require('node:fs');
+const args=process.argv.slice(2); const result=cp.spawnSync(${JSON.stringify(gitBin)},args,{stdio:'inherit'});
+if(args.includes('worktree') && args.includes('add')) fs.writeFileSync(${JSON.stringify(join(f.repo, 'source.txt'))},'concurrent parent edit\\n');
+process.exit(result.status ?? 1);\n`, { mode: 0o700 });
+  await assert.rejects(prepare(input(f.repo), { ...f.runtime, git: wrapper }, who), /Source changed during preparation/);
+  const directories = await readdir(f.runtime.state); assert.equal(directories.length, 1);
+  const retained = await json(join(f.runtime.state, directories[0], 'task.json'));
+  assert.equal(await readFile(join(retained.worktree, 'source.txt'), 'utf8'), 'original\n');
+  assert.equal(await readFile(join(f.repo, 'source.txt'), 'utf8'), 'concurrent parent edit\n');
+  await assert.rejects(readFile(join(retained.directory, 'submission.json')), /ENOENT/);
+}));
+
+test('linked source worktrees with split indexes keep their own index and effective working state', () => fixture(async f => {
+  const linked = join(f.dir, 'linked'); f.git('worktree', 'add', '-qb', 'parent', linked);
+  const git = (...args) => execFileSync(gitBin, ['-C', linked, ...args], { encoding: 'utf8' });
+  await writeFile(join(linked, 'source.txt'), 'staged in linked\n'); git('add', 'source.txt');
+  git('update-index', '--split-index');
+  await writeFile(join(linked, 'source.txt'), 'working in linked\n');
+  const before = await sourceSnapshot(linked, f.runtime), task = await prepare(input(linked), f.runtime, who);
+  assert.equal(await sourceSnapshot(linked, f.runtime), before);
+  assert.equal(await readFile(join(task.worktree, 'source.txt'), 'utf8'), 'working in linked\n');
+  assert.match(git('diff', '--cached'), /staged in linked/);
+  assert.equal(f.git('status', '--porcelain'), '');
+}));
+
+test('embedded repositories and sparse entries are rejected instead of silently losing source', () => fixture(async f => {
+  f.git('update-index', '--skip-worktree', 'source.txt');
+  await assert.rejects(prepare(input(f.repo), f.runtime, who), /sparse/);
+  f.git('update-index', '--no-skip-worktree', 'source.txt');
+  const nested = join(f.repo, 'nested'); execFileSync(gitBin, ['init', '-q', nested]);
+  await writeFile(join(nested, 'file'), 'nested');
+  execFileSync(gitBin, ['-C', nested, 'add', '.']);
+  execFileSync(gitBin, ['-C', nested, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '-qm', 'nested']);
+  await assert.rejects(prepare(input(f.repo), f.runtime, who), /Unsupported\/oversized|embedded repositories/);
+  assert.equal(f.git('diff', '--cached'), '');
 }));
 
 test('write boundary rejects traversal, protected configuration and symlink escapes', () => fixture(async f => {
@@ -372,6 +495,8 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
     } };
     const previous = process.env.PI_DELEGATE_RUNTIME; process.env.PI_DELEGATE_RUNTIME = f.runtimePath;
     try {
+      await writeFile(join(f.repo, 'source.txt'), 'main agent handoff\n');
+      await writeFile(join(f.repo, 'inherited.txt'), 'main agent addition\n');
       const reply = await registered.get('delegate_task').execute('call', input(f.repo), undefined, undefined, ctx);
       const task = JSON.parse(reply.content[0].text);
       assert.equal(calls[0].name, 'pueue_submit');
@@ -432,7 +557,15 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.match(reviewError, /not authoritatively EXITED/);
       assert.equal(reviewed.accepted, false); assert.deepEqual(reviewed.untracked, ['new.txt']);
       assert.deepEqual(reviewed.missingChecks, [0]);
-      assert.match(await readFile(reviewed.trackedPatch, 'utf8'), /worker changed/);
+      const patch = await readFile(reviewed.trackedPatch, 'utf8');
+      assert.match(patch, /worker changed/); assert.match(patch, /-main agent handoff/);
+      assert.doesNotMatch(patch, /inherited.txt|original/);
+      assert.equal(reviewed.sourceState.unchanged, true);
+      assert.equal(reviewed.baseline.base, task.baseline.base);
+      await writeFile(join(f.repo, 'source.txt'), 'main agent continued\n');
+      const driftReply = JSON.parse((await reviewTool.execute('review', { task: task.task }, undefined, undefined, ctx)).content[0].text);
+      assert.equal(driftReply.sourceState.unchanged, false);
+      assert.match(renderReview(driftReply), /Main checkout changed since handoff/);
       assert.equal(reviewed.reviewer, 'main-agent');
       assert.equal(reviewed.feedback.tool, 'delegate_feedback');
       assert.equal(reviewed.feedback.expectedNonce, task.nonce);
@@ -452,6 +585,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.equal(calls.some(c => c.name === 'worktree_panel_target'), false, 'Review does not require opening a human diff panel');
       await registered.get('delegate_review').execute('panel', { task: task.task, openDiff: true }, undefined, undefined, ctx);
       assert.equal(calls.at(-1).name, 'worktree_panel_target');
+      assert.equal(calls.at(-1).args.base, task.baseline.base);
       const revisionInput = { task: task.task, expectedNonce: task.nonce, expectedFingerprint: reviewed.fingerprint,
         brief: 'Explicit authorized revision; preserve worktree and prior changes.', model: 'fixture/model', thinking: 'low' };
       const revise = registered.get('delegate_revise');

@@ -7,7 +7,7 @@ import { catalogue, resolveSelection } from "./catalogue.mjs";
 import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
-import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, git, tail } from "./core.mjs";
+import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
 
 const response = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
 function renderSubmission(result: { content: Array<{ type: string; text?: string }> }, expanded: boolean, partial: boolean, theme: Theme) {
@@ -61,7 +61,7 @@ export default function (pi: ExtensionAPI) {
       pi.appendEntry(ENTRY, { ...task, nonce: state.nonce });
       await writeFile(join(directory, "submission.json"), JSON.stringify({ nonce: state.nonce }) + "\n", { mode: 0o600, flag: "wx" });
       return response({ task: task.id, attempt: task.attempt, ...state, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", model: task.model, thinking: task.thinking,
-        worktree: task.worktree, artifacts: directory });
+        worktree: task.worktree, artifacts: directory, baseline: { base: task.base, sourceHead: task.sourceHead ?? task.base, sourceFingerprint: task.sourceFingerprint ?? null } });
     } catch {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
@@ -85,7 +85,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_task", label: "Delegate isolated task", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_submit"],
-    description: "Delegate an explicitly authorized bounded implementation task to Pi (backend:pi) or Claude Code (backend:claude) through existing Pueue. Select an exact delegate_models entry ID as model and omit backend for deterministic routing: local/OpenAI provider/model IDs invoke Pi; Anthropic provider/model aliases and configured claude-code/claude-* entries invoke Claude Code. Anthropic through Pi is forbidden, even with an explicit override; local/OpenAI through Claude is forbidden. No inferred model matching or fallback. Explicit backend plus native model ID remains supported. Claude thinking is CLI effort (low/medium/high/xhigh/max), with runtime.claude required. Orchestrator supplies model, thinking level, self-contained brief (scope, relevant files, acceptance criteria, mechanical/logic-heavy review assessment), and only necessary checks through an operator-configured verification profile. Requires a clean Git source checkout; uses its current committed HEAD, never chooses a release target or deployment route for you. Creates a retained sibling worktree with uncommitted changes. Worker cannot call shell, publish, commit or delegate through its tools; this is NOT an OS sandbox. Six worker slots per machine and one heavy-check lock across delegated tasks; unrelated Pueue work is not globally limited. No automatic retries/integration/cleanup. Exit zero is not acceptance. Keep brief/argv free of secrets. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem. After Pueue completion, use delegate_review and perform the review yourself: read the entire trackedPatch and every untracked file, inspect relevant source/context and current check evidence against the brief, and report findings or a concise review verdict. Do not ask the user to manually review diffs by default. Worker reports and exit zero are not review. After reviewing each attempt or investigating a terminal failure, call delegate_feedback to record the caller's assessment, evidence, problems and suggested improvements. Publication/integration still require their existing authorization. SDK setup is never automatic.",
+    description: "Delegate an explicitly authorized bounded implementation task to Pi (backend:pi) or Claude Code (backend:claude) through existing Pueue. Select an exact delegate_models entry ID as model and omit backend for deterministic routing: local/OpenAI provider/model IDs invoke Pi; Anthropic provider/model aliases and configured claude-code/claude-* entries invoke Claude Code. Anthropic through Pi is forbidden, even with an explicit override; local/OpenAI through Claude is forbidden. No inferred model matching or fallback. Explicit backend plus native model ID remains supported. Claude thinking is CLI effort (low/medium/high/xhigh/max), with runtime.claude required. Orchestrator supplies model, thinking level, self-contained brief (scope, relevant files, acceptance criteria, mechanical/logic-heavy review assessment), and only necessary checks through an operator-configured verification profile. Snapshots the selected Git checkout's current working state, including staged/unstaged changes and nonignored new files, without changing its branch or index. Creates an isolated retained sibling worktree at that baseline; review diffs contain only worker changes. Conflicted indexes, submodules and sparse/assume-unchanged entries are unsupported. Never chooses a release target or deployment route for you. Main-checkout changes after handoff require conflict-aware integration; no automatic integration is provided. Worker cannot call shell, publish, commit or delegate through its tools; this is NOT an OS sandbox. Six worker slots per machine and one heavy-check lock across delegated tasks; unrelated Pueue work is not globally limited. No automatic retries/integration/cleanup. Exit zero is not acceptance. Keep brief/argv free of secrets. The UI already displays model/thinking and submission status; avoid repeating these in user-facing narration unless needed to explain a problem. After Pueue completion, use delegate_review and perform the review yourself: read the entire trackedPatch and every untracked file, inspect relevant source/context and current check evidence against the brief, and report findings or a concise review verdict. Do not ask the user to manually review diffs by default. Worker reports and exit zero are not review. After reviewing each attempt or investigating a terminal failure, call delegate_feedback to record the caller's assessment, evidence, problems and suggested improvements. Publication/integration still require their existing authorization. SDK setup is never automatic.",
     parameters: Type.Object({ repo: Type.String(), brief: Type.String({ minLength: 1, maxLength: 32000 }),
       backend: backendSchema, model: Type.String(), thinking: thinkingSchema,
       profile: Type.String({ pattern: "^[a-zA-Z0-9_-]{1,64}$", description: "Name of an operator-configured verification profile in PI_DELEGATE_RUNTIME" }),
@@ -206,7 +206,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_review", label: "Collect delegate changes", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status", "worktree_panel_target"],
-    description: "Omit task to list this active branch's owned task IDs/nonces (no backend query). With a full task UUID, after authoritative Pueue EXITED (or KILLED with independently verified empty attempt containment), collect its untrusted report, tracked diff artifact, new-file list and current-fingerprint check evidence; optionally point the existing diff panel at its worktree with openDiff:true (default false). Does not accept, integrate, retry, delete, or infer success from exit zero. New files are shown by the panel; ignored files are not certified. The main agent must review the entire trackedPatch, every untracked file, relevant source/context and current check evidence against the brief, then report findings or a concise verdict; do not require manual user diff review by default. After your review, call delegate_feedback to record how useful this attempt was, review effort, evidence, problems and improvements; incomplete/failed work must not be rated as reviewed or correct without evidence. No polling.",
+    description: "Omit task to list this active branch's owned task IDs/nonces (no backend query). With a full task UUID, after authoritative Pueue EXITED (or KILLED with independently verified empty attempt containment), collect its untrusted report, worker-only tracked diff artifact, new-file list and current-fingerprint check evidence. Snapshot tasks also report sourceState: if the main checkout drifted or its state is unavailable, recheck the destination and reconcile conflicts before integration; never overwrite inherited main-agent work. Collection is not an integration lease. Optionally point the existing diff panel at its worktree with openDiff:true (default false). Does not accept, integrate, retry, delete, or infer success from exit zero. New files are shown by the panel; ignored files are not certified. The main agent must review the entire trackedPatch, every untracked file, relevant source/context and current check evidence against the brief, then report findings or a concise verdict; do not require manual user diff review by default. After your review, call delegate_feedback to record how useful this attempt was, review effort, evidence, problems and improvements; incomplete/failed work must not be rated as reviewed or correct without evidence. No polling.",
     parameters: Type.Object({ task: Type.Optional(Type.String()), openDiff: Type.Optional(Type.Boolean()) }),
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(args.task ? "Subagent · collect changes and report" : "Subagents · list tasks")) +
@@ -233,6 +233,8 @@ export default function (pi: ExtensionAPI) {
           `Checks: ${missing.length ? `missing/current passing evidence needed for indices: ${missing.join(", ")}` : checks.length ? "all planned checks have current passing evidence" : "none planned"}`,
           `New files: ${files.length}${files.length ? ` · ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`,
         ];
+        if (data.sourceState?.unchanged === false) lines.push(theme.fg("warning", "Main checkout changed since handoff; check conflicts before integration."));
+        if (data.sourceState?.error) lines.push(theme.fg("warning", "Main checkout state unavailable; check conflicts before integration."));
         if (data.status.cancellationRequested) lines.push(theme.fg("warning", "Cancellation requested; exit alone does not establish safe completion."));
         if (!data.worker) lines.push(theme.fg("warning", "Worker result evidence unavailable."));
         else {
@@ -278,10 +280,16 @@ export default function (pi: ExtensionAPI) {
       let worker;
       try { worker = await json(join(directory, "result.json")); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
       guard(start);
-      if (input.openDiff === true) await ctx.executeTool("worktree_panel_target", { path: task.worktree }, { signal });
+      if (input.openDiff === true) await ctx.executeTool("worktree_panel_target", { path: task.worktree, base: task.base }, { signal });
       let report;
       try { report = await tail(join(directory, "report.md")); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
+      let sourceState;
+      if (task.sourceFingerprint) {
+        try { sourceState = { unchanged: await sourceSnapshot(task.repo, runtime) === task.sourceFingerprint }; }
+        catch { sourceState = { unchanged: null, error: "Source state unavailable" }; }
+      }
       return response({ task: task.id, attempt: task.attempt, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", status: rows[0], worker, fingerprint, trackedPatch, untracked, checks, report,
+        baseline: { base: task.base, sourceHead: task.sourceHead ?? task.base, sourceFingerprint: task.sourceFingerprint ?? null }, sourceState,
         worktree: task.worktree, reviewRequired: true, reviewer: "main-agent", accepted: false,
         feedback: feedbackRequest(task),
         missingChecks: task.checks.map((_: unknown, i: number) => i).filter((i: number) => !checks.some(c => c.index === i && c.passed && c.current)) });

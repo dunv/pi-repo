@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, realpath, lstat, readlink, open } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, realpath, lstat, readlink, open, rm } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 
 const exec = promisify(execFile);
@@ -13,9 +13,9 @@ export const json = async path => JSON.parse(await readFile(path, 'utf8'));
 export const save = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
 export const envFor = runtime => ({ HOME: runtime.home, PATH: runtime.path, LANG: 'C.UTF-8',
   GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_SSH_COMMAND: runtime.ssh, GIT_SSH_VARIANT: 'ssh' });
-export async function git(runtime, cwd, args) {
+export async function git(runtime, cwd, args, extraEnv = {}) {
   return (await exec(runtime.git, ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...args], {
-    cwd, env: envFor(runtime), maxBuffer: 64 * 1024 * 1024,
+    cwd, env: { ...envFor(runtime), ...extraEnv }, maxBuffer: 64 * 1024 * 1024,
   })).stdout;
 }
 export async function privateDir(path) {
@@ -104,28 +104,74 @@ export function initiatorLabel(owner) {
     ? owner.session.slice(0, 8).toLowerCase() : digest(owner.session).slice(0, 8);
   return `${slug}-s${session}`;
 }
+// Read-only handoff identity includes semantic index entries and working content.
+// Staging changes alone conservatively count as source drift.
+export async function sourceSnapshot(repo, runtime) {
+  const root = (await git(runtime, repo, ['rev-parse', '--show-toplevel'])).trim();
+  if (await realpath(root) !== repo) throw new Error('Source repository moved');
+  const head = (await git(runtime, repo, ['rev-parse', 'HEAD'])).trim();
+  const index = await git(runtime, repo, ['ls-files', '--stage', '-v', '-z']);
+  return digest(head + digest(index) + await contentSnapshot(repo, head, runtime));
+}
+async function captureTree(repo, runtime, directory) {
+  if ((await git(runtime, repo, ['ls-files', '--unmerged'])).trim()) throw new Error('Resolve source index conflicts before delegation');
+  if (/^160000 /m.test(await git(runtime, repo, ['ls-files', '--stage']))) throw new Error('Source snapshots do not support submodules');
+  // Bound changed/new source before Git reads it into the object database.
+  const names = new Set((await git(runtime, repo, ['diff', '--name-only', '--no-ext-diff', '--no-textconv', 'HEAD', '-z'])
+    + await git(runtime, repo, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean));
+  if (names.size > 10000) throw new Error('Too many changed files for source snapshot');
+  let size = 0;
+  for (const name of names) {
+    let stat;
+    try { stat = await lstat(join(repo, name)); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    size += stat.size;
+    if (size > 64 * 1024 * 1024 || !(stat.isFile() || stat.isSymbolicLink())) throw new Error('Unsupported/oversized source snapshot');
+  }
+  const indexPath = resolve(repo, (await git(runtime, repo, ['rev-parse', '--git-path', 'index'])).trim());
+  const temporaryIndex = join(directory, 'snapshot.index');
+  // Copy, never mutate, the source index: staged ignored additions remain tracked.
+  if ((await lstat(indexPath)).size > 64 * 1024 * 1024) throw new Error('Oversized source index');
+  await writeFile(temporaryIndex, await readFile(indexPath), { mode: 0o600, flag: 'wx' });
+  const env = { GIT_INDEX_FILE: temporaryIndex };
+  try {
+    await git(runtime, repo, ['update-index', '--no-split-index'], env);
+    // Sparse/assume-unchanged entries could silently omit working content.
+    if (/^[a-zS] /m.test(await git(runtime, repo, ['ls-files', '-v'], env))) throw new Error('Source snapshots do not support sparse/assume-unchanged entries');
+    await git(runtime, repo, ['add', '--all', '--', '.'], env);
+    const tree = (await git(runtime, repo, ['write-tree'], env)).trim();
+    if (/^160000 /m.test(await git(runtime, repo, ['ls-tree', '-r', tree]))) throw new Error('Source snapshots do not support embedded repositories');
+    return tree;
+  } finally { await rm(temporaryIndex, { force: true }); }
+}
 export async function prepare(input, runtime, owner) {
   validateInput(input);
   const backend = workerBackend(input, runtime);
   const verification = verificationProfile(runtime.profiles?.[input.profile]);
   const repo = await realpath(input.repo);
   if ((await git(runtime, repo, ['rev-parse', '--show-toplevel'])).trim() !== repo) throw new Error('Select the repository root');
-  if ((await git(runtime, repo, ['status', '--porcelain', '--untracked-files=all'])).trim()) throw new Error('Source has uncommitted/untracked changes; resolve explicitly before delegation');
-  const base = (await git(runtime, repo, ['rev-parse', 'HEAD'])).trim();
+  const sourceHead = (await git(runtime, repo, ['rev-parse', 'HEAD'])).trim();
   await privateDir(runtime.state);
   const id = randomUUID(), directory = join(runtime.state, id);
   await privateDir(directory);
   const worktrees = repo + '.worktrees';
   await mkdir(worktrees, { recursive: true });
   const label = initiatorLabel(owner);
-  const task = { version: 1, id, owner, initiatorLabel: label, repo, base, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
+  const sourceFingerprint = await sourceSnapshot(repo, runtime);
+  if ((await git(runtime, repo, ['rev-parse', 'HEAD'])).trim() !== sourceHead) throw new Error('Source HEAD changed during snapshot');
+  const tree = await captureTree(repo, runtime, directory);
+  if (await sourceSnapshot(repo, runtime) !== sourceFingerprint) throw new Error(`Source changed during snapshot; retained task ${id}, do not submit automatically`);
+  const headTree = (await git(runtime, repo, ['rev-parse', `${sourceHead}^{tree}`])).trim();
+  // An internal baseline object, not a user commit: no source branch/index changes or hooks.
+  const base = tree === headTree ? sourceHead : (await git(runtime, repo,
+    ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', sourceHead, '-m', 'Pi delegate source snapshot'],
+    { GIT_AUTHOR_NAME: 'Pi delegate', GIT_AUTHOR_EMAIL: 'delegate@localhost', GIT_COMMITTER_NAME: 'Pi delegate', GIT_COMMITTER_EMAIL: 'delegate@localhost' })).trim();
+  const task = { version: 1, id, owner, initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
     directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking, profile: input.profile, verification, checks: input.checks };
   // Persist intent before worktree creation. Failures retain evidence; never auto-remove/retry.
   await save(join(directory, 'task.json'), task);
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
   await git(runtime, repo, ['worktree', 'add', '-b', task.branch, task.worktree, base]);
-  if ((await git(runtime, repo, ['rev-parse', 'HEAD'])).trim() !== base
-    || (await git(runtime, repo, ['status', '--porcelain', '--untracked-files=all'])).trim()) {
+  if (await sourceSnapshot(repo, runtime) !== sourceFingerprint) {
     throw new Error(`Source changed during preparation; retained task ${id}, do not submit automatically`);
   }
   await assertWorktree(task, runtime, true);
@@ -166,13 +212,16 @@ export function tasksFrom(entries) {
 }
 export async function snapshot(task, runtime) {
   await assertWorktree(task, runtime);
-  const hash = createHash('sha256').update(task.base);
-  hash.update(await git(runtime, task.worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']));
-  const files = (await git(runtime, task.worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean).sort();
+  return contentSnapshot(task.worktree, task.base, runtime);
+}
+async function contentSnapshot(worktree, base, runtime) {
+  const hash = createHash('sha256').update(base);
+  hash.update(await git(runtime, worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']));
+  const files = (await git(runtime, worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean).sort();
   if (files.length > 10000) throw new Error('Too many untracked files for verification snapshot');
   let size = 0;
   for (const name of files) {
-    const path = join(task.worktree, name), stat = await lstat(path);
+    const path = join(worktree, name), stat = await lstat(path);
     size += stat.size;
     if (size > 64 * 1024 * 1024 || !(stat.isFile() || stat.isSymbolicLink())) throw new Error('Unsupported/oversized verification snapshot');
     hash.update(JSON.stringify([name, stat.mode, stat.size])); hash.update(stat.isSymbolicLink() ? await readlink(path) : await readFile(path));

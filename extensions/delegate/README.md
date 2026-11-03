@@ -7,7 +7,9 @@ explicit `PI_DELEGATE_RUNTIME`; an unconfigured installation fails before prepar
 
 ## Current scope
 
-Source checkouts must be clean Git repositories. Verification uses explicit,
+Source checkouts may contain staged, unstaged and nonignored untracked changes.
+Each worker gets a fresh context and an isolated snapshot worktree, never a shared
+mutable checkout. Verification uses explicit,
 operator-configured command profiles, not a particular build system or package
 manager. No toolchain setup or dependency installation is implicit. The current
 worker/lock runtime targets Linux with Git, Bash, Node 24+, Pi and `flock`.
@@ -80,7 +82,9 @@ Pi-only levels such as `off` are rejected, not silently converted.
 ## Tools
 
 - `delegate_task {repo, brief, backend?: "pi"|"claude", model, thinking, profile, checks}` starts from the
-  selected checkout's exact committed HEAD in a fresh sibling worktree. Supply
+  selected checkout's current working state in a fresh sibling worktree. Staged
+  and unstaged contents are combined into an internal baseline, with nonignored
+  new files included (and staged ignored additions preserved). Supply
   an exact shared catalogue entry ID and requested thinking. Pi uses its thinking
   levels; Claude Code uses CLI effort (`low`, `medium`, `high`, `xhigh`, `max`).
   Explicit backend/native-model selection is also supported within policy. Fuzzy
@@ -114,6 +118,46 @@ Use the existing `pueue_status`, `pueue_result` and confirmed cancellation tools
 Missing/uncertain evidence never permits automatic retry. Branch ownership and
 session identity are preserved; a fork does not gain another session's authority.
 Preparation/admission failures retain artifacts for manual reconciliation.
+
+## Working-state snapshots
+
+Preparation copies the source index to a private temporary index and captures its
+current working contents with Git. The source's HEAD, branch, index and files are
+not changed. Ignored untracked caches and empty directories are not copied;
+tracked ignored files are included. Binary files, executable bits, symlinks,
+renames and deletions use Git's normal tree representation and attributes/filters.
+The worker does not inherit which changes were staged: its index starts clean.
+
+For a dirty tree, preparation creates an internal snapshot commit whose parent is
+source HEAD, then creates only the delegate branch at that baseline. This object
+is stored in the repository's shared Git object database and retained by the
+worker branch; it is not a commit on the main agent's branch and invokes no commit
+hooks or signing. Treat included untracked files as retained source, not temporary
+private scratch space: do not include secrets. Clean trees reuse HEAD directly.
+
+Manifests retain `base` (worker baseline), `sourceHead`, `sourceTree` and
+`sourceFingerprint`. Review patches, new-file lists, fingerprints, checks and
+revisions are relative to `base`, so inherited changes are not reported as worker
+work. An inherited untracked file modified by a worker appears in the tracked
+patch, not the new-file list. Opening the panel pins its comparison base too.
+Existing tasks without snapshot metadata keep their original HEAD-based behavior.
+
+Preparation rechecks the source before and after worktree creation and refuses
+admission on detected changes, retaining evidence without retry. This is not an
+atomic filesystem snapshot or a lock: do not edit the source during preparation.
+After handoff the main agent may continue working independently. Review returns
+`sourceState.unchanged` and warns if the main checkout has drifted, or cannot be
+inspected. This is a collection-time observation, not an integration lease.
+Recheck the destination and reconcile conflicts when applying worker-only changes;
+never overwrite the main checkout with the worker's full files blindly. There is
+still no automatic integration, merge or publication.
+
+Conflicted source indexes, submodules/embedded repositories and
+sparse/assume-unchanged entries fail closed rather than silently omitting source.
+Snapshots are bounded to 10,000 changed/new files and 64 MiB of changed/new source
+content (with bounded Git output and index size too). Toolchain caches remain
+ignored and uncopied. A fresh worker still needs the configured verification
+runtime; no dependency installation or SDK bootstrap is implied.
 
 ## Review and evidence
 
@@ -503,5 +547,8 @@ foreground fixes and cross-tool/concurrent duplicate claims. Optional
 `PI_TEST_SCOPES=1 node --test extensions/delegate/test/recovery.test.mjs` also
 exercises the local user systemd manager with a fake worker and no model calls;
 ordinary checks skip that explicit live-manager smoke test. No live Pueue daemon, model, real
-monorepo build, activation or publication is involved. Linux with Git, Bash and
+monorepo build, activation or publication is involved. Snapshot tests cover mixed
+staging, inherited additions, deletions/renames, binary/unusual filenames,
+symlinks/executable modes, ignored caches, split indexes/linked sources, source
+movement, fail-closed unsupported states, worker-only review and source drift. Linux with Git, Bash and
 `flock` is required for these tests, matching the current runtime scope.
