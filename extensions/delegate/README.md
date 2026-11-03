@@ -139,7 +139,10 @@ Task state remains under the configured private state directory:
 `<uuid>/task.json`, brief, receipts, started/result records, sessions, report,
 worker log, check evidence, tracked diff and `build-output/`. Revisions retain
 separate artifacts under `revisions/<attempt-uuid>/` while sharing the original
-output base. No automatic pruning, artifact deletion or worktree cleanup.
+output base. At startup, both Pi and Claude workers log the JSON-quoted absolute
+path to that attempt's `brief.md` (including revisions), not its contents. The
+brief remains a private 0600 artifact; prompt text is not copied into startup logs.
+No automatic pruning, artifact deletion or worktree cleanup.
 
 ## Caller feedback
 
@@ -280,9 +283,13 @@ foreground tokens and agent sockets are not forwarded. Pi resolves subscription
 credentials from existing HOME configuration. Keep briefs/artifacts/logs private;
 never place secrets in argv.
 
-Two cooperating workers and one heavy check per machine are bounded by kernel
+Six cooperating workers and one heavy check per machine are bounded by kernel
 `flock`, not a second scheduler. Unrelated Pueue work is not globally limited.
-Slot waiting can cause head-of-line blocking. Keep worktrees/output bases through
+Ordinary Pueue session groups admit three jobs at a time, including delegates;
+this budget is shared with that session's other ordinary jobs. Launchers waiting
+for a global slot count as running Pueue jobs but do not start a model. Existing
+slot-0/1 locks remain shared with older launchers, so running workers need not be
+stopped. Slot waiting can cause head-of-line blocking. Keep worktrees/output bases through
 review/revision; external tool caches can remain shared. Cache hits are not
 guaranteed and no persistent build lane is created.
 

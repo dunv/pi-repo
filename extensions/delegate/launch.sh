@@ -12,15 +12,20 @@ fi
 # Emit before waiting for a slot so Pui has output even while admission is blocked.
 printf '[delegate] Launcher ready: task=%s revision=%s; acquiring worker slot\n' "$2" "${3:-initial}"
 # Locks, not another scheduler: Pueue still owns process lifetime and completion.
-# Prefer either free slot; if both are busy, wait without model polling/spawning.
-exec 8>@state@/worker-0.lock
-exec 9>@state@/worker-1.lock
-if @flock@ -n 8; then
-  exec 9>&-
-elif @flock@ -n 9; then
-  exec 8>&-
-else
-  exec 9>&-
-  @flock@ 8
+# Keep the existing slot filenames so old and new launchers share their locks.
+# Prefer any free slot; if all six are busy, block on slot five without polling.
+# Waiting on a new slot avoids queuing behind a long-lived legacy slot 0/1.
+acquired=false
+for slot in 0 1 2 3 4 5; do
+  exec {worker_fd}>@state@/worker-$slot.lock
+  if @flock@ -n "$worker_fd"; then
+    acquired=true
+    break
+  fi
+  exec {worker_fd}>&-
+done
+if [ "$acquired" = false ]; then
+  exec {worker_fd}>@state@/worker-5.lock
+  @flock@ "$worker_fd"
 fi
 exec @node@ @runner@ "$@"

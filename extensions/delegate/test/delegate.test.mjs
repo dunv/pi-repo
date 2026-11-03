@@ -180,6 +180,8 @@ setTimeout(() => process.exit(9), 5000).unref();
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   assert.equal(code, 0, err); assert.equal(released, true);
   assert.match(out, /Worker starting:.*model=fixture\/model requested-thinking=low/);
+  assert.ok(out.includes(`[delegate] Prompt file: ${JSON.stringify(join(task.directory, 'brief.md'))}`));
+  assert.ok(!out.includes(input(f.repo).brief));
   assert.equal(await readFile(join(task.directory, 'report.md'), 'utf8'), 'early stdout\nfinal report\n');
   assert.equal(await readFile(join(task.directory, 'worker.log'), 'utf8'), 'early stderr\n');
 }));
@@ -213,7 +215,9 @@ test('changed worker HEAD is never accepted as verification evidence', () => fix
   await assert.rejects(snapshot(task, f.runtime), /HEAD changed/);
 }));
 
-test('explicit revision reuses dirty source and build state, while retaining per-attempt evidence', () => fixture(async f => {
+test('explicit revision reuses dirty source and build state, while retaining per-attempt evidence', t => fixture(async f => {
+  const logs = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args.join(' ')));
   const task = await prepare(input(f.repo), f.runtime, who);
   await run(f.runtimePath, task.id);
   const originalResult = await readFile(join(task.directory, 'result.json'), 'utf8');
@@ -229,6 +233,11 @@ test('explicit revision reuses dirty source and build state, while retaining per
   assert.deepEqual(await json(join(task.directory, 'task.json')), task, 'Original manifest stays immutable');
   await assert.rejects(prepareRevision(bound, spec, f.runtime), /EEXIST/, 'Duplicate parent claim never permits another attempt');
   assert.equal(await run(f.runtimePath, task.id, revision.attempt), 0);
+  const promptLines = logs.filter(line => line.startsWith('[delegate] Prompt file: '));
+  assert.deepEqual(promptLines, [task.directory, artifacts].map(directory =>
+    `[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`));
+  assert.ok(!logs.join('\n').includes(spec.brief));
+  assert.ok(!logs.join('\n').includes(input(f.repo).brief));
   const invocation = await json(join(f.dir, 'pi-argv.json'));
   assert.equal(invocation.priorSource, 'parent review feedback\n');
   assert.equal(invocation.args[invocation.args.indexOf('--thinking') + 1], 'minimal');

@@ -186,9 +186,9 @@ test('jobs widget appears only for owned active work, toggles without model mess
   const key = 'pi-repo.pueue.jobs';
   const lines = (width = 160) => h.widgets.get(key)?.render(width);
   assert.equal(lines(), undefined);
-  await h.submit(); await h.submit(); await h.submit();
-  assert.match(lines()[0], /2 running · 1 queued/);
-  assert.equal(lines().length, 4);
+  await h.submit(); await h.submit(); await h.submit(); await h.submit();
+  assert.match(lines()[0], /3 running · 1 queued/);
+  assert.equal(lines().length, 5);
   assert.doesNotMatch(lines().join('\n'), /secret-command|must-not-escape/);
   const { visibleWidth } = await import('@earendil-works/pi-tui');
   for (const width of [1, 5, 20, 80]) assert.ok(lines(width).every(line => visibleWidth(line) <= width));
@@ -197,8 +197,8 @@ test('jobs widget appears only for owned active work, toggles without model mess
   assert.equal(h.messages.length, 0);
   await h.start(); assert.equal(lines().length, 1, 'collapse survives same-session tree/resume');
   await h.commands.get('pueue').handler('expand', h.ctx);
-  assert.equal(lines().length, 4);
-  for (let id = 0; id < 3; id++) h.fake.finish(id, 'Success');
+  assert.equal(lines().length, 5);
+  for (let id = 0; id < 4; id++) h.fake.finish(id, 'Success');
   await h.commands.get('pueue').handler('refresh', h.ctx);
   assert.equal(lines(), undefined);
   await h.submit(); assert.ok(lines());
@@ -239,7 +239,7 @@ test('backend cleanup mirrors current jobs across refresh/reload without deletin
   const history = structuredClone(h.history);
   await h.commands.get('pueue').handler('refresh', h.ctx);
   assert.equal((await h.status()).length, 1);
-  assert.match(h.widgets.get(key).render(160)[0], /1 queued/);
+  assert.match(h.widgets.get(key).render(160)[0], /1 running/);
   assert.deepEqual(await h.status({ nonce: removed }), []);
   assert.deepEqual(h.history, history);
   assert.equal(h.messages.length, 0);
@@ -524,39 +524,40 @@ test('lost admission/enqueue replies and restart never re-admit; stashed evidenc
   }
 });
 
-test('ordinary work uses a stable private session group with two slots, never default or caller-selected groups', async () => {
+test('ordinary work uses a stable private session group with three slots, never default or caller-selected groups', async () => {
   const h = await harness();
   const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
   assert.match(group, /^pi-session-[a-f0-9-]+$/);
   assert.doesNotMatch(group, /origin|sessions/);
-  await h.submit(); await h.submit(); await h.submit();
-  assert.deepEqual((await h.status()).map(s => s.phase), ['RUNNING', 'RUNNING', 'QUEUED']);
+  await h.submit(); await h.submit(); await h.submit(); await h.submit();
+  assert.deepEqual((await h.status()).map(s => s.phase), ['RUNNING', 'RUNNING', 'RUNNING', 'QUEUED']);
   assert.equal(h.fake.groups.size, 1);
-  assert.deepEqual(h.fake.groups.get(group), { status: 'Running', parallel_tasks: 2 });
+  assert.deepEqual(h.fake.groups.get(group), { status: 'Running', parallel_tasks: 3 });
   assert.ok(Object.values(h.fake.tasks).every(t => t.group === group));
   assert.equal(h.fake.calls.filter(a => a[0] === 'group' && a[1] === 'add').length, 1);
   await h.start();
   // Tree branches share the session budget even when they cannot see old jobs.
   h.history = []; await h.events.get('session_tree')({}, h.ctx); await h.submit();
-  assert.equal(h.fake.tasks[3].group, group);
-  assert.equal(h.fake.tasks[3].status.Queued !== undefined, true);
+  assert.equal(h.fake.tasks[4].group, group);
+  assert.equal(h.fake.tasks[4].status.Queued !== undefined, true);
   h.session = 'another-session'; h.file = '/sessions/another.jsonl'; h.history = [];
   await h.start(); await h.submit();
-  assert.notEqual(h.fake.tasks[4].group, group);
+  assert.notEqual(h.fake.tasks[5].group, group);
   assert.equal((await h.status())[0].phase, 'RUNNING', 'another session is not blocked by this one');
   assert.equal(h.fake.groups.size, 2);
   assert.notEqual(sessionGroup(ns, { session: 'origin', file: '/copy.jsonl', anchor: null }), group);
   assert.notEqual(sessionGroup('other-namespace', { session: 'origin', file: '/sessions/origin.jsonl', anchor: null }), group);
   assert.equal(sessionGroup(ns, { session: 'origin', file: '/sessions/origin.jsonl', anchor: 'other-branch' }), group);
-  assert.match(h.tools.get('pueue_submit').description, /2 concurrent jobs, not a global limit/);
+  assert.match(h.tools.get('pueue_submit').description, /3 concurrent jobs, not a global limit/);
 });
 
 test('session groups fail closed on unexpected state or lost creation replies, never reset limits or enqueue work', async () => {
-  for (const mode of ['malformed', 'bad-schema', 'wrong-limit', 'bad-status', 'lost-reply', 'refused']) {
+  for (const mode of ['malformed', 'bad-schema', 'wrong-limit', 'old-limit', 'bad-status', 'lost-reply', 'refused']) {
     const h = await harness();
     const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
     if (mode === 'wrong-limit') h.fake.groups.set(group, { status: 'Running', parallel_tasks: 4 });
-    if (mode === 'bad-status') h.fake.groups.set(group, { status: 'Unknown', parallel_tasks: 2 });
+    if (mode === 'old-limit') h.fake.groups.set(group, { status: 'Running', parallel_tasks: 2 });
+    if (mode === 'bad-status') h.fake.groups.set(group, { status: 'Unknown', parallel_tasks: 3 });
     const run = h.fake.run.bind(h.fake);
     h.fake.run = async args => {
       if (args[0] === 'group' && args[1] === '--json' && mode === 'malformed') return 'SECRET invalid';
@@ -577,11 +578,11 @@ test('session groups fail closed on unexpected state or lost creation replies, n
 test('an existing paused session group stays paused, and legacy default-group jobs are never moved', async () => {
   const h = await harness();
   const group = sessionGroup(ns, { session: h.session, file: h.file, anchor: null });
-  h.fake.groups.set(group, { status: 'Paused', parallel_tasks: 2 });
+  h.fake.groups.set(group, { status: 'Paused', parallel_tasks: 3 });
   h.fake.tasks[99] = { id: 99, group: 'default', created_at: '2026-10-22T00:00:00Z', label: 'legacy', status: { Queued: {} } };
   await h.submit();
   assert.equal((await h.status())[0].phase, 'QUEUED');
-  assert.deepEqual(h.fake.groups.get(group), { status: 'Paused', parallel_tasks: 2 });
+  assert.deepEqual(h.fake.groups.get(group), { status: 'Paused', parallel_tasks: 3 });
   assert.equal(h.fake.tasks[99].group, 'default');
   assert.equal(h.fake.calls.filter(a => ['switch', 'parallel', 'start', 'restart', 'remove'].includes(a[0])).length, 0);
 });

@@ -86,7 +86,9 @@ test('explicit backend validation rejects aliases, unavailable CLI and unsupport
   await assert.rejects(prepare(spec(f.repo), { ...f.runtime, claude: undefined }, who), /unavailable/);
   assert.equal(f.git('branch', '--list', 'delegate/*'), '');
 }));
-test('Claude worker has explicit capabilities, stdin brief, clean environment, durable report and one-shot identity', () => fixture(async f => {
+test('Claude worker has explicit capabilities, stdin brief, clean environment, durable report and one-shot identity', t => fixture(async f => {
+  const logs = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args.join(' ')));
   const task = await prepare(spec(f.repo), f.runtime, who);
   process.env.UNAPPROVED_TOKEN = 'never-forward';
   try { assert.equal(await run(f.runtimePath, task.id), 0); } finally { delete process.env.UNAPPROVED_TOKEN; }
@@ -117,6 +119,11 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   assert.equal(await run(f.runtimePath, task.id, revision.attempt), 0);
   assert.equal((await json(join(f.dir, 'invocation.json'))).args.includes(revision.attempt), true);
   assert.equal((await json(join(attemptDirectory(task, revision.attempt), 'result.json'))).backend, 'claude');
+  assert.deepEqual(logs.filter(line => line.startsWith('[delegate] Prompt file: ')),
+    [task.directory, attemptDirectory(task, revision.attempt)].map(directory =>
+      `[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`));
+  assert.ok(!logs.join('\n').includes(spec(f.repo).brief));
+  assert.ok(!logs.join('\n').includes('Revise in place.'));
 }));
 test('Claude semantic errors or invalid output never become successful revision evidence', () => fixture(async f => {
   for (const output of ['not-json', JSON.stringify({ subtype: 'error_max_turns', is_error: true, result: 'partial' })]) {

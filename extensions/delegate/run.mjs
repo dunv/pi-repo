@@ -27,6 +27,7 @@ export async function run(runtimePath, id, attempt) {
     '--append-system-prompt', join(here, 'policy.md'), '@' + join(directory, 'brief.md')];
   console.log(`[delegate] Initiated by: ${task.initiatorLabel ?? initiatorLabel(task.owner)} session=${task.owner.session}`);
   console.log(`[delegate] Worker starting: task=${id}${attempt ? ` revision=${attempt}` : ''} model=${plan.model} requested-thinking=${plan.thinking}`);
+  console.log(`[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`);
   const result = backend === 'claude' ? await runClaude(runtime, runtimePath, task, plan, directory, attempt) : await runToFiles(runtime.pi, args, {
     cwd: task.worktree, env: { ...envFor(runtime), PI_DELEGATE_RUNTIME: runtimePath, PI_DELEGATE_TASK: id,
       ...(attempt === undefined ? {} : { PI_DELEGATE_ATTEMPT: attempt }) },

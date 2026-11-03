@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,32 +16,45 @@ const launch = (bin, args) => new Promise((resolve, reject) => {
   child.once('error', reject); child.once('close', code => resolve({ code, out, err }));
 });
 
-test('launcher admits at most two workers globally; nonzero worker is executed only once, never retried', async () => {
+for (const legacyWorkers of [0, 2]) {
+test(`launcher caps workers at six with ${legacyWorkers} legacy slots held; nonzero workers never retry`, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'delegate-locks-'));
+  const held = [];
   try {
+    // Match old launchers holding worker-0/1.lock across exec. A child flock
+    // shares the parent's open file description, retaining the lock until close.
+    for (let slot = 0; slot < legacyWorkers; slot++) {
+      const handle = await open(join(dir, `worker-${slot}.lock`), 'w');
+      held.push(handle);
+      execFileSync(flock, ['-n', '3'], { stdio: ['ignore', 'pipe', 'pipe', handle.fd] });
+    }
     const events = join(dir, 'events'), runner = join(dir, 'runner.cjs'), launcher = join(dir, 'launch.sh');
     await writeFile(runner, `const fs=require('node:fs'); const id=process.argv[3];
 fs.appendFileSync(${JSON.stringify(events)}, JSON.stringify({id,delta:1})+'\\n');
-setTimeout(()=>{fs.appendFileSync(${JSON.stringify(events)},JSON.stringify({id,delta:-1})+'\\n'); process.exit(7);}, 120);`);
+setTimeout(()=>{fs.appendFileSync(${JSON.stringify(events)},JSON.stringify({id,delta:-1})+'\\n'); process.exit(7);}, 400);`);
     let source = await readFile(new URL('../launch.sh', import.meta.url), 'utf8');
     source = source.replaceAll('@bash@', shell);
     for (const [key, value] of Object.entries({ state: dir, flock, node: process.execPath, runner })) source = source.replaceAll(`@${key}@`, quote(value));
     await writeFile(launcher, source, { mode: 0o700 });
-    const ids = Array.from({ length: 5 }, () => randomUUID());
+    const ids = Array.from({ length: 10 }, () => randomUUID());
     const results = await Promise.all(ids.map(id => launch(shell, [launcher, '/runtime.json', id])));
     assert.ok(results.every(r => r.code === 7), JSON.stringify(results));
     for (const result of results) assert.match(result.out, /\[delegate\] Launcher ready:.*acquiring worker slot/);
     const rows = (await readFile(events, 'utf8')).trim().split('\n').map(JSON.parse);
     let active = 0, peak = 0;
-    for (const row of rows) { active += row.delta; peak = Math.max(peak, active); assert.ok(active >= 0 && active <= 2); }
-    assert.equal(active, 0); assert.equal(peak, 2);
+    for (const row of rows) { active += row.delta; peak = Math.max(peak, active); assert.ok(active >= 0 && active <= 6 - legacyWorkers); }
+    assert.equal(active, 0); assert.equal(peak, 6 - legacyWorkers);
     for (const id of ids) assert.equal(rows.filter(r => r.id === id && r.delta === 1).length, 1);
     assert.equal((await launch(shell, [launcher, '/runtime.json', '../bad'])).code, 64);
     assert.equal((await launch(shell, [launcher, '/runtime.json', randomUUID(), '../bad-revision'])).code, 64);
     const revised = await launch(launcher, ['/runtime.json', randomUUID(), randomUUID()]);
     assert.equal(revised.code, 7, revised.err);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally {
+    await Promise.all(held.map(handle => handle.close()));
+    await rm(dir, { recursive: true, force: true });
+  }
 });
+}
 
 test('global check lock serializes independent processes and releases on completion', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'delegate-check-lock-'));

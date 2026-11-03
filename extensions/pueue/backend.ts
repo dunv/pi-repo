@@ -113,13 +113,13 @@ export class Backend {
       if (!object(groups)) throw new Error("Invalid Pueue group schema");
       if (!Object.hasOwn(groups, group)) return false;
       const entry = groups[group];
-      if (!object(entry) || entry.parallel_tasks !== 2 || !["Running", "Paused"].includes(String(entry.status))) {
+      if (!object(entry) || entry.parallel_tasks !== 3 || !["Running", "Paused"].includes(String(entry.status))) {
         throw new Error("Session group configuration differs; operator investigation required");
       }
       return true;
     };
     if (await inspect()) return;
-    const reply = await this.run(["group", "add", "--parallel", "2", group]);
+    const reply = await this.run(["group", "add", "--parallel", "3", group]);
     if (reply.trim() !== `New group "${group}" has been created` || !await inspect()) {
       throw new Error("Session group creation refused or uncertain; no automatic retry or default-group fallback");
     }

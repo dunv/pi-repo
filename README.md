@@ -33,8 +33,8 @@ described in its README. Delegation additionally requires `PI_DELEGATE_RUNTIME`,
 including operator-defined verification commands. Loading the package does not
 start workers, install software, manage services, or change Pi settings.
 
-Ordinary Pueue submissions use session-specific groups with two slots, not a
-global machine cap. Delegate workers additionally share two worker locks and one
+Ordinary Pueue submissions use session-specific groups with three slots, not a
+global machine cap. Delegate workers additionally share six worker locks and one
 heavy-check lock. There is no automatic retry, integration, publication, merge,
 or cleanup. Reports and exit zero are evidence, not acceptance. See the component
 READMEs for configuration, authorization boundaries and limitations.
