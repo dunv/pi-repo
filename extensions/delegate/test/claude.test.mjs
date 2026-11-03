@@ -96,10 +96,11 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   assert.equal(invocation.secret, undefined); assert.equal(invocation.cwd, task.worktree);
   assert.equal(invocation.stdin, spec(f.repo).brief); assert.ok(!args.join(' ').includes('SECRET_BRIEF'));
   for (const flag of ['--restricted', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome']) assert.ok(args.includes(flag));
-  for (const [flag, value] of [['--model', task.model], ['--effort', 'high'], ['--tools', ''], ['--setting-sources', ''], ['--permission-mode', 'dontAsk'], ['--permission-prompts', 'none'], ['--session-id', task.id]]) {
+  for (const [flag, value] of [['--model', task.model], ['--effort', 'high'], ['--tools', ''], ['--setting-sources', ''], ['--permission-mode', 'dontAsk'], ['--permission-prompts', 'none'], ['--output-format', 'stream-json'], ['--session-id', task.id]]) {
     assert.equal(args[args.indexOf(flag) + 1], value);
   }
   assert.ok(!args.includes('--dangerously-skip-permissions'));
+  assert.ok(args.includes('--verbose')); assert.ok(args.includes('--include-partial-messages'));
   const config = await json(join(task.directory, 'claude-mcp.json'));
   assert.deepEqual(Object.keys(config.mcpServers), ['delegate']);
   assert.equal(config.mcpServers.delegate.command, f.runtime.node);
@@ -126,14 +127,67 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   assert.ok(!logs.join('\n').includes('Revise in place.'));
 }));
 test('Claude semantic errors or invalid output never become successful revision evidence', () => fixture(async f => {
-  for (const output of ['not-json', JSON.stringify({ subtype: 'error_max_turns', is_error: true, result: 'partial' })]) {
-    await writeFile(f.runtime.claude, `#!${process.execPath}\nconsole.log(${JSON.stringify(output)});\n`, { mode: 0o700 });
+  const success = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'not accepted' });
+  for (const [output, code] of [
+    ['not-json', 0],
+    [JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'partial' }), 0],
+    [JSON.stringify({ type: 'assistant', message: { content: [] } }), 0],
+    [success + '\n' + success, 0],
+    [success, 7],
+  ]) {
+    await writeFile(f.runtime.claude, `#!${process.execPath}\nconsole.log(${JSON.stringify(output)}); process.exitCode=${code};\n`, { mode: 0o700 });
     const task = await prepare(spec(f.repo), f.runtime, who);
-    assert.equal(await run(f.runtimePath, task.id), 1);
+    assert.equal(await run(f.runtimePath, task.id), code || 1);
     const result = await json(join(task.directory, 'result.json'));
-    assert.equal(result.code, 1); assert.ok(result.workerError); assert.equal(result.accepted, false);
+    assert.equal(result.code, code || 1); assert.ok(result.workerError); assert.equal(result.accepted, false);
+    await assert.rejects(readFile(join(task.directory, 'report.md')), { code: 'ENOENT' });
   }
 }));
+test('Claude text reaches worker and Pueue logs before exit; final result/report stay separate', () => fixture(async f => {
+  const release = join(f.dir, 'release');
+  await writeFile(f.runtime.claude, `#!${process.execPath}
+const fs = require('node:fs');
+console.error('early stderr');
+console.log(JSON.stringify({type:'stream_event',event:{type:'message_start',message:{id:'m1'}}}));
+console.log(JSON.stringify({type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'early streamed text'}}}));
+const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) {
+  clearInterval(timer);
+  console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'early streamed text'}]}}));
+  console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'Final report.',duration_api_ms:12,num_turns:1,usage:{output_tokens:4}}));
+} }, 10);
+setTimeout(() => process.exit(9), 5000).unref();
+`, { mode: 0o700 });
+  const task = await prepare(spec(f.repo), f.runtime, who);
+  const child = spawn(process.execPath, [new URL('../run.mjs', import.meta.url).pathname, f.runtimePath, task.id],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', err = '', released = false, snapshot;
+  const releaseWhenLive = () => {
+    if (!released && out.includes('early streamed text') && err.includes('early stderr')) {
+      released = true;
+      snapshot = (async () => {
+        assert.equal(child.exitCode, null);
+        const log = await readFile(join(task.directory, 'worker.log'), 'utf8');
+        assert.ok(log.includes('early streamed text')); assert.ok(log.includes('early stderr'));
+        await assert.rejects(readFile(join(task.directory, 'report.md')), { code: 'ENOENT' });
+        await writeFile(release, 'continue');
+      })();
+    }
+  };
+  child.stdout.on('data', data => { out += data; releaseWhenLive(); });
+  child.stderr.on('data', data => { err += data; releaseWhenLive(); });
+  const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+  await snapshot;
+  assert.equal(code, 0, err); assert.equal(released, true);
+  assert.equal(out.split('early streamed text').length - 1, 1);
+  assert.ok(!out.includes('stream_event')); assert.ok(!out.includes('output_tokens'));
+  const log = await readFile(join(task.directory, 'worker.log'), 'utf8');
+  assert.equal(log.split('early streamed text').length - 1, 1);
+  assert.match(log, /Claude summary:.*output tokens 4/);
+  assert.equal(await readFile(join(task.directory, 'report.md'), 'utf8'), 'Final report.\n');
+  const result = await json(join(task.directory, 'claude-result.json'));
+  assert.equal(result.type, 'result'); assert.equal(result.result, 'Final report.');
+}));
+
 test('Claude MCP source tools enforce protected/symlink boundary and record only planned locked checks', () => fixture(async f => {
   const task = await prepare(spec(f.repo), f.runtime, who), call = await createTools(f.runtimePath, task.id);
   assert.deepEqual(tools.map(t => t.name), ['read', 'ls', 'find', 'grep', 'write', 'edit', 'delegate_check']);

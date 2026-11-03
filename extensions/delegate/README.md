@@ -263,13 +263,26 @@ as CLAUDE.md may still be read. Existing HOME-based Claude subscription login is
 used independently of Pi auth; missing auth fails, without automatic login or
 fallback. Use the pinned CLI's help/auth-status commands for no-model preflight.
 
-The brief goes over stdin, not argv. `claude-mcp.json`, raw `claude-result.json`,
-`worker.log` and final `report.md` are retained per attempt; Claude's own transcript
-is retained in its normal HOME-based session storage. The bridge emits bounded
-tool start/end previews on MCP stderr, which Claude may capture rather than
-forward to Pueue. CLI stderr is mirrored live; final JSON appears when Claude
-exits (assistant deltas are not streamed). Invalid/error result envelopes fail
-even if the CLI exits zero.
+The brief goes over stdin, not argv. Claude runs with `--output-format stream-json`,
+`--verbose` and `--include-partial-messages`. Assistant text deltas and numbered
+tool start/end markers are rendered as they arrive into both the private
+`worker.log` and Pueue's live log. Completed assistant messages are a fallback when
+no deltas were emitted, not a second copy of streamed text. The renderer excludes
+thinking/signatures, prompts, tool arguments, tool result/file bodies and unrelated
+system events; raw stream JSON is not mirrored or archived. Assistant text itself
+can still contain sensitive material and logs must remain private. Terminal control
+characters in assistant text are escaped. CLI stderr remains mirrored unchanged.
+The MCP bridge also emits bounded previews on its stderr, which Claude may capture
+rather than forward to Pueue.
+
+`claude-mcp.json`, the terminal result envelope in `claude-result.json`, `worker.log`
+and final `report.md` are retained per attempt, including revisions; Claude's own
+transcript remains in its normal HOME-based session storage. The final report is
+written only after CLI exit zero and exactly one successful terminal result.
+Malformed or oversized events (over 8 MiB per line), missing/duplicate results and
+post-result events fail closed, even if the CLI exits zero. Protocol errors drain
+the worker output and wait for exit; there is no signal, timeout, retry or fallback.
+Streaming uses bounded buffering and backpressure, not whole-transcript capture.
 A successful result is still not acceptance or proof all checks passed.
 
 Example selection (with the usual repo/brief/profile/check fields):
@@ -314,8 +327,9 @@ At settlement a worker summary reports elapsed time, summed response time, union
 of tool execution intervals, check time (a subset of tool time), response count,
 tool errors and output tokens. Unattributed overhead is not called model time.
 Checks include lock waiting. Abruptly killed workers may lack a final summary.
-Claude remains nonstreaming: only final CLI aggregate API time, turns and usage
-are surfaced when available; missing fields show `n/a`, never invented zeros.
+Claude text/tool progress streams live, but timing/usage still come only from the
+final CLI aggregate API time, turns and usage; no per-response timing is inferred
+from deltas. Missing fields show `n/a`, never invented zeros.
 
 Each attempt retains private `metrics.jsonl` alongside `worker.log`, including
 revisions in their own artifact directory. Records carry `schemaVersion: 1`, a UTC
