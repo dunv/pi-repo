@@ -307,6 +307,7 @@ test('real worker extension forwards revision identity to check artifacts while 
       await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse', usage: { output: 12 } } });
       await emit('tool_execution_start', { toolCallId: 'a', toolName: 'read', args: { path: 'first.md', secret: 'PRIVATE ARGUMENT' } });
       await emit('tool_execution_start', { toolCallId: 'b', toolName: 'read', args: { path: 'second.md', offset: 12 } });
+      await emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Partial answer' } });
       await emit('tool_execution_end', { toolCallId: 'b', toolName: 'read', durationMs: 4.2, isError: false });
       await emit('tool_execution_end', { toolCallId: 'a', toolName: 'read', isError: true, result: 'PRIVATE RESULT' });
       await emit('agent_settled', { aborted: false });
@@ -314,7 +315,9 @@ test('real worker extension forwards revision identity to check artifacts while 
     assert.match(progress, /Live answer\n/);
     assert.match(progress, /Tool #1 starting: read.*first.md/);
     assert.match(progress, /Tool #2 starting: read.*second.md.*"offset":12/);
-    assert.match(progress, /Tool #2 finished: read \(4ms\)/);
+    assert.match(progress, /first\.md[^\n]*\n\[delegate\] Tool #2 starting:/);
+    assert.match(progress, /Partial answer\n\[delegate\] Tool #2 finished: read \(4ms\)/);
+    assert.doesNotMatch(progress, /\n\n\[delegate\]/);
     assert.match(progress, /Tool #1 finished: read \(error\)/);
     assert.doesNotMatch(progress, /PRIVATE/);
     assert.match(progress, /Model #1 finished:/); assert.match(progress, /Worker summary:/);

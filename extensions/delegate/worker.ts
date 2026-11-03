@@ -14,14 +14,17 @@ export default function (pi: ExtensionAPI) {
   const runtimePath = process.env.PI_DELEGATE_RUNTIME, id = process.env.PI_DELEGATE_TASK, attempt = process.env.PI_DELEGATE_ATTEMPT;
   // Print mode only emits the final answer on stdout. Mirror progress on stderr
   // so Pueue/Pui can follow it without changing report.md or exposing thinking.
-  const progress = (text: string) => new Promise<void>((resolve, reject) => {
+  let atLineStart = true;
+  const progress = (text: string, marker = false) => new Promise<void>((resolve, reject) => {
+    if (marker && !atLineStart) text = "\n" + text;
+    if (text) atLineStart = text.endsWith("\n");
     process.stderr.write(text, error => error ? reject(error) : resolve());
   });
   observeMetrics(pi, async (record: object) => {
     const { task } = await context();
     await appendFile(join(attemptDirectory(task, attempt), "metrics.jsonl"),
       JSON.stringify({ schemaVersion: 1, timestamp: new Date().toISOString(), ...record }) + "\n", { mode: 0o600 });
-    await progress("\n" + metricsLine(record));
+    await progress(metricsLine(record), true);
   });
   pi.on("message_update", async event => {
     const update = event.assistantMessageEvent;
@@ -33,13 +36,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_execution_start", async event => {
     const call = ++nextCall;
     activeCalls.set(event.toolCallId, call);
-    await progress(`\n[delegate] Tool #${call} starting: ${event.toolName} ${toolSummary(event.toolName, event.args)}\n`);
+    await progress(`[delegate] Tool #${call} starting: ${event.toolName} ${toolSummary(event.toolName, event.args)}\n`, true);
   });
   pi.on("tool_execution_end", async event => {
     const call = activeCalls.get(event.toolCallId) ?? "?";
     activeCalls.delete(event.toolCallId);
     const duration = typeof event.durationMs === "number" ? ` (${Math.round(event.durationMs)}ms)` : "";
-    await progress(`[delegate] Tool #${call} finished: ${event.toolName}${duration}${event.isError ? " (error)" : ""}\n`);
+    await progress(`[delegate] Tool #${call} finished: ${event.toolName}${duration}${event.isError ? " (error)" : ""}\n`, true);
   });
   async function context() {
     if (!id || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("Missing task identity");
