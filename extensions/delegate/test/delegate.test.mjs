@@ -333,7 +333,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
   const loaded = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], process.cwd());
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
-  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
+  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_feedback', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
   const review = tools.find(t => t.name === 'delegate_review');
   await fixture(async f => {
     const entries = [], calls = [];
@@ -422,6 +422,21 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.deepEqual(reviewed.missingChecks, [0]);
       assert.match(await readFile(reviewed.trackedPatch, 'utf8'), /worker changed/);
       assert.equal(reviewed.reviewer, 'main-agent');
+      assert.equal(reviewed.feedback.tool, 'delegate_feedback');
+      assert.equal(reviewed.feedback.expectedNonce, task.nonce);
+      assert.match(reviewed.feedback.instruction, /After reviewing/);
+      const feedbackTool = registered.get('delegate_feedback');
+      const feedbackInput = { task: task.task, expectedNonce: task.nonce, reviewStatus: 'reviewed', usefulness: 'partly',
+        correctness: 'issues', instructionFollowing: 'good', reviewEffort: 'moderate', wouldDelegateAgain: 'unsure',
+        rationale: 'Changes are scoped but verification is missing.', problems: ['No planned check evidence'],
+        improvements: ['Run the planned check'], evidence: ['Missing check index 0'], reviewedFingerprint: reviewed.fingerprint };
+      const recorded = JSON.parse((await feedbackTool.execute('feedback', feedbackInput, undefined, undefined, ctx)).content[0].text);
+      assert.equal(recorded.recorded, true); assert.equal(recorded.accepted, false);
+      const feedback = await json(recorded.path);
+      assert.equal(feedback.assessment.usefulness, 'partly'); assert.equal(feedback.invocation.model, 'fixture/model');
+      assert.equal(feedback.reviewedFingerprint, reviewed.fingerprint);
+      assert.equal(feedback.artifacts.directory, task.artifacts);
+      assert.equal(feedback.caller.session, who.session);
       assert.equal(calls.some(c => c.name === 'worktree_panel_target'), false, 'Review does not require opening a human diff panel');
       await registered.get('delegate_review').execute('panel', { task: task.task, openDiff: true }, undefined, undefined, ctx);
       assert.equal(calls.at(-1).name, 'worktree_panel_target');
@@ -466,6 +481,26 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
       assert.equal(revisedReview.attempt, revision.attempt);
       assert.equal(revisedReview.report.path, join(revision.artifacts, 'report.md'));
       assert.equal(revisedReview.accepted, false);
+      const correction = JSON.parse((await feedbackTool.execute('correction', { ...feedbackInput, supersedes: recorded.id,
+        rationale: 'Historical attempt correction after revision.' }, undefined, undefined, ctx)).content[0].text);
+      assert.equal((await json(correction.path)).attempt, null);
+      assert.equal((await json(correction.path)).supersedes, recorded.id);
+      assert.deepEqual(await json(recorded.path), feedback, 'Correction preserves the original record');
+      const revisionFeedback = JSON.parse((await feedbackTool.execute('revision-feedback', { ...feedbackInput,
+        expectedNonce: revision.nonce, reviewedFingerprint: revisedReview.fingerprint }, undefined, undefined, ctx)).content[0].text);
+      assert.equal((await json(revisionFeedback.path)).attempt, revision.attempt);
+      assert.equal((await json(revisionFeedback.path)).artifacts.directory, revision.artifacts);
+      await assert.rejects(feedbackTool.execute('cross-attempt', { ...feedbackInput, expectedNonce: revision.nonce,
+        supersedes: recorded.id }, undefined, undefined, ctx), /same attempt/);
+      phase = 'RUNNING';
+      await assert.rejects(feedbackTool.execute('active-feedback', feedbackInput, undefined, undefined, ctx), /known terminal/);
+      phase = 'EXITED'; exitCode = 7;
+      const failedFeedback = JSON.parse((await feedbackTool.execute('failed-feedback', { ...feedbackInput,
+        expectedNonce: revision.nonce, reviewStatus: 'not_reviewed', correctness: 'not_assessed' }, undefined, undefined, ctx)).content[0].text);
+      assert.equal((await json(failedFeedback.path)).execution.exitCode, 7);
+      exitCode = 0;
+      await assert.rejects(feedbackTool.execute('foreign-feedback', feedbackInput, undefined, undefined,
+        { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => 'fork' } }), /not owned/);
       submissionFailure = true;
       const nextRevision = { ...revisionInput, expectedNonce: revision.nonce, expectedFingerprint: revisedReview.fingerprint };
       const revisionSubmits = calls.filter(c => c.name === 'pueue_submit').length;

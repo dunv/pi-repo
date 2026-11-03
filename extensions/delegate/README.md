@@ -93,6 +93,10 @@ Pi-only levels such as `off` are rejected, not silently converted.
   `delegate_review {task, openDiff?: false}` requires authoritative Pueue EXITED,
   collects cumulative tracked diff, new-file list, untrusted report and current
   check evidence. Optional panel targeting does not change the agent's cwd.
+- `delegate_feedback {task, expectedNonce, reviewStatus, usefulness, correctness,
+  instructionFollowing, reviewEffort, wouldDelegateAgain, rationale, problems,
+  improvements, evidence, reviewedFingerprint?, supersedes?}` records the **calling
+  agent's** assessment of one terminal attempt. See [Caller feedback](#caller-feedback).
 - `delegate_revise {task, expectedNonce, expectedFingerprint, brief, backend?, model, thinking}`
   starts one explicitly authorized revision in the **same** worktree/output base.
   Get identities from the latest review. The previous attempt must be confirmed
@@ -136,6 +140,73 @@ Task state remains under the configured private state directory:
 worker log, check evidence, tracked diff and `build-output/`. Revisions retain
 separate artifacts under `revisions/<attempt-uuid>/` while sharing the original
 output base. No automatic pruning, artifact deletion or worktree cleanup.
+
+## Caller feedback
+
+After reviewing each attempt and reporting its verdict, the caller should invoke
+`delegate_feedback`. Submission/revision tool instructions request this, and
+`delegate_review` returns a structured `feedback` reminder with the exact task,
+nonce and storage directory. This is a reminder, not an automatic extra model
+turn, forced grade, review attestation or blocker on authorized revisions.
+Record diagnostic feedback after investigating failures too, even when there is
+no report, diff or usable worker result. Missing feedback means **not assessed**.
+
+Required assessment fields:
+
+| Field | Values |
+|---|---|
+| `reviewStatus` | `reviewed`, `partial`, `not_reviewed` |
+| `usefulness` | `useful`, `partly`, `not_useful`, `not_assessed` |
+| `correctness`, `instructionFollowing` | `good`, `issues`, `not_assessed` |
+| `reviewEffort` | `low`, `moderate`, `high`, `not_assessed` |
+| `wouldDelegateAgain` | `yes`, `no`, `unsure` |
+| `rationale` | Nonempty explanation, at most 4,000 characters |
+| `problems`, `improvements`, `evidence` | Arrays of at most 12 nonempty strings, at most 1,000 characters each; empty arrays allowed |
+
+Use `not_assessed` rather than guessing; exit zero, worker self-review and passing
+checks alone are not proof of correctness or usefulness. Describe actual saved
+work or review/rework burden in the rationale. Keep text concise and free of
+secrets, full prompts, file bodies and copied worker output. The system cannot
+reliably redact secrets from free text: all artifacts remain private, local data.
+Feedback is untrusted caller opinion, not an objective benchmark or permission
+to accept, integrate, publish, retry or stop a worker.
+
+The tool binds `task` plus `expectedNonce` to a submitted attempt in the caller's
+active session branch, including earlier attempts after revisions. It queries
+Pueue and requires a known terminal `EXITED` or `KILLED` state; absent, uncertain
+and active states are rejected. `KILLED` is retained only as diagnostic status,
+not proof descendants stopped. No source reads, fingerprint recomputation,
+worker mutation or worktree requirement is involved. Optional
+`reviewedFingerprint` is a caller-supplied historical review reference, **not**
+fresh verification. The frozen task/revision/submission manifests must match.
+
+Versioned records are stored as:
+
+```text
+$PI_DELEGATE_RUNTIME.state/<task-uuid>/feedback/<feedback-uuid>.json
+```
+
+With the usual runtime this is
+`~/.local/share/pi-delegate/<task-uuid>/feedback/`. Directories are private (0700),
+records are exclusive-create (0600). Each record contains `schemaVersion: 1`,
+UUID, UTC timestamp, task/attempt/job binding, caller session/model (when known),
+automatic invocation parameters (repo, base revision, backend, model, thinking,
+profile and planned checks), backend status, assessment and artifact paths for
+the brief, worker result, metrics and tracked diff. Prompts, tool arguments,
+provider payloads and credentials are not automatically copied. Paths link to
+retained artifacts; they do not certify those artifacts exist or that checks
+passed. Original attempts use `attempt: null`; revisions use their attempt UUID.
+
+Corrections append a full new assessment with `supersedes: <feedback-uuid>` for
+the same task and attempt; the old record is never overwritten. Multiple records
+and concurrent correction branches are possible: analyze their IDs/supersedes
+links, not record count as invocation count. Join by task/attempt/nonce to timing
+and check evidence. Nothing is uploaded, committed, pruned or automatically
+filled in for historical tasks. For a local JSONL export (read-only):
+
+```sh
+find ~/.local/share/pi-delegate -path '*/feedback/*.json' -type f -exec jq -c . {} +
+```
 
 ## Initiating-session identity in Pui
 
