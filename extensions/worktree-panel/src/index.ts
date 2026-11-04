@@ -277,11 +277,11 @@ export default function worktreePanel(pi: ExtensionAPI) {
   pi.registerTool({
     name: "worktree_panel_target",
     label: "Worktree panel target",
-    description: "Point the panel at any Git checkout (main or linked) for committed and uncommitted changes, or set branch plus an absolute repository path for read-only committed diffs of a branch, tag, custom ref, or commit revision without a worktree. Set base to choose the committed comparison base independently; omit it for automatic develop/master selection. Without branch, uncommitted changes stay visible. Clear with path: null. Does NOT change Pi's cwd or tool paths. Saved per session branch across reload/restart.",
+    description: "Set the diff panel's checkout (committed + uncommitted), or supply branch/ref for read-only committed diffs without a worktree. base overrides automatic develop/master comparison. path:null clears. Does not change cwd/tool paths; saved per session branch.",
     parameters: Type.Object({
-      path: Type.Union([Type.String({ description: "Absolute Git checkout path (main or linked), or repository path when branch is supplied" }), Type.Null()]),
-      branch: Type.Optional(Type.String({ minLength: 1, description: "Branch, tag, custom ref, or commit revision (e.g. feature/foo, v3, refs/releases/v3, HEAD~1); read-only, no worktree needed" })),
-      base: Type.Optional(Type.String({ minLength: 1, description: "Comparison base ref or commit (e.g. v3). Only affects committed changes (merge base to target HEAD); omit for automatic develop/master. Does not select a different checkout or hide uncommitted changes." })),
+      path: Type.Union([Type.String({ description: "Absolute checkout path, or repository path with branch." }), Type.Null()]),
+      branch: Type.Optional(Type.String({ minLength: 1, description: "Branch, tag, ref or commit; read-only committed diffs." })),
+      base: Type.Optional(Type.String({ minLength: 1, description: "Comparison base ref/commit (merge-base to target HEAD); default develop/master. Only affects committed changes, not checkout or uncommitted files." })),
     }),
     async execute(_id, { path, branch, base }, _signal, _onUpdate, ctx) {
       if (path !== null && !isAbsolute(path)) throw new Error("Worktree path must be absolute");

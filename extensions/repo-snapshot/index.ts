@@ -29,7 +29,7 @@ export default function repoSnapshot(pi: ExtensionAPI) {
   pi.registerTool({
     name: "repo_snapshot",
     label: "Repository snapshot",
-    description: "Read local Git branch/HEAD/upstream, ahead/behind and staged/unstaged/untracked/conflicted paths in one on-demand snapshot. No fetch or repository writes. Untracked directories are collapsed. Optional worktree listing and whitespace checks; no diff contents. Output is bounded with a private full-snapshot artifact when capped. Ten-second overall deadline; oversized Git output fails rather than returning partial counts.",
+    description: "Read local Git branch/HEAD/upstream, ahead/behind and changed/conflicted paths; optionally list worktrees and check whitespace. No fetch, writes or diff contents; untracked directories collapsed. Capped output links full artifact; timeout/oversize fails rather than reporting partial counts.",
     parameters: Type.Object({
       path: Type.Optional(Type.String({ description: "Directory, absolute or relative to session cwd; defaults to session cwd." })),
       fast: Type.Optional(Type.Boolean({ description: "Skip ahead/behind graph traversal (counts unavailable)." })),
