@@ -37,10 +37,10 @@ test('large valid log slices render; empty/missing/malformed data is explicit', 
 test('result tool renderers are UI-only, width-safe and preserve error diagnostics', () => {
   const tools = new Map(), messages = [];
   extension({ registerMessageRenderer() {}, on() {}, registerTool: t => tools.set(t.name, t), registerCommand() {}, sendMessage: m => messages.push(m) });
-  const tool = tools.get('pueue_result'), theme = { fg: (_ink, text) => text };
+  const tool = tools.get('pueue_result'), theme = { fg: (_ink, text) => text, bold: text => text };
   const reply = { content: content(payload()), details: undefined }, before = structuredClone(reply);
   const context = { outputPad: 1, args: { nonce }, isError: false };
-  assert.equal(tool.renderShell, 'self');
+  assert.equal(tool.renderShell, 'default');
   for (const expanded of [false, true]) for (const width of [8, 40, 120]) {
     const lines = tool.renderResult(reply, { expanded, isPartial: false }, theme, context).render(width);
     assert.ok(lines.every(line => visibleWidth(line) <= width));

@@ -8,7 +8,7 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 const nonce = '00000000-0000-4000-8000-000000000001';
 const input = { argv: ['/bin/build-tool', 'run', '/checkout#dev', '--command', '/bin/echo', "a'b", 'x\ny', '\x1b[31m'], cwd: '/checkout' };
 const queued = { nonce, id: 4, phase: 'QUEUED' };
-const theme = { fg: (_ink, text) => text };
+const theme = { fg: (_ink, text) => text, bold: text => text };
 
 test('submission presentation uses existing literal arguments/cwd, escapes controls, and labels runtime without inspecting env', () => {
   const text = submissionDetails(input).join('\n');
@@ -46,7 +46,7 @@ test('submit renderers collapse details, expand argv/cwd and preserve model-faci
   const result = { content: [{ type: 'text', text: JSON.stringify(queued) }], details: undefined };
   const original = structuredClone(result);
   const context = { args: input, outputPad: 0, isError: false };
-  assert.equal(tool.renderShell, 'self');
+  assert.equal(tool.renderShell, 'default');
   for (const width of [5, 20, 80]) {
     const lines = tool.renderCall(input, theme, context).render(width);
     assert.equal(lines.length, 1);
