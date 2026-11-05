@@ -187,7 +187,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
 
   pi.registerTool({
     name: "pueue_submit", label: "Submit to Pueue", executionMode: "sequential",
-    description: "Submit explicitly authorized work; not a permission grant. Literal argv only; NEVER include secrets. Session group: 3 concurrent jobs, not a global limit. Serialize shared-checkout/build mutations and same-PR reviews; concurrency does not deduplicate. No execution deadline/retry. reservationKey permanently reserves a one-shot group, not extra concurrency. Confirmation popup only if PI_PUEUE_CONFIRM_SUBMIT=1; authorization rules always apply.",
+    description: "Submit explicitly authorized work; not a permission grant. Literal argv only; NEVER include secrets. Output is captured unchanged; if timestamps are desired, the caller's command must print them. Session group: 3 concurrent jobs, not a global limit. Serialize shared-checkout/build mutations and same-PR reviews; concurrency does not deduplicate. No execution deadline/retry. reservationKey permanently reserves a one-shot group, not extra concurrency. Confirmation popup only if PI_PUEUE_CONFIRM_SUBMIT=1; authorization rules always apply.",
     renderShell: "default",
     renderCall(args, theme, _context) {
       const input = submission(args);

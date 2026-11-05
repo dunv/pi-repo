@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { save, envFor } from './core.mjs';
 import { runClaudeStream } from './claude-stream.mjs';
+import { timestampLine } from './logging.mjs';
 
 export async function runClaude(runtime, runtimePath, task, plan, directory, attempt) {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -31,7 +32,7 @@ export async function runClaude(runtime, runtimePath, task, plan, directory, att
     const record = claudeMetrics(reply, elapsedMs);
     await appendFile(join(directory, 'metrics.jsonl'), JSON.stringify({ schemaVersion: 1,
       timestamp: new Date().toISOString(), ...record }) + '\n', { mode: 0o600 });
-    const line = metricsLine(record);
+    const line = timestampLine(metricsLine(record));
     await appendFile(join(directory, 'worker.log'), line, { mode: 0o600 });
     process.stderr.write(line);
     if (result.code !== 0 || result.signal || typeof reply.result !== 'string'

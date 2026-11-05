@@ -306,7 +306,7 @@ setTimeout(() => process.exit(9), 5000).unref();
   assert.ok(out.includes(`[delegate] Prompt file: ${JSON.stringify(join(task.directory, 'brief.md'))}`));
   assert.ok(!out.includes(input(f.repo).brief));
   assert.equal(await readFile(join(task.directory, 'report.md'), 'utf8'), 'early stdout\nfinal report\n');
-  assert.equal(await readFile(join(task.directory, 'worker.log'), 'utf8'), 'early stderr\n');
+  assert.match(await readFile(join(task.directory, 'worker.log'), 'utf8'), /^\[\d{4}-\d\d-\d\dT[\d:.]+Z\] early stderr\n$/);
 }));
 
 test('dirty task verification: configured literal command, isolated output, source fingerprint and duration', () => fixture(async f => {
@@ -356,7 +356,7 @@ test('explicit revision reuses dirty source and build state, while retaining per
   assert.deepEqual(await json(join(task.directory, 'task.json')), task, 'Original manifest stays immutable');
   await assert.rejects(prepareRevision(bound, spec, f.runtime), /EEXIST/, 'Duplicate parent claim never permits another attempt');
   assert.equal(await run(f.runtimePath, task.id, revision.attempt), 0);
-  const promptLines = logs.filter(line => line.startsWith('[delegate] Prompt file: '));
+  const promptLines = logs.map(line => line.replace(/^\[[\dT:.Z-]+\] /, '')).filter(line => line.startsWith('[delegate] Prompt file: '));
   assert.deepEqual(promptLines, [task.directory, artifacts].map(directory =>
     `[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`));
   assert.ok(!logs.join('\n').includes(spec.brief));

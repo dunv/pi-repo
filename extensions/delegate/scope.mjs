@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { runtimeFrom, json, attemptDirectory, envFor } from './core.mjs';
 import { recordContainment, scopeName } from './containment.mjs';
 import { run } from './run.mjs';
+import { timestampLine } from './logging.mjs';
 
 export async function scopedRun(runtimePath, id, attempt, inside = false) {
   const runtime = await runtimeFrom(runtimePath), unit = scopeName(id, attempt);
@@ -33,7 +34,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const inside = process.argv[2] === '--inside', args = process.argv.slice(inside ? 3 : 2);
   if (args.length < 2 || args.length > 3) throw new Error('Expected runtime, task and optional attempt');
   scopedRun(args[0], args[1], args[2], inside).then(code => { process.exitCode = code; }).catch(error => {
-    console.error(`Delegate scope did not complete: ${error.message}. Retain evidence; do not retry automatically.`);
+    console.error(timestampLine(`Delegate scope did not complete: ${error.message}. Retain evidence; do not retry automatically.`));
     process.exitCode = 1;
   });
 }

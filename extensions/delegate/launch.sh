@@ -10,7 +10,7 @@ if [ "$#" -eq 3 ] && ! [[ "$3" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
   exit 64
 fi
 # Emit before waiting for a slot so Pui has output even while admission is blocked.
-printf '[delegate] Launcher ready: task=%s revision=%s; acquiring worker slot\n' "$2" "${3:-initial}"
+TZ=UTC printf '[%(%Y-%m-%dT%H:%M:%SZ)T] [delegate] Launcher ready: task=%s revision=%s; acquiring worker slot\n' -1 "$2" "${3:-initial}"
 # Locks, not another scheduler: Pueue still owns process lifetime and completion.
 # Keep the existing slot filenames so old and new launchers share their locks.
 # Prefer any free slot; if all six are busy, block on slot five without polling.

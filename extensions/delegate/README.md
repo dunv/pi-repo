@@ -192,6 +192,14 @@ path to that attempt's `brief.md` (including revisions), not its contents. The
 brief remains a private 0600 artifact; prompt text is not copied into startup logs.
 No automatic pruning, artifact deletion or worktree cleanup.
 
+Delegate live output and `worker.log` lines are prefixed with UTC ISO timestamps
+(e.g. `[2026-11-05T09:42:17.123Z]`); the Bash launcher uses whole seconds.
+The timestamp records when a line's first bytes are observed, not model token time.
+Partial lines stream immediately without waiting for a newline or adding a prefix
+per chunk. Final `report.md` contents and structured artifacts remain unchanged.
+Ordinary Pueue jobs are not timestamped by the adapter; callers that want timestamps
+must print them from their own command.
+
 ## Explicit recovery
 
 `delegate_resume` is a separate path from successful `delegate_revise`. It never
@@ -390,7 +398,7 @@ no deltas were emitted, not a second copy of streamed text. The renderer exclude
 thinking/signatures, prompts, tool arguments, tool result/file bodies and unrelated
 system events; raw stream JSON is not mirrored or archived. Assistant text itself
 can still contain sensitive material and logs must remain private. Terminal control
-characters in assistant text are escaped. CLI stderr remains mirrored unchanged.
+characters in assistant text are escaped. CLI stderr remains mirrored with line timestamps; its contents are otherwise unchanged.
 The MCP bridge also emits bounded previews on its stderr, which Claude may capture
 rather than forward to Pueue.
 

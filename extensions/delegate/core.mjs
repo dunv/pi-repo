@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { timestampLines } from './logging.mjs';
 import { promisify } from 'node:util';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -246,7 +247,7 @@ export async function writable(task, path) {
     }
   }
 }
-export async function runToFiles(executable, args, options, stdoutPath, stderrPath = stdoutPath, live = false, inputPath) {
+export async function runToFiles(executable, args, options, stdoutPath, stderrPath = stdoutPath, live = false, inputPath, timestampLogs = false) {
   const stdin = inputPath ? await open(inputPath, 'r') : undefined;
   const out = await open(stdoutPath, 'wx', 0o600);
   const err = stderrPath === stdoutPath ? out : await open(stderrPath, 'wx', 0o600);
@@ -254,11 +255,17 @@ export async function runToFiles(executable, args, options, stdoutPath, stderrPa
     return await new Promise((resolve, reject) => {
       const child = spawn(executable, args, { ...options, stdio: [stdin?.fd ?? 'ignore', live ? 'pipe' : out.fd, live ? 'pipe' : err.fd] });
       // Bound buffering via stream backpressure; never end the runner's own streams.
-      const mirror = (source, file, destination) => pipeline(source, new Writable({
-        write(chunk, _encoding, done) {
-          file.writeFile(chunk).then(() => destination.write(chunk, done), done);
-        },
-      }));
+      const mirror = (source, file, destination) => {
+        const stamp = timestampLines();
+        return pipeline(source, new Writable({
+          write(chunk, _encoding, done) {
+            const visible = timestampLogs ? stamp(chunk) : chunk;
+            // stdoutPath is the raw final report; only worker logs are decorated.
+            const saved = file === err && stderrPath !== stdoutPath ? visible : chunk;
+            file.writeFile(saved).then(() => destination.write(visible, done), done);
+          },
+        }));
+      };
       const streams = live ? Promise.all([mirror(child.stdout, out, process.stdout), mirror(child.stderr, err, process.stderr)]) : Promise.resolve();
       const exited = new Promise((accept, fail) => {
         child.once('error', fail);

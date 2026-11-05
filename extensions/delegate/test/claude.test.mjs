@@ -120,7 +120,7 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   assert.equal(await run(f.runtimePath, task.id, revision.attempt), 0);
   assert.equal((await json(join(f.dir, 'invocation.json'))).args.includes(revision.attempt), true);
   assert.equal((await json(join(attemptDirectory(task, revision.attempt), 'result.json'))).backend, 'claude');
-  assert.deepEqual(logs.filter(line => line.startsWith('[delegate] Prompt file: ')),
+  assert.deepEqual(logs.map(line => line.replace(/^\[[\dT:.Z-]+\] /, '')).filter(line => line.startsWith('[delegate] Prompt file: ')),
     [task.directory, attemptDirectory(task, revision.attempt)].map(directory =>
       `[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`));
   assert.ok(!logs.join('\n').includes(spec(f.repo).brief));
@@ -182,6 +182,7 @@ setTimeout(() => process.exit(9), 5000).unref();
   assert.ok(!out.includes('stream_event')); assert.ok(!out.includes('output_tokens'));
   const log = await readFile(join(task.directory, 'worker.log'), 'utf8');
   assert.equal(log.split('early streamed text').length - 1, 1);
+  for (const line of log.trimEnd().split('\n')) assert.match(line, /^\[\d{4}-\d\d-\d\dT[\d:.]+Z\] /);
   assert.match(log, /Claude summary:.*output tokens 4/);
   assert.equal(await readFile(join(task.directory, 'report.md'), 'utf8'), 'Final report.\n');
   const result = await json(join(task.directory, 'claude-result.json'));

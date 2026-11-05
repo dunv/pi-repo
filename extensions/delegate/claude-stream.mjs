@@ -1,6 +1,7 @@
 // Decode only allowlisted human-facing progress. Never mirror raw stream JSON,
 // thinking, input_json deltas, user prompts or tool result bodies into live logs.
 import { spawn } from 'node:child_process';
+import { timestampLines } from './logging.mjs';
 import { open } from 'node:fs/promises';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -94,10 +95,12 @@ export async function runClaudeStream(executable, args, options, inputPath, logP
   // Serialize stdout/stderr writes to the shared private worker log. Each source
   // observes backpressure; no transcript-sized array or unbounded output queue.
   let writing = Promise.resolve();
+  const stamp = timestampLines();
   const emit = (chunk, destination = process.stdout) => {
     const next = writing.then(async () => {
-      await log.writeFile(chunk);
-      await new Promise((resolve, reject) => destination.write(chunk, error => error ? reject(error) : resolve()));
+      const visible = stamp(chunk);
+      await log.writeFile(visible);
+      await new Promise((resolve, reject) => destination.write(visible, error => error ? reject(error) : resolve()));
     });
     writing = next.catch(() => {});
     return next;
