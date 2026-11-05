@@ -31,10 +31,94 @@ test('Claude stream renders text deltas once, tool lifecycle only, and excludes 
   // Byte-at-a-time chunks split JSON records and multibyte UTF-8 characters.
   for (const byte of Buffer.from(encode(events))) await parser.write(Buffer.from([byte]));
   assert.deepEqual(await parser.finish(), { reply: success, streamError: undefined });
-  assert.equal(output, 'Reading café ☕\n[delegate] Tool #1 starting: mcp__delegate__read\n'
+  assert.equal(output, '[delegate] Claude response #1 started\n'
+    + '[delegate] Claude response #1: thinking activity (content hidden)\n'
+    + 'Reading café ☕\n[delegate] Tool #1 starting: mcp__delegate__read\n'
     + '[delegate] Tool #1 finished: mcp__delegate__read · error\nCompleted fallback.\\u001b[2J\n');
   assert.ok(!output.includes('PRIVATE_'));
   assert.ok(!output.includes('Final report.'), 'result text is retained separately, not duplicated in live logs');
+});
+
+test('thinking-only max_tokens responses expose usage, continuation and a repeated-exhaustion warning', async () => {
+  let output = '', clock = 0;
+  const parser = claudeStream(async chunk => { output += chunk; }, undefined, () => clock);
+  for (let i = 1; i <= 3; i++) {
+    await parser.write(Buffer.from(encode([
+      partial({ type: 'message_start', message: { id: `m${i}`, usage: { input_tokens: 42 } } }),
+      partial({ type: 'content_block_start', content_block: { type: 'thinking', thinking: 'PRIVATE_THINKING' } }),
+      partial({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'PRIVATE_THINKING' } }),
+    ])));
+    clock += 552000;
+    const usage = { output_tokens: 32000, output_tokens_details: { thinking_tokens: 32000 }, secret: 'PRIVATE_USAGE' };
+    await parser.write(Buffer.from(encode([
+      partial({ type: 'message_delta', delta: { stop_reason: 'max_tokens' }, usage }),
+      partial({ type: 'message_stop' }),
+      // Completed envelopes must not double-count partial-stream summaries.
+      { type: 'assistant', message: { id: `m${i}`, content: [{ type: 'thinking', thinking: 'PRIVATE_THINKING' }], stop_reason: 'max_tokens', usage } },
+      { type: 'user', isMeta: true, message: { content: 'PRIVATE_CONTINUATION_PROMPT' } },
+    ])));
+  }
+  await parser.write(Buffer.from(encode([success])));
+  assert.equal((await parser.finish()).streamError, undefined);
+  assert.equal((output.match(/finished: observed stream 552\.0s/g) ?? []).length, 3);
+  assert.equal((output.match(/thinking activity/g) ?? []).length, 3);
+  assert.equal((output.match(/CLI continuation after max_tokens/g) ?? []).length, 2);
+  assert.match(output, /stop max_tokens · input tokens 42 · output tokens 32000 · thinking tokens 32000/);
+  assert.match(output, /Warning: 2 consecutive thinking-only/);
+  assert.match(output, /Warning: 3 consecutive thinking-only/);
+  assert.ok(!output.includes('PRIVATE_'));
+});
+
+test('completed-envelope fallback deduplicates block envelopes and resets the exhaustion streak on tool progress', async () => {
+  let output = '';
+  const parser = claudeStream(async chunk => { output += chunk; });
+  const response = (id, stop, content, usage = { output_tokens: 32000, output_tokens_details: { thinking_tokens: 32000 } }) =>
+    ({ type: 'assistant', message: { id, stop_reason: stop, content, usage } });
+  const hidden = [{ type: 'thinking', thinking: 'PRIVATE_THINKING' }];
+  const first = response('first', 'max_tokens', hidden);
+  await parser.write(Buffer.from(encode([
+    first, first,
+    response('tool', 'tool_use', [{ type: 'tool_use', id: 't', name: 'read', input: { secret: 'PRIVATE_INPUT' } }]),
+    response('next', 'max_tokens', hidden),
+    response('unknown-usage', 'max_tokens', hidden, { output_tokens: 32000 }),
+    response('last', 'max_tokens', hidden),
+    success,
+  ])));
+  assert.equal((await parser.finish()).streamError, undefined);
+  assert.equal((output.match(/finished:/g) ?? []).length, 5);
+  assert.match(output, /observed stream n\/a/);
+  assert.match(output, /thinking tokens n\/a/);
+  assert.ok(!output.includes('Warning:'));
+  assert.ok(!output.includes('PRIVATE_'));
+});
+
+test('response metadata is allowlisted; foreign activity and invalid usage do not leak or invent numbers', async () => {
+  let output = '';
+  const parser = claudeStream(async chunk => { output += chunk; });
+  await parser.write(Buffer.from(encode([
+    { ...partial({ type: 'message_start', message: { id: 'PRIVATE_FOREIGN' } }), parent_tool_use_id: 'foreign' },
+    { type: 'assistant', parent_tool_use_id: 'foreign', message: { content: [{ type: 'thinking', thinking: 'PRIVATE_THINKING' }], stop_reason: 'max_tokens' } },
+    { type: 'assistant', message: { id: 'PRIVATE_ID', content: [{ type: 'redacted_thinking', data: 'PRIVATE_DATA' }], stop_reason: 'PRIVATE_STOP\u001b[2J',
+      usage: { input_tokens: -1, output_tokens: 'PRIVATE_TOKENS', output_tokens_details: { thinking_tokens: 1.5 } } } },
+    success,
+  ])));
+  assert.equal((await parser.finish()).streamError, undefined);
+  assert.equal((output.match(/started/g) ?? []).length, 1);
+  assert.match(output, /stop unknown · input tokens n\/a · output tokens n\/a · thinking tokens n\/a/);
+  assert.ok(!output.includes('PRIVATE_'));
+  assert.ok(!output.includes('\u001b'));
+});
+
+test('a thinking notice does not require completion and never fabricates a summary', async () => {
+  let output = '';
+  const parser = claudeStream(async chunk => { output += chunk; });
+  await parser.write(Buffer.from(encode([
+    partial({ type: 'message_start', message: { id: 'm' } }),
+    partial({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'PRIVATE_THINKING' } }),
+  ])));
+  assert.match(output, /thinking activity/);
+  assert.ok(!output.includes('finished:'));
+  assert.match((await parser.finish()).streamError, /without a terminal result/);
 });
 
 test('Claude stream supports CRLF, blank lines and a final record without newline', async () => {

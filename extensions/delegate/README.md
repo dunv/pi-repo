@@ -396,7 +396,13 @@ tool start/end markers are rendered as they arrive into both the private
 `worker.log` and Pueue's live log. Completed assistant messages are a fallback when
 no deltas were emitted, not a second copy of streamed text. The renderer excludes
 thinking/signatures, prompts, tool arguments, tool result/file bodies and unrelated
-system events; raw stream JSON is not mirrored or archived. Assistant text itself
+system events; raw stream JSON is not mirrored or archived. Content-free response
+start/thinking notices, allowlisted usage and stop reasons are also rendered.
+`max_tokens` is explicitly reported as nonterminal, with a notice when the next
+CLI response starts. Two or more consecutive responses whose reported output
+is entirely thinking and ends at `max_tokens` produce a warning. This changes
+visibility only: it adds no continuation, retry, cancellation or effort adjustment.
+Assistant text itself
 can still contain sensitive material and logs must remain private. Terminal control
 characters in assistant text are escaped. CLI stderr remains mirrored with line timestamps; its contents are otherwise unchanged.
 The MCP bridge also emits bounded previews on its stderr, which Claude may capture
@@ -454,9 +460,17 @@ At settlement a worker summary reports elapsed time, summed response time, union
 of tool execution intervals, check time (a subset of tool time), response count,
 tool errors and output tokens. Unattributed overhead is not called model time.
 Checks include lock waiting. Abruptly killed workers may lack a final summary.
-Claude text/tool progress streams live, but timing/usage still come only from the
-final CLI aggregate API time, turns and usage; no per-response timing is inferred
-from deltas. Missing fields show `n/a`, never invented zeros.
+Claude response logs show observed stream duration from `message_start` to the
+observed completion, not request latency, provider inference time or time spent
+waiting before the stream started. Completed-envelope-only fallback has duration
+`n/a`. Response summaries deduplicate repeated CLI envelopes by message identity;
+input/output/thinking token counts appear only when explicitly reported. Thinking
+content and continuation prompt text are never rendered. Missing fields show
+`n/a`, never invented zeros. A thinking notice proves observed activity, not
+ongoing liveness during a later silence. No heartbeat or watchdog is added.
+Claude `metrics.jsonl` still contains only final CLI aggregate API time, turns
+and usage; the new response diagnostics live in the timestamped worker/Pueue logs.
+Abrupt cancellation can leave a response without a summary.
 
 Each attempt retains private `metrics.jsonl` alongside `worker.log`, including
 revisions in their own artifact directory. Records carry `schemaVersion: 1`, a UTC

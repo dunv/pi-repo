@@ -15,7 +15,7 @@ export function usageMetrics(usage, claude = false) {
 const seconds = ms => `${(ms / 1000).toFixed(1)}s`;
 export function metricsLine(record) {
   if (record.type === 'response') return `[delegate] Model #${record.response} finished: ${seconds(record.elapsedMs)} · first output ${record.firstOutputMs === null ? 'n/a' : seconds(record.firstOutputMs)} · output tokens ${record.usage.output ?? 'n/a'} · requests ${record.requests} · ${record.outcome}\n`;
-  if (record.backend === 'claude') return `[delegate] Claude summary: ${seconds(record.elapsedMs)} elapsed · API ${record.apiMs === undefined ? 'n/a' : seconds(record.apiMs)} · turns ${record.turns ?? 'n/a'} · output tokens ${record.usage.output ?? 'n/a'} (CLI aggregate; no per-response timing)\n`;
+  if (record.backend === 'claude') return `[delegate] Claude summary: ${seconds(record.elapsedMs)} elapsed · API ${record.apiMs === undefined ? 'n/a' : seconds(record.apiMs)} · turns ${record.turns ?? 'n/a'} · output tokens ${record.usage.output ?? 'n/a'} (CLI aggregate; distinct from observed stream durations)\n`;
   return `[delegate] Worker summary: ${seconds(record.elapsedMs)} elapsed · model ${seconds(record.modelMs)} · tools ${seconds(record.toolMs)} · checks ${seconds(record.checkMs)} (included in tools) · ${record.responses} responses · ${record.toolErrors} tool errors · output tokens ${record.usage.output ?? 'n/a'}\n`;
 }
 

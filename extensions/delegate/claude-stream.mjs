@@ -2,12 +2,13 @@
 // thinking, input_json deltas, user prompts or tool result bodies into live logs.
 import { spawn } from 'node:child_process';
 import { timestampLines } from './logging.mjs';
+import { claudeProgress } from './claude-progress.mjs';
 import { open } from 'node:fs/promises';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
 
-export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024) {
+export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024, now) {
   const decoder = new StringDecoder('utf8'), tools = new Map();
   let pending = '', bytes = 0, discarding = false, error, reply;
   let streamedText = false, lineOpen = false, toolNumber = 0;
@@ -22,6 +23,7 @@ export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024) {
   const marker = async value => {
     await emit((lineOpen ? '\n' : '') + value + '\n'); lineOpen = false;
   };
+  const progress = claudeProgress(marker, now);
   const startTool = async block => {
     if (typeof block.id !== 'string' || block.id.length > 256 || tools.has(block.id)) return;
     if (tools.size >= 1024) { fail('Claude stream has too many pending tools'); return; }
@@ -64,6 +66,7 @@ export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024) {
         await marker(`[delegate] Tool #${tool.number} finished: ${tool.name} · ${block.is_error === true ? 'error' : 'done'}`);
       }
     }
+    await progress(value);
   };
   const consume = async decoded => {
     const fragments = decoded.split('\n');
