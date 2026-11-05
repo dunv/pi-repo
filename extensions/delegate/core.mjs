@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { timestampLines } from './logging.mjs';
+import { parsePiModelPolicy, assertPiModelAllowed } from './model-policy.mjs';
 import { promisify } from 'node:util';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -61,6 +62,7 @@ export function modelFamily(provider, id) {
   return { backend: 'pi' };
 }
 export function workerBackend(input, runtime) {
+  const policy = parsePiModelPolicy(runtime);
   const backend = input.backend ?? 'pi';
   if (!['pi', 'claude'].includes(backend)) throw new Error('Unknown worker backend');
   if (backend === 'claude') {
@@ -71,6 +73,7 @@ export function workerBackend(input, runtime) {
     if (!/^[a-z0-9-]+\/.+$/i.test(input.model) || /[\x00-\x20]/.test(input.model)) throw new Error('Use an explicit provider/model ID');
     const [provider, ...parts] = input.model.split('/');
     if (modelFamily(provider, parts.join('/')).backend === 'claude') throw new Error('Anthropic models require Claude Code; Pi is forbidden');
+    assertPiModelAllowed(policy, provider, parts.join('/'), input.thinking);
   }
   return backend;
 }

@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI) {
   }
   pi.registerTool({
     name: "delegate_models", label: "List delegate model routes", exposure: "model-only", executionMode: "sequential",
-    description: "List delegate model routes, filter by backend/provider/query, and paginate. Use an exact entry ID as model for task/revise; omit backend. Anthropic routes use Claude Code; local/OpenAI use Pi. Discovery only: no model calls or auth/readiness checks; listed routes may not work in the worker environment. Reserve GMKtec models for simple, well-specified mechanical work, not complex multi-file reasoning or policy alignment; choose any stronger route explicitly, never by automatic fallback.",
+    description: "List delegate model routes, filter by backend/provider/query, and paginate. Use an exact entry ID as model for task/revise; omit backend. Anthropic routes use Claude Code; local/OpenAI use Pi. Discovery only: no model calls or auth/readiness checks; listed routes may not work in the worker environment. Configured Pi admission policy can hide routes and constrain thinking; select only the listed routes/levels. Reserve GMKtec models for simple, well-specified mechanical work, not complex multi-file reasoning or policy alignment; choose any stronger route explicitly, never by automatic fallback.",
     parameters: Type.Object({ backend: backendSchema, provider: Type.Optional(Type.String({ maxLength: 128 })),
       query: Type.Optional(Type.String({ maxLength: 200 })), offset: Type.Optional(Type.Integer({ minimum: 0 })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }),

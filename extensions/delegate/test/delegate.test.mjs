@@ -88,6 +88,16 @@ test('guard failures are revision-local and never overwrite prior successful att
   assert.equal(await readFile(join(directory, INVALID_TOOL_ARTIFACT), 'utf8'), guardRecord);
 }));
 
+test('worker startup rejects a now-disallowed Pi route before model launch or one-shot claim', () => fixture(async f => {
+  const task = await prepare(input(f.repo), f.runtime, who);
+  await writeFile(f.runtimePath, JSON.stringify({ ...f.runtime, piModelPolicy: { fixture: { other: ['medium'] } } }));
+  await assert.rejects(run(f.runtimePath, task.id), /excluded by delegate model policy/);
+  await assert.rejects(readFile(join(task.directory, 'started.json')), /ENOENT/);
+  await assert.rejects(readFile(join(f.dir, 'pi-argv.json')), /ENOENT/);
+  assert.equal(await readFile(join(task.worktree, 'source.txt'), 'utf8'), 'original\n');
+  assert.equal(f.git('status', '--porcelain'), '');
+}));
+
 test('tool previews show bounded call details without file bodies or terminal controls', () => {
   assert.equal(toolSummary('read', { path: 'docs/file.md', offset: 10, limit: 20, secret: 'HIDDEN' }),
     '{"path":"docs/file.md","offset":10,"limit":20}');

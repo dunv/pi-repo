@@ -70,6 +70,47 @@ automatic model switch or a claim that every simple task succeeds. Select any
 stronger route explicitly; there is no local-to-paid fallback. Full main-agent
 review remains required for every model.
 
+### Optional Pi model admission policy
+
+An operator can restrict production delegation without removing experimental
+models from Pi's registry or foreground `/model` picker. `piModelPolicy` in the
+immutable delegate runtime maps provider names to exact model IDs and their
+allowed Pi thinking levels. For example:
+
+```json
+{
+  "piModelPolicy": {
+    "evo-x2": { "qwen3.8:27b": ["medium"] },
+    "ollama": {},
+    "llama-cpp": {},
+    "llama.cpp": {}
+  }
+}
+```
+
+Configured empty provider objects disable their Pi routes; omitted providers are
+unrestricted. Provider keys are lowercase and matched case-insensitively; model
+IDs are exact/case-sensitive, with no inferred aliases or suffix normalization.
+Each allowed model must have one or more explicit thinking levels. Malformed
+policies fail admission closed, not back to an unrestricted catalogue.
+
+The catalogue omits excluded Pi routes and reports restricted levels in
+`capabilities.thinking`. Task/revision selection, preparation and worker startup
+reject excluded models/levels, including explicit backend/native syntax. They do
+not clamp effort, substitute another model, contact endpoints or change auth.
+Hosted providers not named in the policy and Anthropic's Claude Code routing are
+unchanged. A missing allowed model means no such local route, never fallback.
+This is configured provider policy, not automatic detection of every local
+endpoint: review new provider namespaces explicitly.
+
+Historical jobs retain their original immutable runtime/source. Nothing rewrites
+queued/running tasks, sessions or model installations. A new policy requires
+explicit publication/deployment and a fresh initiating Pi process. Starting an old
+manifest with a policy that excludes it is refused; do not mutate manifests or
+retry automatically to evade the gate. This policy does not configure provider
+request serialization: the corresponding model must separately support and send
+the chosen effort through Pi's model configuration.
+
 The resolved route identity and descriptive metadata are copied into each task or
 revision manifest and surfaced in submission/review evidence. Workers use their
 frozen backend/native model, not a later catalogue lookup. This is not a snapshot
