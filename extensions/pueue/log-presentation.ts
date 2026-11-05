@@ -10,7 +10,8 @@ export function logPresentation(content: unknown, expanded: boolean) {
     if (!status || typeof status !== "object" || !log || typeof log.text !== "string" || typeof log.path !== "string"
       || ![log.start, log.end, log.size].every(n => Number.isSafeInteger(n) && n >= 0)
       || log.start > log.end || log.end > log.size) return;
-    const label = statusLabel(status);
+    // The result renderer already supplies the disclosure arrow.
+    const label = statusLabel(status, false);
     const heading = `${label.text} · log ${log.end - log.start} B`;
     const details = expanded ? [
       `Bytes ${log.start}–${log.end} of ${log.size}${log.omittedBefore === true ? " · earlier bytes omitted" : ""}${log.omittedAfter === true ? " · later bytes omitted" : ""}`,

@@ -23,6 +23,18 @@ test('log presentation collapses output, expands slice metadata and escapes cont
   assert.deepEqual(data, before);
 });
 
+test('running log results have only the disclosure arrow in collapsed and expanded views', () => {
+  const tools = new Map();
+  extension({ registerMessageRenderer() {}, on() {}, registerTool: t => tools.set(t.name, t), registerCommand() {} });
+  const tool = tools.get('pueue_result'), theme = { fg: (_ink, text) => text, bold: text => text };
+  const reply = { content: content(payload({ status: { nonce, id: 95, phase: 'RUNNING' } })) };
+  for (const expanded of [false, true]) {
+    const lines = tool.renderResult(reply, { expanded, isPartial: false }, theme, { isError: false }).render(160);
+    assert.equal(lines[0].trim(), `${expanded ? '▾' : '▸'} Pueue #95 · Running · log 20 B`);
+    assert.doesNotMatch(lines.join('\n'), /▶/);
+  }
+});
+
 test('large valid log slices render; empty/missing/malformed data is explicit', () => {
   const data = payload(); data.log.text = 'x'.repeat(16384);
   assert.ok(logPresentation(content(data), true).details.join('\n').includes(data.log.text));

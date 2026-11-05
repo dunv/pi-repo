@@ -53,7 +53,12 @@ test('submit renderers collapse details, expand argv/cwd and preserve model-faci
     assert.ok(lines.every(line => visibleWidth(line) <= width));
   }
   const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme, context).render(120).join('\n');
-  assert.match(collapsed, /◷ Pueue #4 · Queued/);
+  assert.match(collapsed, /▸ Pueue #4 · Queued/);
+  for (const expanded of [false, true]) {
+    const running = { content: [{ type: 'text', text: JSON.stringify({ ...queued, phase: 'RUNNING' }) }] };
+    const heading = tool.renderResult(running, { expanded, isPartial: false }, theme, context).render(200)[0].trim();
+    assert.equal(heading, `${expanded ? '▾' : '▸'} Pueue #4 · Running`);
+  }
   assert.doesNotMatch(collapsed, /Command|Working directory|nonce/);
   const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, theme, context).render(200).join('\n');
   assert.match(expanded, /Command \(literal argv\)/);

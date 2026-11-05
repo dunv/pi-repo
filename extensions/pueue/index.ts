@@ -199,8 +199,8 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     renderResult(reply, options, theme, context) {
       const state = displayState(reply.content);
       const input = submission(context.args);
-      const label = statusLabel(state);
-      const heading = context.isError ? "? Pueue · Submission not confirmed" : options.isPartial ? "◷ Pueue · Submitting…" : label.text;
+      const label = statusLabel(state, false);
+      const heading = context.isError ? "Pueue · Submission not confirmed" : options.isPartial ? "Pueue · Submitting…" : label.text;
       const details = options.expanded ? [
         ...(input ? submissionDetails(input) : ["Submission details unavailable."]),
         ...(typeof state.nonce === "string" && /^[a-f0-9-]{36}$/.test(state.nonce) ? [`Job nonce: ${state.nonce}`] : []),
@@ -278,7 +278,7 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
     },
     renderResult(reply, options, theme, context) {
       const display = !context.isError && !options.isPartial ? logPresentation(reply.content, options.expanded) : undefined;
-      const heading = display?.heading ?? (context.isError ? "? Pueue · Log unavailable" : options.isPartial ? "◷ Pueue · Reading log…" : "? Pueue · Log display unavailable");
+      const heading = display?.heading ?? (context.isError ? "Pueue · Log unavailable" : options.isPartial ? "Pueue · Reading log…" : "Pueue · Log display unavailable");
       const details = display?.details ?? [];
       if (context.isError) for (const block of reply.content) if (block.type === "text") details.push(displayLiteral(block.text));
       return new Text(theme.fg(display?.ink ?? (options.isPartial ? "muted" : "warning"), options.expanded ? "▾ " : "▸ ")

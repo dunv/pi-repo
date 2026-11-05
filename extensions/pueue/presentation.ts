@@ -36,7 +36,7 @@ export function submissionFor(entries: readonly SessionEntry[], nonce: unknown):
   }
 }
 
-export function statusLabel(state: DisplayState) {
+export function statusLabel(state: DisplayState, includeIcon = true) {
   const id = Number.isSafeInteger(state.id) && Number(state.id) >= 0 ? ` #${state.id}` : "";
   let icon = "?", label = "Status unknown", ink = "warning" as "muted" | "success" | "error" | "warning";
   if (state.phase === "EXITED" && Number.isSafeInteger(state.exitCode)) {
@@ -51,7 +51,7 @@ export function statusLabel(state: DisplayState) {
     const phase = typeof state.phase === "string" && Object.hasOwn(phases, state.phase) ? phases[state.phase] : undefined;
     if (phase) { [icon, label] = phase; if (state.phase !== "ADMISSION_UNKNOWN") ink = "muted"; }
   }
-  return { text: `${icon} Pueue${id} · ${label}${state.cancellationRequested === true ? " · cancellation requested" : ""}`, ink };
+  return { text: `${includeIcon ? `${icon} ` : ""}Pueue${id} · ${label}${state.cancellationRequested === true ? " · cancellation requested" : ""}`, ink };
 }
 
 // JSON quoting keeps literal argument boundaries and escapes terminal controls/newlines.

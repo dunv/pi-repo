@@ -3,7 +3,7 @@ import { commandPreview, displayState, statusLabel, submissionDetails, type Subm
 /** UI only: never change authoritative state, model content or notification routing. */
 export function noticeText(content: unknown, expanded = false, input?: Submission): string {
   const state = displayState(content);
-  const line = statusLabel(state).text;
+  const line = statusLabel(state, false).text;
   const preview = input ? `\n  ${commandPreview(input)}` : "";
   if (!expanded) return line + preview;
   const nonce = typeof state.nonce === "string" && /^[a-f0-9-]{36}$/.test(state.nonce) ? `\nJob nonce: ${state.nonce}` : "";
