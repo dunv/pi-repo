@@ -11,6 +11,7 @@ import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInp
 import { run } from '../run.mjs';
 import { check } from '../check.mjs';
 import { toolSummary } from '../progress.mjs';
+import { INVALID_TOOL_ARTIFACT } from '../invalid-tools.mjs';
 
 // Always exercise the real host loader; allow an explicit SDK override.
 const sdk = process.env.PI_TEST_SDK ?? new URL('../../../node_modules/@earendil-works/pi-coding-agent/', import.meta.url).pathname;
@@ -44,6 +45,48 @@ if(process.argv.includes('//:fail')) process.exit(7);\n`, { mode: 0o700 });
     await fn({ dir, repo, git, runtime, runtimePath });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+
+function guardedFakePi(f, marker) {
+  return writeFile(f.runtime.pi, `#!${process.execPath}\nconst fs=require('node:fs'),path=require('node:path');
+const directory=path.dirname(process.argv[process.argv.indexOf('--session-dir')+1]);
+fs.writeFileSync('source.txt','partial work retained\\n');
+fs.writeFileSync(path.join(directory,${JSON.stringify(INVALID_TOOL_ARTIFACT)}),${JSON.stringify(marker)});
+console.log('Partial report retained.');\n`, { mode: 0o700 });
+}
+const guardRecord = JSON.stringify({ schemaVersion: 1, reason: 'invalid-tool-limit', limit: 3, count: 3, tools: ['run', 'run', 'glob'] });
+
+test('runner preserves evidence/work and rejects exit-zero Pi after a guard marker, including malformed evidence', () => fixture(async f => {
+  for (const marker of [guardRecord, 'malformed']) {
+    const task = await prepare(input(f.repo), f.runtime, who);
+    await guardedFakePi(f, marker);
+    assert.equal(await run(f.runtimePath, task.id), 1);
+    const result = await json(join(task.directory, 'result.json'));
+    assert.equal(result.code, 1); assert.equal(result.workerCode, 0);
+    assert.equal(result.failureReason, marker === guardRecord ? 'invalid-tool-limit' : 'invalid-tool-evidence');
+    assert.equal(result.accepted, false);
+    assert.ok(result.fingerprint);
+    assert.equal(await readFile(join(task.directory, 'report.md'), 'utf8'), 'Partial report retained.\n');
+    assert.equal(await readFile(join(task.directory, INVALID_TOOL_ARTIFACT), 'utf8'), marker);
+    assert.equal(await readFile(join(task.worktree, 'source.txt'), 'utf8'), 'partial work retained\n');
+    assert.equal(await readFile(join(f.repo, 'source.txt'), 'utf8'), 'original\n');
+  }
+}));
+
+test('guard failures are revision-local and never overwrite prior successful attempt evidence', () => fixture(async f => {
+  const task = await prepare(input(f.repo), f.runtime, who);
+  assert.equal(await run(f.runtimePath, task.id), 0);
+  const originalResult = await readFile(join(task.directory, 'result.json'), 'utf8');
+  const revision = await prepareRevision({ ...task, nonce: 'prior' }, { expectedNonce: 'prior',
+    expectedFingerprint: await snapshot(task, f.runtime), brief: 'Small explicit revision.', model: 'fixture/model', thinking: 'low' }, f.runtime);
+  await guardedFakePi(f, guardRecord);
+  assert.equal(await run(f.runtimePath, task.id, revision.attempt), 1);
+  const directory = attemptDirectory(task, revision.attempt), result = await json(join(directory, 'result.json'));
+  assert.equal(result.failureReason, 'invalid-tool-limit');
+  assert.equal(result.workerCode, 0); assert.equal(result.code, 1);
+  assert.equal(await readFile(join(task.directory, 'result.json'), 'utf8'), originalResult);
+  await assert.rejects(readFile(join(task.directory, INVALID_TOOL_ARTIFACT)), /ENOENT/);
+  assert.equal(await readFile(join(directory, INVALID_TOOL_ARTIFACT), 'utf8'), guardRecord);
+}));
 
 test('tool previews show bounded call details without file bodies or terminal controls', () => {
   assert.equal(toolSummary('read', { path: 'docs/file.md', offset: 10, limit: 20, secret: 'HIDDEN' }),
@@ -469,6 +512,9 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
   assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_feedback', 'delegate_models', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task']);
+  for (const name of ['delegate_models', 'delegate_task', 'delegate_revise'])
+    assert.match(tools.find(t => t.name === name).description, /Reserve GMKtec models for simple, well-specified mechanical work/);
+  assert.match(tools.find(t => t.name === 'delegate_task').description, /3 cumulative unavailable-tool calls/);
   const review = tools.find(t => t.name === 'delegate_review');
   await fixture(async f => {
     const entries = [], calls = [];

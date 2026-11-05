@@ -5,6 +5,7 @@ import { runClaude } from './claude.mjs';
 import { timestampLine } from './logging.mjs';
 import { assertContained } from './containment.mjs';
 import { assertRecoveryHandoff } from './recovery.mjs';
+import { invalidToolFailure } from './invalid-tools.mjs';
 import { runtimeFrom, json, save, assertWorktree, runToFiles, envFor, snapshot, attemptDirectory, workerBackend, initiatorLabel } from './core.mjs';
 
 const log = text => console.log(timestampLine(text));
@@ -39,12 +40,14 @@ export async function run(runtimePath, id, attempt) {
     cwd: task.worktree, env: { ...envFor(runtime), PI_DELEGATE_RUNTIME: runtimePath, PI_DELEGATE_TASK: id,
       ...(attempt === undefined ? {} : { PI_DELEGATE_ATTEMPT: attempt }) },
   }, join(directory, 'report.md'), join(directory, 'worker.log'), true, undefined, true);
+  const failure = backend === 'pi' ? await invalidToolFailure(directory) : undefined;
+  const outcome = failure ? { ...result, workerCode: result.code, code: result.code || 1, ...failure } : result;
   let fingerprint, integrityError;
   try { fingerprint = await snapshot(task, runtime); } catch (error) { integrityError = error.message; }
-  await save(join(directory, 'result.json'), { ...result, backend, elapsedMs: Math.round(performance.now() - start), fingerprint, integrityError,
+  await save(join(directory, 'result.json'), { ...outcome, backend, elapsedMs: Math.round(performance.now() - start), fingerprint, integrityError,
     accepted: false });
-  log(JSON.stringify({ task: id, attempt, workerExit: result.code, integrityError, artifacts: directory, reviewRequired: true }));
-  return integrityError || result.code === null ? 1 : result.code;
+  log(JSON.stringify({ task: id, attempt, workerExit: outcome.code, ...(failure ?? {}), integrityError, artifacts: directory, reviewRequired: true }));
+  return integrityError || outcome.code === null ? 1 : outcome.code;
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   run(process.argv[2], process.argv[3], process.argv[4]).then(code => { process.exitCode = code; }).catch(error => {

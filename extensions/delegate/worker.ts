@@ -4,10 +4,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeFrom, json, writable, envFor, attemptDirectory } from "./core.mjs";
+import { runtimeFrom, json, save, writable, envFor, attemptDirectory } from "./core.mjs";
 import { appendFile } from "node:fs/promises";
 import { observeMetrics, metricsLine } from "./metrics.mjs";
 import { toolSummary } from "./progress.mjs";
+import { observeInvalidTools, INVALID_TOOL_ARTIFACT } from "./invalid-tools.mjs";
 
 const exec = promisify(execFile);
 export default function (pi: ExtensionAPI) {
@@ -19,6 +20,16 @@ export default function (pi: ExtensionAPI) {
     if (marker && !atLineStart) text = "\n" + text;
     if (text) atLineStart = text.endsWith("\n");
     process.stderr.write(text, error => error ? reject(error) : resolve());
+  });
+  observeInvalidTools(pi, async (record: object) => {
+    // Nonzero even if persisting the marker fails or abort is graceful in Pi.
+    process.exitCode = 1;
+    try {
+      const { task } = await context();
+      await save(join(attemptDirectory(task, attempt), INVALID_TOOL_ARTIFACT), record);
+    } finally {
+      await progress("[delegate] Stopping worker: invalid-tool-limit (3 unavailable tool calls). Retain work/logs; no automatic retry.\n", true);
+    }
   });
   observeMetrics(pi, async (record: object) => {
     const { task } = await context();

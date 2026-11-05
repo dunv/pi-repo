@@ -62,6 +62,14 @@ are scrubbed and the child uses HOME/provider configuration. No credentials,
 headers, credential-bearing URL paths/query strings or resolved keys are returned.
 The harness having tools does not establish a successful model agent-loop test.
 
+**GMKtec model guidance:** reserve `evo-x2/*` models for simple, well-specified
+mechanical work with narrow scope and easily checked acceptance criteria (for
+example, literal edits or small fixtures). Do not use them for complex multi-file
+reasoning or policy alignment. This is advisory task-selection guidance, not an
+automatic model switch or a claim that every simple task succeeds. Select any
+stronger route explicitly; there is no local-to-paid fallback. Full main-agent
+review remains required for every model.
+
 The resolved route identity and descriptive metadata are copied into each task or
 revision manifest and surfaced in submission/review evidence. Workers use their
 frozen backend/native model, not a later catalogue lookup. This is not a snapshot
@@ -370,6 +378,36 @@ publication, Pueue or delegation. Write hooks reject outside-worktree and protec
 Git/agent configuration paths, including symlink escapes. This is **not an OS
 sandbox**: verification commands execute as the user and HOME credentials remain
 accessible. See [worker policy](policy.md).
+
+### Pi invalid-tool circuit breaker
+
+A Pi worker stops after **three cumulative calls to unavailable tool names** in
+one attempt, including calls spread across responses or interleaved with valid
+calls. The guard compares finalized assistant tool calls against Pi's offered
+loadout. Ordinary tool failures (missing files, rejected edits, schema errors or
+failed checks) do not count. Neither does text that merely mentions a tool.
+
+Once a response reaches the limit, remaining valid tool calls in that batch
+(including writes/checks) are blocked. After the batch's tool results are recorded, the guard requests SDK
+abort before another model turn, not a Pueue cancellation or process signal.
+Already completed work is retained; this is not a rollback or proof external
+processes/inference stopped. It does not add a timeout, model fallback, automatic
+retry, cleanup, revision or recovery permission. Claude's separate worker harness
+is unchanged.
+
+The worker exits nonzero, prints `invalid-tool-limit` and saves private per-attempt
+`invalid-tools.json` with the threshold/count and at most three bounded sanitized
+tool names, not arguments, prompts, results or file bodies. `result.json` exposes
+`failureReason: "invalid-tool-limit"` and `invalidTools`. The runner preserves the
+original child status as `workerCode` and forces failure even if a CLI reports
+exit zero. Malformed/unreadable marker evidence also fails closed as
+`invalid-tool-evidence`. Each explicitly authorized fresh attempt gets its own
+budget and artifact; prior evidence, partial report, sessions, checks, logs and
+worktree remain available. The parent must inspect them, report the failure and
+record feedback; exit zero or a partial success claim cannot override the guard.
+This guard does not detect incorrect reasoning or certify task success.
+
+### Claude execution boundary
 
 Claude workers use print mode with a fresh explicit session UUID, exact model and
 CLI effort. All built-in tools are disabled; a private, strict stdio MCP exposes
