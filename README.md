@@ -5,7 +5,7 @@ Source-only [Pi](https://pi.dev) extension package (Node 24+, tested with Pi 1.3
 - [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-files panel and read-only diff viewer for linked worktrees and branches.
 - [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**, with session-owned jobs and retained evidence.
 - [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only Git snapshot. No watcher, fetch, or per-prompt scan.
-- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans, review/revision evidence, explicitly confirmed stopped-attempt recovery and retained caller feedback.
+- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans, review/revision evidence, explicitly confirmed stopped-attempt recovery, retained caller feedback, and recoverable task finalization.
 
 ## Installation
 
@@ -36,7 +36,9 @@ start workers, install software, manage services, or change Pi settings.
 Ordinary Pueue submissions use session-specific groups with three slots, not a
 global machine cap. Delegate workers additionally share six worker locks and one
 heavy-check lock. There is no automatic retry, integration, publication, merge,
-or cleanup. Reports and exit zero are evidence, not acceptance. See the component
+or cleanup. After authorized integration/discard, `delegate_finalize` explicitly
+archives and removes a task worktree/branch with fresh confirmation and stopped-worker
+proof, retaining diagnostic evidence. Reports and exit zero are evidence, not acceptance. See the component
 READMEs for configuration, authorization boundaries and limitations.
 
 ## Development

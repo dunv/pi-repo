@@ -6,6 +6,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
 import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
+import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
 import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
 
@@ -199,8 +200,48 @@ export default function (pi: ExtensionAPI) {
       const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
       const check = () => { guard(start); if (signal?.aborted) throw new Error("Feedback cancelled before recording"); };
       check();
-      return response(await writeFeedback(runtime, task, input, rows,
-        { session: who.session, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null }, check));
+      const recorded = await writeFeedback(runtime, task, input, rows,
+        { session: who.session, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null }, check);
+      return response({ ...recorded, finalization: finalizationRequest(task) });
+    },
+  });
+  pi.registerTool({
+    name: "delegate_finalize", label: "Finalize delegate task", exposure: "model-only", executionMode: "sequential",
+    reachesTools: () => ["pueue_status"],
+    description: "After review/feedback and authorized integration/discard, archive source/local files and remove the owned worktree/branch. Requires reviewed fingerprint, terminal status and independent stopped proof for EVERY attempt, plus fresh interactive user confirmation. Uncertainty/stale state blocks removal; partial failures require manual reconciliation, never retry. No automatic cleanup, integration or publication. Evidence stays; integration is caller-declared.",
+    parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1, maxLength: 200 }),
+      expectedFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+      disposition: Type.Union([Type.Literal("integrated"), Type.Literal("discarded")]) }),
+    renderCall(args, theme) {
+      return new Text(theme.fg("toolTitle", theme.bold("Subagent · finalize task")) + `\nTask: ${args.task} · ${args.disposition}`, 0, 0);
+    },
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Finalization canceled or latest attempt changed");
+      };
+      check();
+      if (!ctx.hasUI) throw new Error("Finalization requires fresh interactive user authorization");
+      const statuses = async () => {
+        const attempts = await finalizationAttempts(task, runtime), rows = [];
+        for (const attempt of attempts) rows.push(...nested(await ctx.executeTool("pueue_status", { nonce: attempt.nonce }, { signal })));
+        return rows;
+      };
+      const gate = await finalizationGate(task, input, runtime, await statuses());
+      check();
+      const approved = await ctx.ui.confirm("Archive and remove this delegate worktree/branch?", [
+        `Task: ${task.id}`, `Disposition: ${input.disposition} (caller declaration, not automatic merge verification)`,
+        `Worktree: ${task.worktree}`, `Branch: ${task.branch}`, `Reviewed fingerprint: ${input.expectedFingerprint}`,
+        `Recovery archive: ${gate.local.files.length} local files, including ignored files (${gate.local.bytes} bytes), plus Git bundle.`,
+        `Retained evidence: ${task.directory}`, "Logs, checks, feedback and build state remain. This cannot be automatically retried after a partial failure.",
+      ].join("\n"));
+      if (!approved) throw new Error("Finalization not authorized; nothing removed");
+      check();
+      const authorization = finalizationAuthorization(task, input, gate);
+      const receipt = await finalizeTask(task, input, runtime, await statuses(), authorization, check);
+      pi.appendEntry(ENTRY, { ...task, finalized: receipt });
+      return response({ finalized: true, ...receipt });
     },
   });
   pi.registerTool({
@@ -219,7 +260,7 @@ export default function (pi: ExtensionAPI) {
         const data = JSON.parse(raw);
         if (Array.isArray(data)) {
           const lines = data.length ? data.flatMap(t => [
-            `Task: ${t.task}${t.attempt ? " (revision)" : ""}`,
+            `Task: ${t.task}${t.attempt ? " (revision)" : ""}${t.finalized ? " · finalized" : ""}`,
             `  ${t.model ?? "model unavailable"} · requested thinking: ${t.thinking ?? "unknown"}`,
             ...(expanded ? [`  Pueue: ${t.nonce ?? "binding unavailable"}`, `  Worktree: ${t.worktree}`, `  Artifacts: ${t.artifacts}`] : []),
           ]) : ["No delegated tasks on this session branch."];
@@ -259,7 +300,7 @@ export default function (pi: ExtensionAPI) {
       if (!input.task) {
         const who = owner(ctx);
         return response([...tasksFrom(ctx.sessionManager.getBranch()).values()].filter((t: any) => t.owner.session === who.session && t.owner.file === who.file)
-          .map((t: any) => ({ task: t.id, attempt: t.attempt, nonce: t.nonce, initiator: initiator(t), route: t.route, backend: t.backend ?? "pi", model: t.model, thinking: t.thinking, worktree: t.worktree, artifacts: attemptDirectory(t, t.attempt) })));
+          .map((t: any) => ({ task: t.id, attempt: t.attempt, nonce: t.nonce, initiator: initiator(t), route: t.route, backend: t.backend ?? "pi", model: t.model, thinking: t.thinking, worktree: t.worktree, artifacts: attemptDirectory(t, t.attempt), finalized: t.finalized ?? null })));
       }
       const start = epoch;
       const task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
@@ -291,7 +332,7 @@ export default function (pi: ExtensionAPI) {
       return response({ task: task.id, attempt: task.attempt, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", status: rows[0], worker, fingerprint, trackedPatch, untracked, checks, report,
         baseline: { base: task.base, sourceHead: task.sourceHead ?? task.base, sourceFingerprint: task.sourceFingerprint ?? null }, sourceState,
         worktree: task.worktree, reviewRequired: true, reviewer: "main-agent", accepted: false,
-        feedback: feedbackRequest(task),
+        feedback: feedbackRequest(task), finalization: finalizationRequest(task),
         missingChecks: task.checks.map((_: unknown, i: number) => i).filter((i: number) => !checks.some(c => c.index === i && c.passed && c.current)) });
     },
   });

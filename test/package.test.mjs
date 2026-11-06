@@ -21,7 +21,7 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
     const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['delegate_feedback', 'delegate_models', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.deepEqual(toolNames.sort(), ['delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(new Set(toolNames).size, toolNames.length);
 
     // Bound model-facing prose, including repeated parameter descriptions.
@@ -45,6 +45,8 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     assert.match(tools.get('delegate_review').description, /current checks.*delegate_feedback/);
     assert.match(tools.get('delegate_resume').description, /fresh interactive user confirmation/);
     assert.match(tools.get('delegate_resume').description, /cgroup-v2 proof.*descendants stopped/);
+    assert.match(tools.get('delegate_finalize').description, /fresh interactive user confirmation/);
+    assert.match(tools.get('delegate_finalize').description, /EVERY attempt/);
     assert.match(tools.get('pueue_submit').description, /NEVER include secrets/);
     assert.match(tools.get('pueue_status').description, /UNKNOWN\/absence never authorizes retry\/takeover/);
     assert.match(tools.get('pueue_cancel').description, /explicit user confirmation/);

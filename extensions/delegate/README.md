@@ -150,6 +150,9 @@ Pi-only levels such as `off` are rejected, not silently converted.
   (or KILLED with independently verified empty attempt containment),
   collects cumulative tracked diff, new-file list, untrusted report and current
   check evidence. Optional panel targeting does not change the agent's cwd.
+- `delegate_finalize {task, expectedNonce, expectedFingerprint, disposition: "integrated"|"discarded"}`
+  explicitly archives and removes a reviewed task's worktree and branch after fresh
+  interactive confirmation. See [Explicit finalization](#explicit-finalization).
 - `delegate_feedback {task, expectedNonce, reviewStatus, usefulness, correctness,
   instructionFollowing, reviewEffort, wouldDelegateAgain, rationale, problems,
   improvements, evidence, reviewedFingerprint?, supersedes?}` records the **calling
@@ -239,7 +242,10 @@ separate artifacts under `revisions/<attempt-uuid>/` while sharing the original
 output base. At startup, both Pi and Claude workers log the JSON-quoted absolute
 path to that attempt's `brief.md` (including revisions), not its contents. The
 brief remains a private 0600 artifact; prompt text is not copied into startup logs.
-No automatic pruning, artifact deletion or worktree cleanup.
+No automatic pruning, artifact deletion or worktree cleanup. After authorized
+integration or an explicit discard decision, use `delegate_finalize` rather than
+leaving disposable worktrees indefinitely. Review and feedback results include a
+finalization reminder; neither operation triggers deletion.
 
 Delegate live output and `worker.log` lines are prefixed with UTC ISO timestamps
 (e.g. `[2026-11-05T09:42:17.123Z]`); the Bash launcher uses whole seconds.
@@ -319,6 +325,62 @@ External endpoint side effects are not rolled back or proven absent. Do not run
 foreground checks/edits concurrently with a worker; source fingerprints do not
 lease external state or certify ignored caches. New runtime deployment/reloading
 is explicit; merely loading the tool does not start processes or migrate old jobs.
+
+## Explicit finalization
+
+`delegate_finalize` closes the lifecycle after main-agent review, caller feedback
+and authorized integration (or an explicit discard decision). It is deliberately
+**not** an exit hook, age-based sweeper, automatic acceptance, or merge operation.
+Loading the extension never removes anything. Enable `finalizationProtocol: 1`
+and `containmentProtocol: 1` in the runtime; restart Pi after deployment.
+
+Every call requires the latest task nonce and current reviewed fingerprint on the
+owning session branch. All retained attempts, including earlier revisions, must
+have authoritative terminal Pueue status and independent current-boot cgroup-v2
+proof that their worker and descendants stopped. Absent/UNKNOWN/active jobs,
+unresolved preparations, missing/legacy containment, rebooted/replaced scopes,
+changed branch/HEAD/index and stale source fail closed. Legacy tasks need manual
+reconciliation, not manufactured evidence or a force option.
+
+A fresh UI confirmation shows the exact worktree, branch, disposition, fingerprint
+and recovery location/count/size. Denial, no UI, abort or session navigation grants
+no cleanup permission. Backend status, containment and source/local-file content
+are checked again after the dialog. `integrated` records the caller's declaration,
+**not** automatic proof of a merge: it additionally requires current reviewed/good
+feedback and current passing evidence for every planned check. `discarded` still
+requires caller feedback/investigation, but permits failed/incomplete work.
+
+Before removal, the tool retains under `<task>/finalization/`:
+
+- `source.bundle`: a verified Git bundle of the delegate branch, including any
+  inherited dirty-source baseline commits, whether merged or not;
+- `local-files.json`: the binary Git patch plus changed/new/**ignored** files,
+  their modes, base64 file contents, symlink targets and deletion markers;
+- `intent.json` and `ready.json`: authorization, disposition and stopped evidence.
+
+Local files are bounded to 10,000 paths and 64 MiB; oversized/unsupported files
+block deletion. Symlinks are archived without dereferencing their targets.
+Ignored files and external caches are not evidence of integration. External
+symlink targets are never copied or deleted. Existing logs, reports, checks,
+feedback, sessions and `build-output/` remain. Nothing is pushed or uploaded.
+Archives can contain sensitive local data: directories are private, artifacts
+0600. For recovery, fetch `source.bundle` into a separate repository using the
+branch ref in `local-files.json`, check out that baseline, then restore the archived
+file entries (base64 bytes + mode, symlink target, or deletion marker). The `patch`
+field is also available as a standard binary Git patch. No automatic restore or
+cleanup of recovery evidence is performed.
+
+Finalization competes with revise/resume for the same exclusive permanent
+per-parent continuation claim. After archiving and another fingerprint/containment
+check, Git removes only that worktree, then compare-and-deletes only its unchanged
+branch. Git's locked-worktree protection remains enabled. A `finalized.json`
+receipt and session entry are written only after both removals succeed; task lists
+show the finalized state. Partial failures retain the claim and archives for
+manual reconciliation—never retry automatically or release an uncertain claim.
+The tool is not a filesystem transaction or an OS sandbox against concurrent
+same-user changes. Do not run foreground edits/builds in the task checkout while
+finalizing. Preserve the original configured runtime and backend evidence until
+finalization; clearing Pueue history first can block safe disposal.
 
 ## Caller feedback
 
