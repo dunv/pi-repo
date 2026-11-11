@@ -163,7 +163,11 @@ Enter `/pueue-preview` for all 25 synthetic examples, or `/pueue-preview notices
 - Human `pueue clean` removes backend-finished tasks; the adapter mirrors their absence
   on the next successful refresh but cannot recover evidence that the backend removed.
   Retrieve needed results/logs before cleaning. Cleanup is not completion proof and
-  does not release reservations or grant retry permission. Historical session entries
+  does not release reservations or grant retry permission. The separately opt-in
+  delegate [foreground reconciliation](../delegate/README.md#foreground-reconciliation)
+  can use a genuinely retained original terminal tool record plus independently
+  verified stopped containment and fresh user confirmation; it neither restores
+  Pueue history/ownership nor authorizes a worker retry. Historical session entries
   still count toward the existing 128-job branch admission cap.
 - IDs/log filenames are reused after external cleanup/reset. Artifact paths are complete, not immutable archives. Do not clean/remove/reset/restart-in-place while evidence is needed. The extension never performs those operations, and never archives away uncertain/partial-publication evidence.
 - A daemon crash/restart cannot establish descendant liveness or publication ownership. A confirmed process exit still does not certify every detached descendant stopped. Investigation remains manual; no takeover is authorized.

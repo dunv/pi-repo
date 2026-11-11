@@ -142,6 +142,10 @@ Pi-only levels such as `off` are rejected, not silently converted.
   Supply a self-contained bounded brief with
   scope/paths/acceptance criteria and review assessment, and only necessary
   `{kind: "test"|"build", targets: ["package:test"]}` checks (`[]` is allowed).
+- `delegate_reconcile {task, expectedNonce?, expectedFingerprint?, expectedEvidence?}`
+  assesses an original stopped attempt across sessions. Task alone is read-only;
+  supplying all expected fields requests fresh interactive authorization for
+  foreground-only custody. See [Foreground reconciliation](#foreground-reconciliation).
 - `delegate_resume {task, expectedNonce, expectedFingerprint, brief}` explicitly
   recovers a stopped failed/canceled attempt after fresh user confirmation. It
   preserves the frozen invocation/check plan. See [Explicit recovery](#explicit-recovery).
@@ -254,6 +258,88 @@ Partial lines stream immediately without waiting for a newline or adding a prefi
 per chunk. Final `report.md` contents and structured artifacts remain unchanged.
 Ordinary Pueue jobs are not timestamped by the adapter; callers that want timestamps
 must print them from their own command.
+
+## Foreground reconciliation
+
+Normal resume of the **same session and branch** restores ownership from history.
+A Taskboard handoff or new conversation restores context, not authority. Separately,
+operator removal of Pueue history can block the original owner too. Never solve
+these cases by copying session entries, changing manifests or inventing a backend
+completion. Existing `delegate_resume` remains a distinct new-worker operation;
+its terminal-backend requirement has not been relaxed.
+
+`delegate_reconcile` is an opt-in, one-time transfer of an **original scoped
+attempt** to a persistent receiving session (which can also be the original
+session when its backend history is gone). Enable `reconciliationProtocol: 1`
+with `containmentProtocol: 1` in the operator-managed runtime and explicitly
+reload/deploy the reviewed extension in participating sessions. Loading code alone
+is not permission to transfer a task. No runtime configuration or deployment is
+performed by this tool.
+
+1. Call with only `task` for a bounded, **read-only assessment**. It reads the
+   immutable manifest/submission/result, private original Pi v3 session tree,
+   current source fingerprint and trusted attempt containment. It creates no
+   artifacts/worktree, locks, claims, workers or model calls. Only bounded
+   read-only Git/Pueue queries spawn subprocesses.
+2. A genuine non-error `delegate_review` tool result in the original session must
+   bind the same task, worktree/base, exact admitted nonce/ID/creation/namespace
+   and worker result to its ancestral assistant tool call and owning branch
+   entries. The evidence digest binds that provenance, not unrelated appended
+   chat, so same-session assessment does not invalidate itself. An assistant claim, completion notification, handoff, log tail or
+   `result.json` alone is insufficient. Conflicting task/terminal evidence,
+   revision/finalization history, missing private history, legacy containment or
+   existing continuation claims block assessment. Session reads are bounded to
+   64 MiB/200,000 entries and remain local; prompts/mail/file bodies are never
+   copied into reconciliation records or model-facing results.
+3. A complete fresh Pueue snapshot must succeed under the original namespace.
+   The exact matching identity must be terminal and agree with the archive, or
+   genuinely absent. Reused/replaced identities, active/UNKNOWN/KILLED states,
+   contradictory exits and query failures block. Absence itself establishes
+   **nothing**: terminal evidence comes from the original bound tool result.
+4. Independently verify same-boot, exact attempt cgroup-v2 stopped proof, including
+   descendants, using the existing recovery verifier. Rebooted, replaced, populated
+   or unrecorded containment remains blocked. Verify the current unstaged retained
+   worktree/branch/base and shared Git repository; no inherited work is overwritten.
+5. Review the assessment. Call again with its `expectedNonce`,
+   `expectedFingerprint` and `expectedEvidence`. A fresh UI confirmation identifies
+   both owners, the worktree, evidence provenance and **foreground-only** scope.
+   The operator must ensure the original session is idle: arbitrary main-agent
+   foreground commands are outside worker containment and cannot be fenced here.
+   Denial/non-UI/abort/session changes admit nothing. Revalidate after confirmation
+   and again after exclusively claiming the attempt.
+6. Exclusively create and fsync the SAME permanent `revision-after-<nonce-hash>`
+   claim used by revise/resume/finalize, then fsync `reconciliation.json` and its
+   directory. The receipt binds the evidence, recipient and source fingerprint;
+   original manifests, results, session history and Pueue jobs are untouched.
+   Concurrent attempts have one winner. Partial persistence or interrupted claims
+   remain blocked; there is no automatic release or force option.
+7. Append a task reference with the original initiator plus separate custodian to
+   the receiving session branch. Lost append/reload can be repaired by the same
+   recipient through another fresh assessment/confirmation; it reuses the receipt,
+   never creates a second grant. Other sessions, forks and stale branches cannot
+   acquire it by knowing the task ID. This v1 grant cannot be transferred onward.
+8. Use `delegate_review`, inspect the full patch/every new file/relevant context,
+   run applicable current checks, report the verdict, then `delegate_feedback`.
+   Collection/feedback explicitly say **RECONCILED_EXITED**, name archived
+   provenance and set `backendAuthority: false`, even if the original job is still
+   present. Fresh stopped/backend checks guard collection. Foreground edits are
+   allowed but invalidate old source-check evidence as usual. A historical exit is
+   neither acceptance nor proof that current source passes tests.
+
+This is **not Pueue ownership adoption**: no submit, enqueue, signal, daemon
+maintenance or source edit occurs during reconciliation, and original Pueue groups,
+notifications and cancellation ownership do not move. Original delegate owners are
+fenced by the shared claim; updated tools reject stale custody. Cooperating clients
+must use the updated extension; this is not an OS sandbox against same-user code,
+manual source edits or tampering with all private evidence files.
+
+A reconciled task permits foreground review/editing and diagnostic feedback only.
+`delegate_revise`, `delegate_resume` and `delegate_finalize` stay disabled for it;
+no new worker is automatically started and no evidence/worktree is removed.
+Continuation, integration/publication, provider actions and cleanup retain their
+separate approvals. Revision chains, missing trustworthy terminal records, repeated
+transfers and pending reconciliation need separate operator investigation, not a
+new key/task/claim to bypass a barrier. Keep retained artifacts available.
 
 ## Explicit recovery
 

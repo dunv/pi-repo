@@ -21,7 +21,7 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
     const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.deepEqual(toolNames.sort(), ['delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(new Set(toolNames).size, toolNames.length);
 
     // Bound model-facing prose, including repeated parameter descriptions.
@@ -39,10 +39,13 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
       assert.ok(tool.description.length <= 1600, `${tool.name}: keep descriptions concise`);
       countDescriptions({ description: tool.description, parameters: tool.parameters });
     }
-    assert.ok(descriptionCharacters <= 9000, `model-facing description budget exceeded: ${descriptionCharacters}`);
+    // One new bounded reconciliation tool adds its evidence/consent contract.
+    assert.ok(descriptionCharacters <= 9800, `model-facing description budget exceeded: ${descriptionCharacters}`);
     assert.match(tools.get('delegate_task').description, /NOT an OS sandbox/);
     assert.match(tools.get('delegate_review').description, /main agent must review the entire trackedPatch, every untracked file/);
     assert.match(tools.get('delegate_review').description, /current checks.*delegate_feedback/);
+    assert.match(tools.get('delegate_reconcile').description, /fresh interactive user confirmation/);
+    assert.match(tools.get('delegate_reconcile').description, /foreground-only custody/);
     assert.match(tools.get('delegate_resume').description, /fresh interactive user confirmation/);
     assert.match(tools.get('delegate_resume').description, /cgroup-v2 proof.*descendants stopped/);
     assert.match(tools.get('delegate_finalize').description, /fresh interactive user confirmation/);

@@ -4,6 +4,9 @@ import { Text } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import { readdir, writeFile } from "node:fs/promises";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
+import { Backend, configuration } from "../pueue/backend.ts";
+import { matching, view } from "../pueue/state.ts";
+import { assessReconciliation, transferReconciliation, reconciliationSummary, reconciliationAuthorization, assertCustody, reconciledStatus } from "./reconcile.mjs";
 import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
@@ -39,7 +42,8 @@ function initiator(task: any) {
 }
 function owned(ctx: ExtensionContext, id: string): any {
   const task: any = tasksFrom(ctx.sessionManager.getBranch()).get(id), who = owner(ctx);
-  if (!task || task.owner.session !== who.session || task.owner.file !== who.file) throw new Error("Task is not owned by this active session branch");
+  const custodian = task?.custodian ?? task?.owner;
+  if (!task || custodian.session !== who.session || custodian.file !== who.file) throw new Error("Task is not owned by this active session branch");
   return task;
 }
 export default function (pi: ExtensionAPI) {
@@ -48,6 +52,22 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_tree", () => { epoch++; });
   pi.on("session_shutdown", () => { epoch++; });
   const guard = (start: number) => { if (start !== epoch) throw new Error("Session changed; retain artifacts and reconcile, never automatically retry"); };
+  const observeReconciliation = async (job: any) => {
+    const config = configuration(process.env);
+    if (!config || config.namespace !== job.namespace) throw new Error("Original Pueue namespace unavailable; reconciliation blocked");
+    const backend = new Backend(config);
+    await backend.check();
+    const tasks = await backend.tasks();
+    if (tasks.some(t => (t.id === job.id || t.label === job.label)
+      && (t.id !== job.id || t.label !== job.label || t.created !== job.created))) {
+      throw new Error("Original backend identity reused/replaced; reconciliation blocked");
+    }
+    return matching(job, tasks) ? view(job, tasks) : null;
+  };
+  const authority = async (task: any, ctx: ExtensionContext, foreground = false) => {
+    await assertCustody(task, owner(ctx));
+    if (task.reconciliationId && !foreground) throw new Error("Reconciled custody permits foreground review/editing only; worker revision/recovery and finalization remain disabled");
+  };
   async function submit(task: any, runtime: any, runtimePath: string, start: number, signal: AbortSignal | undefined, ctx: ExtensionToolContext) {
     guard(start);
     pi.appendEntry(ENTRY, task); // Pending intent blocks further revisions, even after uncertain admission.
@@ -67,6 +87,45 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
+  pi.registerTool({
+    name: "delegate_reconcile", label: "Reconcile retained delegate custody", exposure: "model-only", executionMode: "sequential",
+    description: "Assess a retained original attempt across sessions using its private originating terminal tool record, exact admission identity and independent stopped cgroup proof. Task alone is read-only. With all expected fields, requires fresh interactive user confirmation to transfer foreground-only custody. No invented Pueue status, retry, worker start, integration, publication or cleanup. Revisions, conflicting evidence and pending claims fail closed. Review all changes/checks afterward; archived exit is not acceptance.",
+    parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }),
+      expectedNonce: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+      expectedFingerprint: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      expectedEvidence: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, who = owner(ctx), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owner(ctx).session !== who.session || owner(ctx).file !== who.file) throw new Error("Reconciliation canceled or session changed");
+      };
+      check();
+      const committing = input.expectedNonce !== undefined || input.expectedFingerprint !== undefined || input.expectedEvidence !== undefined;
+      if (committing && (!input.expectedNonce || !input.expectedFingerprint || !input.expectedEvidence)) throw new Error("Supply all three expected fields from the read-only assessment");
+      const gate = await assessReconciliation(runtime, input, who, observeReconciliation);
+      check();
+      if (!committing) return response(reconciliationSummary(gate));
+      if (input.expectedNonce !== gate.task.nonce || input.expectedFingerprint !== gate.fingerprint || input.expectedEvidence !== gate.evidenceDigest) throw new Error("Assessment changed; inspect again before confirmation");
+      if (!ctx.hasUI) throw new Error("Reconciliation requires fresh interactive user confirmation");
+      const approved = await ctx.ui.confirm("Transfer foreground custody of this stopped delegate?", [
+        `Task: ${gate.task.id}`, `Original owner: ${gate.task.owner.session}`, `Receiving session: ${who.session}`,
+        `Worktree: ${gate.task.worktree}`, `Original nonce: ${gate.task.nonce}`,
+        `Evidence: ${gate.evidence.kind} · backend present: ${gate.current !== null}`,
+        `Stopped proof: ${gate.stopped.observed}`, `Current fingerprint: ${gate.fingerprint}`,
+        "Confirm the original session is idle: arbitrary foreground edits/checks are not covered by the worker cgroup or continuation claim.",
+        "This permanently claims the original attempt for foreground review/editing only. No worker restart, acceptance, integration, publication or removal. Prior records stay unchanged.",
+      ].join("\n"));
+      if (!approved) throw new Error("Reconciliation not authorized");
+      check();
+      const result = await transferReconciliation(runtime, input, who, observeReconciliation, reconciliationAuthorization(input, who), check);
+      check();
+      pi.appendEntry(ENTRY, result.task);
+      return response({ task: result.task.id, reconciliationId: result.receipt.id, restored: result.restored,
+        worktree: result.task.worktree, artifacts: result.task.directory, authority: "foreground-only", accepted: false,
+        next: "delegate_review, inspect all changes and current checks, then delegate_feedback. No automatic retry or cleanup." });
+    },
+  });
   pi.registerTool({
     name: "delegate_models", label: "List delegate model routes", exposure: "model-only", executionMode: "sequential",
     description: "List delegate model routes, filter by backend/provider/query, and paginate. Use an exact entry ID as model for task/revise; omit backend. Anthropic routes use Claude Code; local/OpenAI use Pi. Discovery only: no model calls or auth/readiness checks; listed routes may not work in the worker environment. Configured Pi admission policy can hide routes and constrain thinking; select only the listed routes/levels. Reserve GMKtec models for simple, well-specified mechanical work, not complex multi-file reasoning or policy alignment; choose any stronger route explicitly, never by automatic fallback.",
@@ -126,6 +185,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, task = owned(ctx, input.task), runtimePath = process.env.PI_DELEGATE_RUNTIME;
       const runtime = await runtimeFrom(runtimePath);
+      await authority(task, ctx);
       if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error("Previous job nonce changed or binding unavailable; review the latest task");
       const selection = resolveSelection(input, runtime, ctx.modelRegistry, task);
       const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
@@ -153,6 +213,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, task = owned(ctx, input.task), runtimePath = process.env.PI_DELEGATE_RUNTIME;
       const runtime = await runtimeFrom(runtimePath);
+      await authority(task, ctx);
       const check = () => {
         guard(start);
         if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Recovery canceled or latest attempt changed");
@@ -180,7 +241,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_feedback", label: "Record caller delegation feedback", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status"],
-    description: "Record your own assessment after reviewing a terminal attempt's changes/context/checks or investigating failure. Bind task and exact nonce (historical attempts on this branch supported). Use partial/not_reviewed and not_assessed for incomplete evidence; exit zero is not review, KILLED is not proof descendants stopped. No prompts, file bodies or secrets. Append-only private record; supersedes corrects earlier feedback for the same attempt. Not acceptance, source verification, integration/publication or retry permission; no worker/worktree mutation.",
+    description: "Record your own assessment after reviewing a terminal attempt's changes/context/checks or investigating failure; explicit foreground reconciliations retain archived provenance, never live backend authority. Bind task and exact nonce (historical attempts on this branch supported). Use partial/not_reviewed and not_assessed for incomplete evidence; exit zero is not review, KILLED is not proof descendants stopped. No prompts, file bodies or secrets. Append-only private record; supersedes corrects earlier feedback for the same attempt. Not acceptance, source verification, integration/publication or retry permission; no worker/worktree mutation.",
     parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1, maxLength: 200 }),
       ...Object.fromEntries(Object.entries(feedbackChoices).map(([key, choices]) => [key, Type.Union(choices.map(value => Type.Literal(value)))])),
       rationale: Type.String({ minLength: 1, maxLength: 4000 }),
@@ -197,7 +258,10 @@ export default function (pi: ExtensionAPI) {
       validateFeedback(input);
       const who = owner(ctx), task = feedbackTask(ctx.sessionManager.getBranch(), who, input);
       const runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
-      const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
+      await authority(task, ctx, true);
+      const rows = task.reconciliationId ? [await reconciledStatus(task, runtime, who, observeReconciliation)]
+        : nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
+      await authority(task, ctx, true);
       const check = () => { guard(start); if (signal?.aborted) throw new Error("Feedback cancelled before recording"); };
       check();
       const recorded = await writeFeedback(runtime, task, input, rows,
@@ -217,6 +281,7 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      await authority(task, ctx);
       const check = () => {
         guard(start);
         if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Finalization canceled or latest attempt changed");
@@ -247,7 +312,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_review", label: "Collect delegate changes", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status", "worktree_panel_target"],
-    description: "Omit task to list this branch's owned tasks/nonces. With task UUID, collect untrusted report, worker-only trackedPatch, new files and current-fingerprint check evidence after Pueue EXITED (or KILLED with independently verified empty containment). openDiff optionally opens the panel. The main agent must review the entire trackedPatch, every untracked file, relevant context and current checks against the brief; report findings/verdict, then call delegate_feedback. Do not offload review to the user or rate incomplete evidence as reviewed/correct. If sourceState drifted/unavailable, recheck destination and reconcile before integration; never overwrite inherited work. Collection is not acceptance or an integration lease; exit zero proves neither. Ignored files are not certified. No polling, retry, integration or cleanup.",
+    description: "Omit task to list this branch's owned tasks/nonces. With task UUID, collect untrusted report, worker-only trackedPatch, new files and current-fingerprint check evidence after Pueue EXITED (or KILLED with independently verified empty containment), or an explicit foreground reconciliation grant with archived provenance. openDiff optionally opens the panel. The main agent must review the entire trackedPatch, every untracked file, relevant context and current checks against the brief; report findings/verdict, then call delegate_feedback. Do not offload review to the user or rate incomplete evidence as reviewed/correct. If sourceState drifted/unavailable, recheck destination and reconcile before integration; never overwrite inherited work. Collection is not acceptance or an integration lease; exit zero proves neither. Ignored files are not certified. No polling, retry, integration or cleanup.",
     parameters: Type.Object({ task: Type.Optional(Type.String()), openDiff: Type.Optional(Type.Boolean()) }),
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(args.task ? "Subagent · collect changes and report" : "Subagents · list tasks")) +
@@ -270,6 +335,7 @@ export default function (pi: ExtensionAPI) {
         const missing = data.missingChecks ?? [], checks = data.checks ?? [], files = data.untracked ?? [];
         const lines = [
           theme.fg("accent", `Pueue #${data.status.id ?? "?"} · ${data.status.phase} · exit ${data.status.exitCode ?? "unknown"}`),
+          ...(data.status.phase === "RECONCILED_EXITED" ? ["Archived terminal evidence · foreground-only custody · not live Pueue authority"] : []),
           "Changes collected · review verdict is separate",
           `Checks: ${missing.length ? `missing/current passing evidence needed for indices: ${missing.join(", ")}` : checks.length ? "all planned checks have current passing evidence" : "none planned"}`,
           `New files: ${files.length}${files.length ? ` · ${files.slice(0, 3).join(", ")}${files.length > 3 ? " …" : ""}` : ""}`,
@@ -299,14 +365,16 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, input, signal, _update, ctx) {
       if (!input.task) {
         const who = owner(ctx);
-        return response([...tasksFrom(ctx.sessionManager.getBranch()).values()].filter((t: any) => t.owner.session === who.session && t.owner.file === who.file)
+        return response([...tasksFrom(ctx.sessionManager.getBranch()).values()].filter((t: any) => (t.custodian ?? t.owner).session === who.session && (t.custodian ?? t.owner).file === who.file)
           .map((t: any) => ({ task: t.id, attempt: t.attempt, nonce: t.nonce, initiator: initiator(t), route: t.route, backend: t.backend ?? "pi", model: t.model, thinking: t.thinking, worktree: t.worktree, artifacts: attemptDirectory(t, t.attempt), finalized: t.finalized ?? null })));
       }
       const start = epoch;
       const task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      await authority(task, ctx, true);
       if (!task.nonce) throw new Error("Admission binding unavailable; reconcile originating Pueue history manually");
-      const rows = nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
-      if (rows.length !== 1 || !["EXITED", "KILLED"].includes(rows[0].phase)) throw new Error("Worker is not authoritatively terminal; retain evidence and do not retry");
+      const rows = task.reconciliationId ? [await reconciledStatus(task, runtime, owner(ctx), observeReconciliation)]
+        : nested(await ctx.executeTool("pueue_status", { nonce: task.nonce }, { signal }));
+      if (rows.length !== 1 || !["EXITED", "KILLED", "RECONCILED_EXITED"].includes(rows[0].phase)) throw new Error("Worker is not authoritatively terminal; retain evidence and do not retry");
       if (rows[0].phase === "KILLED" || rows[0].cancellationRequested
         || (runtime.containmentProtocol === 1 && rows[0].exitCode !== 0)) await assertStopped(task);
       const fingerprint = await snapshot(task, runtime);
@@ -321,6 +389,8 @@ export default function (pi: ExtensionAPI) {
       let worker;
       try { worker = await json(join(directory, "result.json")); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
       guard(start);
+      await authority(task, ctx, true);
+      if (signal?.aborted) throw new Error("Review canceled");
       if (input.openDiff === true) await ctx.executeTool("worktree_panel_target", { path: task.worktree, base: task.base }, { signal });
       let report;
       try { report = await tail(join(directory, "report.md")); } catch (error: any) { if (error.code !== "ENOENT") throw error; }
@@ -329,6 +399,8 @@ export default function (pi: ExtensionAPI) {
         try { sourceState = { unchanged: await sourceSnapshot(task.repo, runtime) === task.sourceFingerprint }; }
         catch { sourceState = { unchanged: null, error: "Source state unavailable" }; }
       }
+      guard(start);
+      await authority(task, ctx, true);
       return response({ task: task.id, attempt: task.attempt, initiator: initiator(task), route: task.route, backend: task.backend ?? "pi", status: rows[0], worker, fingerprint, trackedPatch, untracked, checks, report,
         baseline: { base: task.base, sourceHead: task.sourceHead ?? task.base, sourceFingerprint: task.sourceFingerprint ?? null }, sourceState,
         worktree: task.worktree, reviewRequired: true, reviewer: "main-agent", accepted: false,

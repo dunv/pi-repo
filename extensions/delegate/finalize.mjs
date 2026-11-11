@@ -175,6 +175,8 @@ export async function finalizeTask(task, input, runtime, statuses, authorization
   return receipt;
 }
 export function finalizationRequest(task) {
+  if (task.reconciliationId) return { available: false, task: task.id,
+    instruction: 'Foreground-only reconciliation does not authorize finalization. Retain the worktree and all evidence; no automatic removal or claim release.' };
   return { tool: 'delegate_finalize', task: task.id, expectedNonce: task.nonce,
     instruction: 'After review, feedback and authorized integration (or an explicit discard decision), finalize this task to archive local changes and remove its worktree/branch. Supply the current reviewed fingerprint. Finalization requires fresh interactive confirmation and independent stopped-worker proof; completion/feedback alone never triggers deletion.' };
 }

@@ -32,7 +32,8 @@ export function validateFeedback(input) {
 export function feedbackTask(entries, who, input) {
   // Resolve the exact historical attempt on this branch, not just its latest task.
   const matches = entries.filter(e => e.type === 'custom' && e.customType === ENTRY && e.data?.id === input.task
-    && e.data.nonce === input.expectedNonce && e.data.owner?.session === who.session && e.data.owner?.file === who.file);
+    && e.data.nonce === input.expectedNonce && (e.data.custodian ?? e.data.owner)?.session === who.session
+    && (e.data.custodian ?? e.data.owner)?.file === who.file);
   if (!matches.length) throw new Error('Task/job is not owned by this active session branch');
   return matches.at(-1).data;
 }
@@ -43,7 +44,9 @@ export function feedbackRequest(task) {
 }
 export async function writeFeedback(runtime, task, input, status, caller, guard = () => {}) {
   const assessment = validateFeedback(input);
-  if (!Array.isArray(status) || status.length !== 1 || status[0].nonce !== task.nonce || !['EXITED', 'KILLED'].includes(status[0].phase)) {
+  const reconciled = task.reconciliationId && status?.[0]?.phase === 'RECONCILED_EXITED'
+    && status[0].reconciliationId === task.reconciliationId && status[0].backendAuthority === false;
+  if (!Array.isArray(status) || status.length !== 1 || status[0].nonce !== task.nonce || (!reconciled && !['EXITED', 'KILLED'].includes(status[0].phase))) {
     throw new Error('Feedback requires a known terminal job; UNKNOWN/absent/active jobs cannot be assessed yet');
   }
   const root = join(runtime.state, task.id);
@@ -68,7 +71,8 @@ export async function writeFeedback(runtime, task, input, status, caller, guard 
     caller: { session: caller.session, model: caller.model ?? null },
     invocation: { repo: manifest.repo, base: manifest.base, backend: plan.backend ?? 'pi', model: plan.model,
       thinking: plan.thinking, profile: manifest.profile, checks: manifest.checks },
-    execution: { phase: status[0].phase, exitCode: status[0].exitCode ?? null, cancellationRequested: status[0].cancellationRequested === true },
+    execution: { phase: status[0].phase, exitCode: status[0].exitCode ?? null, cancellationRequested: status[0].cancellationRequested === true,
+      ...(reconciled ? { reconciliationId: task.reconciliationId, provenance: status[0].provenance, backendAuthority: false } : {}) },
     artifacts: { directory, brief: join(directory, 'brief.md'), result: join(directory, 'result.json'),
       metrics: join(directory, 'metrics.jsonl'), trackedPatch: join(directory, 'tracked.diff') },
     // Caller-supplied historical observation, not a fresh source verification.
