@@ -14,6 +14,8 @@ import { prepare, prepareRevision, snapshot, save, json, digest, ENTRY } from '.
 import { recordContainment, scopeName } from '../containment.mjs';
 import { assessReconciliation, reconciliationSummary, reconciliationAuthorization, transferReconciliation, assertCustody, reconciledStatus } from '../reconcile.mjs';
 import { feedbackTask, writeFeedback } from '../feedback.mjs';
+import { finalizationGate, finalizationAuthorization, finalizeTask } from '../finalize.mjs';
+import { disposalGate, disposalAuthorization, disposeTask } from '../dispose.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 async function fixture(fn) {
@@ -62,6 +64,69 @@ async function fixture(fn) {
     await fn({ dir, repo, runtime, from, to, task, worker, job, status, entries, call, result, append, persist, observe, assess, input, transfer });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+
+async function cleanupFixture(f, recipient = f.to) {
+  f.runtime.finalizationProtocol = 1; f.runtime.disposalProtocol = 1;
+  const gate = await assessReconciliation(f.runtime, { task: f.task.id }, recipient, f.observe);
+  const request = { task: f.task.id, expectedNonce: f.task.nonce, expectedFingerprint: gate.fingerprint, expectedEvidence: gate.evidenceDigest };
+  const moved = await transferReconciliation(f.runtime, request, recipient, f.observe, reconciliationAuthorization(request, recipient));
+  const task = moved.task, input = { task: task.id, expectedNonce: task.nonce, expectedFingerprint: gate.fingerprint, disposition: 'integrated' };
+  await mkdir(join(task.directory, 'feedback'));
+  await save(join(task.directory, 'feedback', randomUUID() + '.json'), { task: task.id, nonce: task.nonce,
+    attempt: null, reviewedFingerprint: gate.fingerprint, assessment: { reviewStatus: 'reviewed', correctness: 'good' } });
+  const context = { who: recipient, observe: f.observe };
+  const current = await finalizationGate(task, input, f.runtime, [], undefined, undefined, context);
+  return { task, input, context, authorization: finalizationAuthorization(task, input, current) };
+}
+
+test('reconciled originals finalize with bound archived provenance then permit separately authorized payload disposal', async () => {
+  for (const sameSession of [false, true]) await fixture(async f => {
+    const c = await cleanupFixture(f, sameSession ? f.from : f.to);
+    const before = await readFile(join(c.task.directory, `revision-after-${digest(c.task.nonce)}.json`), 'utf8');
+    const receipt = await finalizeTask(c.task, c.input, f.runtime, [], c.authorization, undefined, undefined, c.context);
+    assert.equal(await readFile(join(c.task.directory, `revision-after-${digest(c.task.nonce)}.json`), 'utf8'), before);
+    const intent = await json(join(receipt.directory, 'intent.json'));
+    assert.equal(intent.statuses[0].phase, 'RECONCILED_EXITED'); assert.equal(intent.statuses[0].backendAuthority, false);
+    assert.equal(intent.reconciliationId, c.task.reconciliationId);
+    await assert.rejects(assertCustody(c.task, c.context.who), /Finalization claimed/);
+    if (sameSession) {
+      f.append({ type: 'custom', customType: ENTRY, data: { ...c.task, finalized: receipt } }); await f.persist();
+    }
+    const input = { task: c.task.id, expectedNonce: c.task.nonce, expectedFinalization: digest(JSON.stringify(receipt)), selections: ['recovery'] };
+    const gate = await disposalGate(c.task, input, f.runtime, c.context);
+    const disposed = await disposeTask(c.task, input, f.runtime, c.context, disposalAuthorization(c.task, input, gate));
+    assert.equal(disposed.entriesRemoved, 2);
+    assert.deepEqual(await json(join(c.task.directory, 'result.json')), f.worker);
+  });
+});
+
+test('reconciled finalization rejects stale archived evidence, wrong custody, unknown backend and occupied workers without deleting', async () => {
+  for (const mode of ['history', 'result', 'source', 'backend', 'stopped', 'owner', 'forged-status']) await fixture(async f => {
+    const c = await cleanupFixture(f);
+    if (mode === 'history') { f.call.message.content[0].arguments.openDiff = true; await f.persist(); }
+    if (mode === 'result') await writeFile(join(c.task.directory, 'result.json'), JSON.stringify({ ...f.worker, code: 7 }));
+    if (mode === 'source') await writeFile(join(c.task.worktree, 'source.txt'), 'unreviewed');
+    if (mode === 'backend') c.context.observe = async () => ({ ...f.status, phase: 'UNKNOWN' });
+    if (mode === 'owner') c.context.who = f.from;
+    if (mode === 'forged-status') delete c.context.observe;
+    const stopped = mode === 'stopped' ? async () => { throw new Error('populated cgroup'); } : undefined;
+    await assert.rejects(finalizeTask(c.task, c.input, f.runtime, [{ ...f.status, phase: 'RECONCILED_EXITED', backendAuthority: false }], c.authorization, undefined, stopped, c.context), undefined, mode);
+    assert.ok(await readdir(c.task.worktree));
+    assert.ok(!(await readdir(c.task.directory)).some(n => n.startsWith('finalization-after-')));
+  });
+});
+
+test('reconciled finalization has an exclusive second lifecycle claim, preserves custody claims and blocks interrupted retries', () => fixture(async f => {
+  const c = await cleanupFixture(f);
+  let calls = 0;
+  await assert.rejects(finalizeTask(c.task, c.input, f.runtime, [], c.authorization, () => {
+    if (++calls === 2) throw new Error('interrupted before worktree removal');
+  }, undefined, c.context), /interrupted/);
+  assert.ok(await readdir(c.task.worktree));
+  assert.ok((await readdir(c.task.directory)).some(n => n.startsWith('finalization-after-')));
+  await assert.rejects(assertCustody(c.task, f.to), /Finalization claimed/);
+  await assert.rejects(finalizeTask(c.task, c.input, f.runtime, [], c.authorization, undefined, undefined, c.context), /claimed/);
+}));
 
 test('assessment is read-only; confirmed foreground transfer retains provenance, original files and blocks the old owner', () => fixture(async f => {
   const before = await readdir(f.task.directory), manifest = await readFile(join(f.task.directory, 'task.json'), 'utf8'), history = await readFile(f.from.file, 'utf8');
@@ -244,7 +309,7 @@ async function host(f, confirm = async () => true) {
 }
 const data = result => JSON.parse(result.content[0].text);
 
-test('real Pi loader registers read-only assessment, fresh confirmation, collection/feedback and denies worker/cleanup operations', () => fixture(async f => {
+test('real Pi loader registers assessment, confirmation, collection/feedback and denies workers or unconfigured cleanup', () => fixture(async f => {
   const h = await host(f);
   try {
     const assessed = data(await h.invoke('delegate_reconcile', { task: f.task.id }));
@@ -255,17 +320,18 @@ test('real Pi loader registers read-only assessment, fresh confirmation, collect
     assert.equal(h.entries.length, 1);
     const review = data(await h.invoke('delegate_review', { task: f.task.id }));
     assert.equal(review.status.phase, 'RECONCILED_EXITED'); assert.equal(review.accepted, false);
-    assert.equal(review.finalization.available, false);
+    assert.equal(review.finalization.tool, 'delegate_finalize');
     const feedback = data(await h.invoke('delegate_feedback', { task: f.task.id, expectedNonce: f.task.nonce,
       reviewStatus: 'partial', usefulness: 'not_assessed', correctness: 'not_assessed', instructionFollowing: 'not_assessed',
       reviewEffort: 'low', wouldDelegateAgain: 'unsure', rationale: 'Fixture partial review only.', problems: [], improvements: [], evidence: [] }));
     assert.equal((await json(feedback.path)).execution.phase, 'RECONCILED_EXITED');
-    assert.equal(feedback.finalization.available, false);
+    assert.equal(feedback.finalization.tool, 'delegate_finalize');
     assert.equal(await readFile(review.trackedPatch, 'utf8'), execFileSync(git, ['-C', f.task.worktree, 'diff', '--binary', 'HEAD'], { encoding: 'utf8' }));
     assert.equal(data(await h.invoke('delegate_review', {}))[0].task, f.task.id);
-    for (const name of ['delegate_revise', 'delegate_resume', 'delegate_finalize']) {
+    for (const name of ['delegate_revise', 'delegate_resume']) {
       await assert.rejects(h.invoke(name, { ...input, model: 'fixture/model', thinking: 'low', brief: 'Never start.', disposition: 'discarded' }), /foreground review\/editing only/);
     }
+    await assert.rejects(h.invoke('delegate_finalize', { ...input, disposition: 'discarded' }), /runtime/);
     const originCtx = { ...h.ctx, sessionManager: { getSessionFile: () => f.from.file, getSessionId: () => f.from.session, getBranch: () => f.entries } };
     for (const name of ['delegate_review', 'delegate_revise', 'delegate_resume', 'delegate_finalize']) {
       await assert.rejects(h.tools.get(name).execute(name, { ...input, model: 'fixture/model', thinking: 'low', brief: 'Never run.', disposition: 'discarded' }, undefined, undefined, originCtx), /custody transferred/);

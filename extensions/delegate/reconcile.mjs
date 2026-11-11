@@ -62,7 +62,7 @@ function ancestors(entry, entries) {
   }
   return result.reverse();
 }
-async function archived(task, nonce) {
+async function archived(task, nonce, finalizationClaim) {
   let text, lines;
   try {
     text = await privateText(task.owner.file, 64 * 1024 * 1024);
@@ -77,7 +77,7 @@ async function archived(task, nonce) {
     entries.set(entry.id, entry);
     if (entry.type === 'custom' && entry.customType === ENTRY && entry.data?.id === task.id
       && (!taskEqual(task, entry.data) || entry.data.attempt !== undefined
-        || entry.data.finalized || (entry.data.nonce !== undefined && entry.data.nonce !== nonce))) {
+        || (entry.data.finalized && (!finalizationClaim || entry.data.finalized.authorization?.id !== finalizationClaim)) || (entry.data.nonce !== undefined && entry.data.nonce !== nonce))) {
       throw new Error('Conflicting task/attempt history; explicit investigation required');
     }
   }
@@ -134,7 +134,7 @@ async function boundedNames(path) {
   }
   return names;
 }
-async function retained(runtime, id) {
+async function retained(runtime, id, finalizationClaim) {
   if (!uuid.test(id) || runtime.containmentProtocol !== 1 || runtime.reconciliationProtocol !== 1) throw new Error('Full task UUID and explicitly enabled scoped reconciliation runtime required');
   await directory(runtime.state);
   const root = join(runtime.state, id); await directory(root);
@@ -146,7 +146,7 @@ async function retained(runtime, id) {
   // V1 intentionally handles original attempts only. Never select a convenient
   // ancestor while a revision, finalization or admission may remain uncertain.
   const names = await boundedNames(root);
-  if (names.some(name => name === 'revisions' || name === 'finalization' || name === 'finalized.json')) throw new Error('Revision/finalization history requires separate reconciliation');
+  if (names.some(name => name === 'revisions' || (!finalizationClaim && (name === 'finalization' || name === 'finalized.json')))) throw new Error('Revision/finalization history requires separate reconciliation');
   const submission = await privateJSON(join(root, 'submission.json'));
   if (!uuid.test(submission.nonce)) throw new Error('Exact submission nonce required');
   const common = async path => realpath(resolve(path, (await git(runtime, path, ['rev-parse', '--git-common-dir'])).trim()));
@@ -181,7 +181,11 @@ export async function assessReconciliation(runtime, input, who, observe, stopped
   const evidenceDigest = digest(JSON.stringify([evidence, fingerprint, identity(who), receipt?.id ?? null]));
   return { task, fingerprint, evidenceDigest, evidence, current, stopped: proof, receipt };
 }
-export async function assertCustody(task, who) {
+export async function assertCustody(task, who, finalizationClaim) {
+  const cleanup = join(task.directory, `finalization-after-${digest(task.nonce ?? '')}.json`);
+  if (!await missing(cleanup) && (!finalizationClaim || (await privateJSON(cleanup)).finalization !== finalizationClaim)) {
+    throw new Error('Finalization claimed; no further foreground use or automatic retry');
+  }
   if (!await missing(receiptPath(task))) {
     const receipt = await privateJSON(receiptPath(task)), claim = await privateJSON(claimPath(task));
     if (receipt.version !== 1 || !uuid.test(receipt.id) || receipt.task !== task.id || receipt.nonce !== task.nonce
@@ -236,11 +240,18 @@ export async function transferReconciliation(runtime, input, who, observe, autho
   await durable(receiptPath(gate.task), receipt);
   return { task: { ...gate.task, custodian: receipt.to, reconciliationId: id }, receipt, restored: false };
 }
-export async function reconciledStatus(task, runtime, who, observe, stopped = assertStopped) {
-  const receipt = await assertCustody(task, who);
+// Also usable after successful worktree removal, but only by lifecycle code
+// supplying the exact finalization claim. Never reclassifies archived status as
+// live backend authority, and revalidates the original private terminal record.
+export async function reconciledStatus(task, runtime, who, observe, stopped = assertStopped, finalizationClaim, removed = false) {
+  if (runtime.reconciliationProtocol !== 1 || runtime.containmentProtocol !== 1) throw new Error('Scoped reconciliation runtime required');
+  const receipt = await assertCustody(task, who, finalizationClaim);
   if (!receipt) throw new Error('No reconciled foreground grant');
-  const original = await retained(runtime, task.id);
-  if (!taskEqual(original, task) || original.nonce !== task.nonce) throw new Error('Retained manifest changed after reconciliation');
+  const original = removed ? await privateJSON(join(task.directory, 'task.json')) : await retained(runtime, task.id, finalizationClaim);
+  if (!taskEqual(original, task) || (!removed && original.nonce !== task.nonce)) throw new Error('Retained manifest changed after reconciliation');
+  const archive = await archived(task, task.nonce, finalizationClaim);
+  if (archive.historyHash !== receipt.evidence.historyHash || !same(archive.job, receipt.evidence.job)
+    || !same(archive.status, receipt.evidence.terminal)) throw new Error('Original archived terminal evidence changed');
   if (digest(JSON.stringify(await privateJSON(join(task.directory, 'result.json')))) !== receipt.evidence.resultHash
     || digest(JSON.stringify(await privateJSON(join(task.directory, 'containment.json')))) !== receipt.evidence.containmentHash) throw new Error('Reconciled evidence changed');
   await observeArchive({ job: receipt.evidence.job, status: receipt.evidence.terminal }, observe);

@@ -1,20 +1,30 @@
 // Explicit, recoverable disposal; never infer acceptance from worker completion.
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, readFile, readlink, readdir, realpath, rmdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, lstat, readFile, readlink, readdir, realpath, rmdir, open } from 'node:fs/promises';
 import { join, dirname, basename, resolve, relative } from 'node:path';
-import { attemptDirectory, digest, git, json, privateDir, save, snapshot } from './core.mjs';
+import { attemptDirectory, digest, git, json, lifecycleJSON, privateDir, durableSave, snapshot } from './core.mjs';
 import { assertStopped } from './containment.mjs';
+import { reconciledStatus } from './reconcile.mjs';
+
+export const finalizationClaimPath = task => join(task.directory,
+  `${task.reconciliationId ? 'finalization' : 'revision'}-after-${digest(task.nonce)}.json`);
 
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const limit = 64 * 1024 * 1024;
 async function absent(path) {
   try { await lstat(path); return false; } catch (error) { if (error.code === 'ENOENT') return true; throw error; }
 }
+async function existingPrivateDir(path) {
+  const st = await lstat(path);
+  if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.getuid() || st.mode & 0o077
+    || await realpath(path) !== path) throw new Error('Existing canonical private delegate directory required');
+}
 export async function finalizationAttempts(task, runtime) {
   if (!uuid.test(task.id) || (task.attempt !== undefined && !uuid.test(task.attempt))
     || task.directory !== join(runtime.state, task.id)) throw new Error('Finalization task identity mismatch');
-  await privateDir(runtime.state); await privateDir(task.directory);
-  const manifest = await json(join(task.directory, 'task.json'));
+  await existingPrivateDir(runtime.state); await existingPrivateDir(task.directory);
+  const manifest = await lifecycleJSON(join(task.directory, 'task.json'));
   for (const key of ['id', 'repo', 'directory', 'worktree', 'base', 'branch']) {
     if (manifest[key] !== task[key]) throw new Error('Finalization manifest identity mismatch');
   }
@@ -27,7 +37,7 @@ export async function finalizationAttempts(task, runtime) {
   const attempts = [undefined];
   const revisions = join(task.directory, 'revisions');
   if (!await absent(revisions)) {
-    await privateDir(revisions);
+    await existingPrivateDir(revisions);
     for (const name of await readdir(revisions)) {
       if (!uuid.test(name)) throw new Error('Unknown retained revision; investigate manually');
       attempts.push(name);
@@ -36,12 +46,12 @@ export async function finalizationAttempts(task, runtime) {
   const rows = [];
   for (const attempt of attempts) {
     const directory = attemptDirectory(task, attempt);
-    await privateDir(directory);
+    await existingPrivateDir(directory);
     if (attempt !== undefined) {
-      const plan = await json(join(directory, 'attempt.json'));
+      const plan = await lifecycleJSON(join(directory, 'attempt.json'));
       if (plan.task !== task.id || plan.attempt !== attempt) throw new Error('Revision identity mismatch');
     }
-    const submission = await json(join(directory, 'submission.json'));
+    const submission = await lifecycleJSON(join(directory, 'submission.json'));
     if (typeof submission.nonce !== 'string' || !submission.nonce) throw new Error('Unresolved attempt admission; manual reconciliation required');
     rows.push({ attempt, nonce: submission.nonce });
   }
@@ -74,7 +84,7 @@ async function localFiles(task, runtime) {
   }
   return { files, bytes };
 }
-export async function finalizationGate(task, input, runtime, statuses, stopped = assertStopped, claim) {
+export async function finalizationGate(task, input, runtime, statuses, stopped = assertStopped, claim, context = {}) {
   if (runtime.finalizationProtocol !== 1 || runtime.containmentProtocol !== 1) throw new Error('Activate the finalization/scoped runtime and restart Pi first');
   if (task.finalized || task.id !== input.task || task.nonce !== input.expectedNonce
     || !/^[a-f0-9]{64}$/.test(input.expectedFingerprint) || !['integrated', 'discarded'].includes(input.disposition)) {
@@ -84,18 +94,25 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
   if (await realpath(task.worktree) !== task.worktree || await realpath(task.repo) !== task.repo) throw new Error('Checkout path changed');
   const common = async path => resolve(path, (await git(runtime, path, ['rev-parse', '--git-common-dir'])).trim());
   if (await realpath(await common(task.repo)) !== await realpath(await common(task.worktree))) throw new Error('Worker repository identity changed');
-  const claimPath = join(task.directory, `revision-after-${digest(task.nonce)}.json`);
+  const claimPath = finalizationClaimPath(task);
   if (!await absent(claimPath)) {
-    const existing = await json(claimPath);
-    if (!claim || existing.finalization !== claim) throw new Error('Attempt already claimed for revision/finalization; reconcile manually');
+    const existing = await lifecycleJSON(claimPath);
+    if (!claim || existing.finalization !== claim || existing.previousNonce !== task.nonce) throw new Error('Attempt already claimed for revision/finalization; reconcile manually');
   }
   if (!await absent(join(task.directory, 'finalized.json'))) throw new Error('Task already finalized');
+  if (!claim && !await absent(join(task.directory, 'finalization'))) throw new Error('Existing/interrupted finalization archive; investigate manually');
+  if (task.reconciliationId) {
+    if (attempts.length !== 1 || task.attempt !== undefined) throw new Error('Reconciled cleanup supports original attempts only');
+    if (!context.who || typeof context.observe !== 'function') throw new Error('Reconciled cleanup requires current custody and archived evidence verification');
+    statuses = [await reconciledStatus(task, runtime, context.who, context.observe, stopped, claim)];
+  }
   const proofs = [];
   if (!Array.isArray(statuses) || statuses.length !== attempts.length) throw new Error('Every attempt needs authoritative terminal status');
   for (const row of attempts) {
     const matches = statuses.filter(status => status.nonce === row.nonce);
-    if (matches.length !== 1 || !['EXITED', 'KILLED'].includes(matches[0].phase)
-      || (matches[0].phase === 'EXITED' && !Number.isSafeInteger(matches[0].exitCode))) {
+    if (matches.length !== 1 || !(task.reconciliationId ? matches[0].phase === 'RECONCILED_EXITED' && matches[0].backendAuthority === false
+        : ['EXITED', 'KILLED'].includes(matches[0].phase))
+      || (matches[0].phase !== 'KILLED' && !Number.isSafeInteger(matches[0].exitCode))) {
       throw new Error('Absent/UNKNOWN/active attempt; finalization blocked');
     }
     proofs.push(await stopped({ ...task, attempt: row.attempt }, row.attempt));
@@ -127,14 +144,14 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
   }
   // 'integrated' is the caller's disposition, not automatic verification of a merge.
   const local = await localFiles(task, runtime);
-  return { attempts, proofs, local, archiveFingerprint: digest(JSON.stringify(local)) };
+  return { attempts, proofs, local, statuses, archiveFingerprint: digest(JSON.stringify(local)) };
 }
 export function finalizationAuthorization(task, input, gate) {
   return { id: randomUUID(), task: task.id, nonce: task.nonce, fingerprint: input.expectedFingerprint,
     disposition: input.disposition, archiveFingerprint: gate.archiveFingerprint, confirmedAt: new Date().toISOString() };
 }
-export async function finalizeTask(task, input, runtime, statuses, authorization, guard = () => {}, stopped = assertStopped) {
-  const gate = await finalizationGate(task, input, runtime, statuses, stopped);
+export async function finalizeTask(task, input, runtime, statuses, authorization, guard = () => {}, stopped = assertStopped, context = {}) {
+  const gate = await finalizationGate(task, input, runtime, statuses, stopped, undefined, context);
   if (!authorization || authorization.task !== task.id || authorization.nonce !== task.nonce
     || authorization.fingerprint !== input.expectedFingerprint || authorization.disposition !== input.disposition
     || authorization.archiveFingerprint !== gate.archiveFingerprint || !uuid.test(authorization.id) || !authorization.confirmedAt) {
@@ -142,22 +159,27 @@ export async function finalizeTask(task, input, runtime, statuses, authorization
   }
   guard();
   // Shared permanent continuation claim excludes stale session branches and revisions.
-  await save(join(task.directory, `revision-after-${digest(task.nonce)}.json`), { finalization: authorization.id, previousNonce: task.nonce });
+  await durableSave(finalizationClaimPath(task), { finalization: authorization.id, previousNonce: task.nonce });
   const directory = join(task.directory, 'finalization');
   await privateDir(directory);
-  await save(join(directory, 'intent.json'), { task: task.id, input, authorization, attempts: gate.attempts, stopped: gate.proofs });
+  const parent = await open(task.directory, 'r');
+  try { await parent.sync(); } finally { await parent.close(); }
+  await durableSave(join(directory, 'intent.json'), { task: task.id, input, authorization, attempts: gate.attempts,
+    statuses: gate.statuses, stopped: gate.proofs, reconciliationId: task.reconciliationId ?? null });
   const bundle = join(directory, 'source.bundle');
   await git(runtime, task.repo, ['bundle', 'create', bundle, `refs/heads/${task.branch}`]);
   await chmod(bundle, 0o600);
   await git(runtime, task.repo, ['bundle', 'verify', bundle]);
+  const bundled = await open(bundle, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { await bundled.sync(); } finally { await bundled.close(); }
   const patch = await git(runtime, task.worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']);
   const archive = { version: 1, base: task.base, branch: task.branch, patch, ...gate.local };
-  await save(join(directory, 'local-files.json'), archive);
+  await durableSave(join(directory, 'local-files.json'), archive);
   if (digest(JSON.stringify(await json(join(directory, 'local-files.json')))) !== digest(JSON.stringify(archive))) throw new Error('Recovery archive verification failed');
-  const fresh = await finalizationGate(task, input, runtime, statuses, stopped, authorization.id);
+  const fresh = await finalizationGate(task, input, runtime, context.statuses ? await context.statuses() : statuses, stopped, authorization.id, context);
   if (fresh.archiveFingerprint !== authorization.archiveFingerprint) throw new Error('Local/ignored files changed after confirmation');
   guard();
-  await save(join(directory, 'ready.json'), { archiveFingerprint: fresh.archiveFingerprint, recordedAt: new Date().toISOString() });
+  await durableSave(join(directory, 'ready.json'), { archiveFingerprint: fresh.archiveFingerprint, recordedAt: new Date().toISOString() });
   // Git refuses locked/nested worktrees; never use double-force or rm -rf.
   await git(runtime, task.repo, ['worktree', 'remove', '--force', task.worktree]);
   guard();
@@ -171,12 +193,10 @@ export async function finalizeTask(task, input, runtime, statuses, authorization
   try { await rmdir(dirname(task.worktree)); containerRemoved = true; } catch { /* Nonempty/inaccessible containers stay. */ }
   const receipt = { version: 1, task: task.id, attempt: task.attempt ?? null, nonce: task.nonce,
     disposition: input.disposition, directory, authorization, containerRemoved, finalizedAt: new Date().toISOString(), evidenceRetained: true };
-  await save(join(task.directory, 'finalized.json'), receipt);
+  await durableSave(join(task.directory, 'finalized.json'), receipt);
   return receipt;
 }
 export function finalizationRequest(task) {
-  if (task.reconciliationId) return { available: false, task: task.id,
-    instruction: 'Foreground-only reconciliation does not authorize finalization. Retain the worktree and all evidence; no automatic removal or claim release.' };
   return { tool: 'delegate_finalize', task: task.id, expectedNonce: task.nonce,
     instruction: 'After review, feedback and authorized integration (or an explicit discard decision), finalize this task to archive local changes and remove its worktree/branch. Supply the current reviewed fingerprint. Finalization requires fresh interactive confirmation and independent stopped-worker proof; completion/feedback alone never triggers deletion.' };
 }

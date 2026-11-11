@@ -4,9 +4,19 @@ import { mkdtemp, mkdir, symlink, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadSkillsFromDir } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js';
 import { discoverAndLoadExtensions } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+test('package declares the cleanup skill and Pi validates its portable frontmatter without running inventory', async () => {
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.pi.skills, ['./skills/delegate-cleanup']);
+  assert.ok(manifest.files.includes('skills/delegate-cleanup'));
+  const loaded = loadSkillsFromDir({ dir: join(root, manifest.pi.skills[0]), source: 'fixture' });
+  assert.deepEqual(loaded.diagnostics, []);
+  assert.deepEqual(loaded.skills.map(s => s.name), ['delegate-cleanup']);
+  assert.match(loaded.skills[0].description, /separately authorized/);
+});
 test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory autodiscovery loads each once without starting resources', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.pi.extensions, ['./extensions/worktree-panel/index.ts', './extensions/pueue/index.ts', './extensions/repo-snapshot/index.ts', './extensions/delegate/index.ts']);
@@ -21,7 +31,7 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
     const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.deepEqual(toolNames.sort(), ['delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(new Set(toolNames).size, toolNames.length);
 
     // Bound model-facing prose, including repeated parameter descriptions.
@@ -39,8 +49,9 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
       assert.ok(tool.description.length <= 1600, `${tool.name}: keep descriptions concise`);
       countDescriptions({ description: tool.description, parameters: tool.parameters });
     }
-    // One new bounded reconciliation tool adds its evidence/consent contract.
-    assert.ok(descriptionCharacters <= 9800, `model-facing description budget exceeded: ${descriptionCharacters}`);
+    // Reconciliation and one explicit payload-disposal tool carry bounded
+    // evidence/consent contracts; no deletion policy is hidden in descriptions.
+    assert.ok(descriptionCharacters <= 10600, `model-facing description budget exceeded: ${descriptionCharacters}`);
     assert.match(tools.get('delegate_task').description, /NOT an OS sandbox/);
     assert.match(tools.get('delegate_review').description, /main agent must review the entire trackedPatch, every untracked file/);
     assert.match(tools.get('delegate_review').description, /current checks.*delegate_feedback/);

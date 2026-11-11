@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { renameSync, symlinkSync } from 'node:fs';
 import { mkdtemp, readFile, writeFile, mkdir, rm, readdir, lstat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,8 @@ import { randomUUID } from 'node:crypto';
 import { prepare, prepareRevision, snapshot, save, json, digest, attemptDirectory, ENTRY } from '../core.mjs';
 import { scopeName } from '../containment.mjs';
 import { finalizationGate, finalizationAuthorization, finalizeTask } from '../finalize.mjs';
+import { disposalGate, disposalAuthorization, disposeTask, assertNoPayloadMounts } from '../dispose.mjs';
+import { inventory } from '../../../skills/delegate-cleanup/scripts/inventory.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 const who = { session: 'finalize-session', file: '/fixture/session.jsonl' };
@@ -51,6 +54,166 @@ async function fixture(fn) {
     await fn({ dir, repo, g, runtime, task, input, rows, feedback, contain, authorize, feedbackPath });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+
+async function disposable(f) {
+  f.runtime.disposalProtocol = 1;
+  const output = join(f.task.directory, 'build-output');
+  await mkdir(output); await mkdir(join(output, 'nested'));
+  await writeFile(join(output, 'nested', 'cache'), 'build cache');
+  const outside = join(f.dir, 'shared-sdk'); await mkdir(outside);
+  await writeFile(join(outside, 'protected'), 'never remove shared targets');
+  await symlink(outside, join(output, 'sdk'));
+  const receipt = await finalizeTask(f.task, f.input, f.runtime, f.rows, await f.authorize());
+  const task = { ...f.task, finalized: receipt };
+  const input = { task: task.id, expectedNonce: task.nonce, expectedFinalization: digest(JSON.stringify(receipt)), selections: ['build-output', 'recovery'] };
+  const context = { who, statuses: async () => f.rows };
+  const gate = await disposalGate(task, input, f.runtime, context);
+  return { task, input, context, gate, outside, output, authorization: disposalAuthorization(task, input, gate) };
+}
+
+test('mount inventory rejects same-device bind mounts, nested mounts and escaped mount paths without live mount mutation', () => {
+  const row = path => `42 1 8:1 / ${path} rw - ext4 /dev/fixture rw\n`;
+  for (const mount of ['/state/task/build-output', '/state/task/build-output/nested', '/state/task/finalization', '/state/task']) {
+    assert.throws(() => assertNoPayloadMounts('/state/task', ['/state/task/build-output', '/state/task/finalization/source.bundle'], row(mount)), /Mounted payload/);
+  }
+  assert.throws(() => assertNoPayloadMounts('/state/task name', ['/state/task name/build-output'], row('/state/task\\040name/build-output')), /Mounted payload/);
+  assertNoPayloadMounts('/state/task', ['/state/task/build-output'], row('/state') + row('/state/unrelated'));
+  assert.throws(() => assertNoPayloadMounts('/state/task', ['/state/task/build-output'], 'invalid'), /Invalid mount/);
+});
+
+test('inventory is read-only, reports worktree/branch allocation and never follows shared symlinks or declares disposable state', () => fixture(async f => {
+  const root = join(f.task.directory, 'build-output'), outside = join(f.dir, 'outside');
+  await mkdir(root); await mkdir(outside); await writeFile(join(outside, 'protected'), 'shared');
+  await symlink(outside, join(root, 'shared-sdk'));
+  await mkdir(join(f.task.directory, 'bazel-output'));
+  await writeFile(join(f.task.directory, 'bazel-output', 'legacy'), 'legacy cache');
+  const before = await readdir(f.task.directory), status = f.g('status', '--porcelain');
+  const report = await inventory(f.runtime), row = report.tasks[0];
+  assert.equal(row.task, f.task.id); assert.equal(row.classification, 'unassessed');
+  assert.equal(row.branchExists, true); assert.equal(row.branchRegistered, true); assert.equal(row.worktreeRegistered, true);
+  assert.ok(row.worktreeAllocatedBytes > 0); assert.ok(row.allocatedBytes.legacyBuild > 0);
+  assert.match(row.blockers.join(' '), /No live terminal/);
+  assert.deepEqual(await readdir(f.task.directory), before); assert.equal(f.g('status', '--porcelain'), status);
+  assert.equal(await readFile(join(outside, 'protected'), 'utf8'), 'shared');
+}));
+
+test('unsafe lifecycle symlinks, noncanonical parents and special payload files block disposal without deleting', async () => {
+  for (const mode of ['receipt-symlink', 'parent-symlink', 'fifo']) await fixture(async f => {
+    const d = await disposable(f);
+    if (mode === 'receipt-symlink') {
+      const path = join(f.task.directory, 'finalized.json');
+      await writeFile(join(f.dir, 'aliased-receipt'), await readFile(path), { mode: 0o600 });
+      await rm(path); await symlink(join(f.dir, 'aliased-receipt'), path);
+    }
+    if (mode === 'parent-symlink') {
+      const path = join(f.task.directory, 'finalization');
+      const { rename } = await import('node:fs/promises');
+      await rename(path, join(f.dir, 'archive')); await symlink(join(f.dir, 'archive'), path);
+    }
+    if (mode === 'fifo') execFileSync('/bin/sh', ['-c', 'mkfifo "$1"', 'fixture', join(d.output, 'fifo')]);
+    await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization));
+    assert.ok(await lstat(join(d.output, 'nested', 'cache')));
+    await assert.rejects(lstat(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+  });
+});
+
+test('an intermediate symlink replacement after claiming cannot redirect deletion outside the held output directory', () => fixture(async f => {
+  const d = await disposable(f); let calls = 0;
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization, () => {
+    if (++calls === 4) {
+      renameSync(join(d.output, 'nested'), join(d.output, 'nested-moved'));
+      symlinkSync(d.outside, join(d.output, 'nested'));
+    }
+  }), /Payload changed/);
+  assert.equal(await readFile(join(d.outside, 'protected'), 'utf8'), 'never remove shared targets');
+  assert.ok(await lstat(join(d.output, 'nested-moved', 'cache')));
+  assert.ok(await lstat(join(f.task.directory, 'disposal-claim.json')));
+  await assert.rejects(lstat(join(f.task.directory, 'disposed.json')), { code: 'ENOENT' });
+}));
+
+test('pre-existing interrupted archives are never overwritten or treated as permission to remove a worktree', () => fixture(async f => {
+  await mkdir(join(f.task.directory, 'finalization'));
+  await writeFile(join(f.task.directory, 'finalization', 'source.bundle'), 'interrupted recovery data');
+  await assert.rejects(f.authorize(), /Existing\/interrupted/);
+  assert.equal(await readFile(join(f.task.directory, 'finalization', 'source.bundle'), 'utf8'), 'interrupted recovery data');
+  assert.ok(await lstat(f.task.worktree));
+  assert.ok(!(await readdir(f.task.directory)).some(name => name.startsWith('revision-after-')));
+}));
+
+test('backend movement after finalization/disposal claims preserves payloads and permanent failure evidence', () => fixture(async f => {
+  const d = await disposable(f); let queries = 0;
+  d.context.statuses = async () => ++queries === 1 ? f.rows : [{ ...f.rows[0], phase: 'UNKNOWN' }];
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), /Uncertain/);
+  assert.ok(await lstat(d.output)); assert.ok(await lstat(join(f.task.directory, 'disposal-claim.json')));
+  await assert.rejects(lstat(join(f.task.directory, 'disposed.json')), { code: 'ENOENT' });
+}));
+
+test('permanent payload disposal makes no new archive, protects symlink targets and retains identity/audit data', () => fixture(async f => {
+  const d = await disposable(f);
+  const receipt = await disposeTask(d.task, d.input, f.runtime, d.context, d.authorization);
+  await assert.rejects(lstat(d.output), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(f.task.directory, 'finalization', 'source.bundle')), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(f.task.directory, 'finalization', 'local-files.json')), { code: 'ENOENT' });
+  assert.equal(await readFile(join(d.outside, 'protected'), 'utf8'), 'never remove shared targets');
+  for (const path of ['task.json', 'submission.json', 'containment.json', 'finalized.json', 'disposal-claim.json', 'disposed.json', 'finalization/intent.json', 'finalization/ready.json']) assert.ok(await lstat(join(f.task.directory, path)));
+  assert.ok(receipt.unlinkedAllocatedBytes > 0);
+  assert.match(receipt.accounting, /not a filesystem free-space guarantee/);
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), /already claimed/);
+}));
+
+test('disposal is selection-bound and requires explicit opt-in, custody, complete finalization and fresh terminal/stopped proof', async () => {
+  for (const mode of ['disabled', 'nonce', 'digest', 'owner', 'running', 'absent', 'stopped', 'worktree', 'ref', 'receipt', 'unknown-selection', 'authorization']) await fixture(async f => {
+    const d = await disposable(f);
+    if (mode === 'disabled') delete f.runtime.disposalProtocol;
+    if (mode === 'nonce') d.input.expectedNonce = 'other';
+    if (mode === 'digest') d.input.expectedFinalization = '0'.repeat(64);
+    if (mode === 'owner') d.context.who = { ...who, session: 'other' };
+    if (mode === 'running') d.context.statuses = async () => [{ ...f.rows[0], phase: 'RUNNING' }];
+    if (mode === 'absent') d.context.statuses = async () => [];
+    if (mode === 'stopped') d.context.stopped = async () => { throw new Error('uncertain descendants'); };
+    if (mode === 'worktree') await mkdir(f.task.worktree, { recursive: true });
+    if (mode === 'ref') f.g('branch', f.task.branch, f.task.base);
+    if (mode === 'receipt') await rm(join(f.task.directory, 'finalization', 'ready.json'));
+    if (mode === 'unknown-selection') d.input.selections = ['../shared-sdk'];
+    if (mode === 'authorization') d.authorization.selections = ['recovery'];
+    await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), undefined, mode);
+    assert.ok(await lstat(join(d.output, 'nested', 'cache')));
+    await assert.rejects(lstat(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+  });
+});
+
+test('selection excludes recovery; stale data and interrupted disposal never permit silent retries', () => fixture(async f => {
+  const d = await disposable(f);
+  await writeFile(join(d.output, 'nested', 'cache'), 'changed during confirmation');
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), /authorization/);
+  d.input.selections = ['build-output'];
+  const gate = await disposalGate(d.task, d.input, f.runtime, d.context);
+  let calls = 0;
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, disposalAuthorization(d.task, d.input, gate), () => {
+    if (++calls === 5) throw new Error('interrupted');
+  }), /interrupted/);
+  assert.ok(await lstat(join(f.task.directory, 'disposal-claim.json')));
+  assert.ok(await lstat(join(f.task.directory, 'finalization', 'source.bundle')));
+  await assert.rejects(lstat(join(f.task.directory, 'disposed.json')), { code: 'ENOENT' });
+  await assert.rejects(disposalGate(d.task, d.input, f.runtime, d.context), /already claimed/);
+}));
+
+test('concurrent disposals have one winner and symlink replacement cannot redirect removal', () => fixture(async f => {
+  const d = await disposable(f);
+  const results = await Promise.allSettled([disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), disposeTask(d.task, d.input, f.runtime, d.context, d.authorization)]);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(await readFile(join(d.outside, 'protected'), 'utf8'), 'never remove shared targets');
+}));
+
+test('build symlinks are unlinked, never traversed; changed parent links and same-task ref reuse block disposal', () => fixture(async f => {
+  const d = await disposable(f);
+  await rm(join(d.output, 'nested'), { recursive: true });
+  await symlink(d.outside, join(d.output, 'nested'));
+  await assert.rejects(disposeTask(d.task, d.input, f.runtime, d.context, d.authorization), /authorization/);
+  const gate = await disposalGate(d.task, d.input, f.runtime, d.context);
+  await disposeTask(d.task, d.input, f.runtime, d.context, disposalAuthorization(d.task, d.input, gate));
+  assert.ok(await lstat(join(d.outside, 'protected')));
+}));
 
 test('finalization archives inherited baseline, binary/untracked/ignored files and symlinks; keeps evidence and parent untouched', () => fixture(async f => {
   await mkdir(join(f.task.directory, 'build-output')); await writeFile(join(f.task.directory, 'build-output', 'cache'), 'retained');
@@ -198,15 +361,45 @@ async function host(f, confirm = async () => true) {
   await writeFile(path, JSON.stringify(f.runtime)); process.env.PI_DELEGATE_RUNTIME = path;
   return { ctx, entries, calls, rows: value => { rows = value; },
     invoke: signal => tools.get('delegate_finalize').execute('finalize', f.input, signal, undefined, ctx),
+    dispose: (input, signal) => tools.get('delegate_dispose').execute('dispose', input, signal, undefined, ctx),
     close: () => { if (old === undefined) delete process.env.PI_DELEGATE_RUNTIME; else process.env.PI_DELEGATE_RUNTIME = old; } };
 }
+
+test('disposal tool assesses without confirmation and denies no-UI/denied/aborted/stale/session changes', async () => {
+  for (const mode of ['assess', 'success', 'denied', 'no-ui', 'aborted', 'source', 'status', 'session']) await fixture(async f => {
+    const d = await disposable(f), controller = new AbortController(); let h;
+    h = await host(f, async () => {
+      if (mode === 'source') await writeFile(join(d.output, 'nested', 'cache'), 'changed');
+      if (mode === 'status') h.rows([{ nonce: f.task.nonce, phase: 'RUNNING' }]);
+      if (mode === 'session') h.entries.length = 0;
+      if (mode === 'aborted') controller.abort();
+      return mode !== 'denied';
+    });
+    if (mode === 'no-ui') h.ctx.hasUI = false;
+    try {
+      if (mode === 'assess') {
+        const result = JSON.parse((await h.dispose({ task: f.task.id, expectedNonce: f.task.nonce })).content[0].text);
+        assert.equal(result.expectedFinalization, d.input.expectedFinalization);
+        assert.ok(!h.calls.includes('confirm'));
+        assert.ok(await lstat(d.output));
+      } else if (mode === 'success') {
+        const result = JSON.parse((await h.dispose(d.input)).content[0].text);
+        assert.ok(result.entriesRemoved > 0); assert.ok(h.calls.includes('confirm'));
+      } else {
+        await assert.rejects(h.dispose(d.input, controller.signal));
+        assert.ok(await lstat(d.output));
+        await assert.rejects(lstat(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+      }
+    } finally { h.close(); }
+  });
+});
 
 test('tool requires fresh UI approval, rechecks backend and records finalization on the active session branch', () => fixture(async f => {
   const h = await host(f);
   try {
     const result = JSON.parse((await h.invoke()).content[0].text);
     assert.equal(result.finalized, true);
-    assert.deepEqual(h.calls, ['pueue_status', 'confirm', 'pueue_status']);
+    assert.deepEqual(h.calls, ['pueue_status', 'confirm', 'pueue_status', 'pueue_status']);
     assert.equal(h.entries.at(-1).data.finalized.task, f.task.id);
   } finally { h.close(); }
 }));

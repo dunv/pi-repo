@@ -157,6 +157,10 @@ Pi-only levels such as `off` are rejected, not silently converted.
 - `delegate_finalize {task, expectedNonce, expectedFingerprint, disposition: "integrated"|"discarded"}`
   explicitly archives and removes a reviewed task's worktree and branch after fresh
   interactive confirmation. See [Explicit finalization](#explicit-finalization).
+- `delegate_dispose {task, expectedNonce, expectedFinalization?, selections?}` assesses
+  finalized payloads read-only, or permanently removes explicitly selected per-task
+  build outputs/recovery payloads after separate fresh interactive confirmation.
+  See [Permanent payload disposal](#permanent-payload-disposal). This is not a task-root purge.
 - `delegate_feedback {task, expectedNonce, reviewStatus, usefulness, correctness,
   instructionFollowing, reviewEffort, wouldDelegateAgain, rationale, problems,
   improvements, evidence, reviewedFingerprint?, supersedes?}` records the **calling
@@ -333,11 +337,13 @@ fenced by the shared claim; updated tools reject stale custody. Cooperating clie
 must use the updated extension; this is not an OS sandbox against same-user code,
 manual source edits or tampering with all private evidence files.
 
-A reconciled task permits foreground review/editing and diagnostic feedback only.
-`delegate_revise`, `delegate_resume` and `delegate_finalize` stay disabled for it;
-no new worker is automatically started and no evidence/worktree is removed.
-Continuation, integration/publication, provider actions and cleanup retain their
-separate approvals. Revision chains, missing trustworthy terminal records, repeated
+A reconciliation grant itself permits foreground review/editing and diagnostic
+feedback only. `delegate_revise` and `delegate_resume` stay disabled. Updated
+`delegate_finalize` can separately confirm finalization of a reconciled original
+attempt, retaining archived provenance and fresh stopped/backend checks. It preserves
+(rather than clears/replaces) the custody claim and takes a second exclusive
+finalization claim. No worker is restarted. Continuation, integration/publication,
+provider actions and cleanup retain their separate approvals. Revision chains, missing trustworthy terminal records, repeated
 transfers and pending reconciliation need separate operator investigation, not a
 new key/task/claim to bypass a barrier. Keep retained artifacts available.
 
@@ -423,7 +429,12 @@ and `containmentProtocol: 1` in the runtime; restart Pi after deployment.
 Every call requires the latest task nonce and current reviewed fingerprint on the
 owning session branch. All retained attempts, including earlier revisions, must
 have authoritative terminal Pueue status and independent current-boot cgroup-v2
-proof that their worker and descendants stopped. Absent/UNKNOWN/active jobs,
+proof that their worker and descendants stopped. A reconciled original instead
+uses its bound original private terminal review, unchanged result/containment
+identity and current custody receipt, with a fresh complete backend observation
+that must remain absent or agree exactly. Its status stays `RECONCILED_EXITED`,
+`backendAuthority: false`; absence alone is never terminal evidence. This path
+supports original attempts only, not revision-chain reconciliation. Absent/UNKNOWN/active jobs,
 unresolved preparations, missing/legacy containment, rebooted/replaced scopes,
 changed branch/HEAD/index and stale source fail closed. Legacy tasks need manual
 reconciliation, not manufactured evidence or a force option.
@@ -456,8 +467,12 @@ file entries (base64 bytes + mode, symlink target, or deletion marker). The `pat
 field is also available as a standard binary Git patch. No automatic restore or
 cleanup of recovery evidence is performed.
 
-Finalization competes with revise/resume for the same exclusive permanent
-per-parent continuation claim. After archiving and another fingerprint/containment
+Ordinary finalization competes with revise/resume for the same exclusive permanent
+per-parent continuation claim. Reconciled originals already own that immutable
+claim: finalization preserves it and exclusively creates
+`finalization-after-<nonce-hash>.json`. That second claim fences further foreground
+use, competing cleanup and reattachment. No claim is cleared or overwritten.
+Lifecycle claims/receipts are fsynced along with their parent directories. After archiving and another fingerprint/containment
 check, Git removes only that worktree, then compare-and-deletes only its unchanged
 branch. Git's locked-worktree protection remains enabled. A `finalized.json`
 receipt and session entry are written only after both removals succeed; task lists
@@ -467,6 +482,74 @@ The tool is not a filesystem transaction or an OS sandbox against concurrent
 same-user changes. Do not run foreground edits/builds in the task checkout while
 finalizing. Preserve the original configured runtime and backend evidence until
 finalization; clearing Pueue history first can block safe disposal.
+
+## Permanent payload disposal
+
+`discarded` above means unwanted work, **not permanent deletion**. Finalization
+retains recovery data and build outputs indefinitely. Git integration and local
+data disposal are separate decisions. After routine review/integration/discard,
+finalize explicitly rather than leaving obsolete worktrees, then separately decide
+which finalized payloads may be permanently lost. There is no automatic purge.
+
+Enable `disposalProtocol: 1` alongside scoped finalization only after reviewing and
+separately deploying this source. Loading a skill or this checkout does not update
+an installed extension/runtime. See the packaged
+[cleanup skill](../../skills/delegate-cleanup/SKILL.md) for the agent workflow and
+read-only inventory script (including fish-compatible usage). Package installs
+expose it through `pi.skills`; extension-directory-only deployments must also
+explicitly provision the skill directory if it should be discoverable.
+
+1. `delegate_dispose {task, expectedNonce}` assesses a **successfully finalized**
+   owned task read-only, returning its `expectedFinalization` receipt digest and
+   allocation estimate. This does not grant disposal permission. Missing records
+   are not recreated during assessment.
+2. After explicit approval of exact candidates/disposition, supply that digest and
+   `selections: ["build-output"]`, `["recovery"]`, or both. Select the complete
+   intended set together: this version permits one disposal claim per task, not
+   successive sweeps. A fresh interactive dialog names the directory/groups and
+   warns about irreversible loss; denial/no UI admits nothing.
+3. The gate requires unchanged manifest/claim/finalization intent/ready/receipt,
+   owning session/custodian, absent worktree and delegate ref, and fresh terminal
+   evidence plus independent same-boot stopped proof for **every** attempt.
+   Reconciled originals revalidate their private originating terminal record and
+   retain archived provenance. Live, unknown, rebooted, conflicting or incomplete
+   evidence blocks. A new session cannot adopt already-finalized historical tasks
+   via original-attempt reconciliation; use the owning session or investigate.
+4. The tool inventories the exact selected payload metadata, ownership, inode,
+   device, mode, size, link count and timestamps without copying build contents.
+   Confirmation binds that inventory. A durable exclusive `disposal-claim.json`
+   fences concurrent disposals; backend/containment/inventory are checked again
+   after claiming. Unsafe metadata symlinks, foreign-owned entries, mount crossings,
+   unsupported file types and inventories above 250,000 entries or 64 MiB block disposal.
+5. Only `<task>/build-output/` and/or `finalization/source.bundle` plus
+   `finalization/local-files.json` are removed. Symlinks themselves can be
+   unlinked, never their targets. Linux held-directory-descriptor traversal
+   prevents intermediate symlink replacement from redirecting deletion. Shared
+   SDKs/caches outside those payloads are untouched. No new archive is created.
+6. A durable `disposed.json` is written only after completion. Interrupted/partial
+   disposal retains its claim and path/identity inventory for manual investigation;
+   there is no forced retry, claim release or automatic recovery. Filesystem
+   operations are not transactional or a sandbox against arbitrary same-user
+   changes. Confirm all foreground users and external build servers are idle;
+   worker cgroup proof alone does not fence them.
+
+At minimum, task/attempt/submission identities, permanent claims, reconciliation
+provenance, results/containment, finalization intent/ready/receipt, disposal
+intent/receipt and review/check evidence remain. This version additionally keeps
+briefs, reports, feedback, logs and session artifacts: **no log/session purge or
+retention deadline** is implemented. Originating sessions, real-mail plans/sets
+and Trash journals must be preserved. Inspect candidate payloads for protected
+operational state; if present, stop rather than treating it as disposable cache.
+In particular, Mailhub unknown-outcome barriers and metadata-only investigation
+requirements are unchanged; no provider action or journal removal is authorized.
+
+`unlinkedAllocatedBytes` excludes multiply-linked files and counts observed
+unlinked allocations, not guaranteed reclaimed free space. Open handles, shared
+blocks/snapshots and concurrent changes can retain storage. Report actual removed
+paths/groups and remaining blockers, and compare before/after allocation/free
+space honestly; archiving is retention, not space reclamation. The inventory
+script labels every task unassessed: age, a merged branch, receipts or historical
+exit files alone are not a deletion manifest.
 
 ## Caller feedback
 
@@ -801,3 +884,8 @@ staging, inherited additions, deletions/renames, binary/unusual filenames,
 symlinks/executable modes, ignored caches, split indexes/linked sources, source
 movement, fail-closed unsupported states, worker-only review and source drift. Linux with Git, Bash and
 `flock` is required for these tests, matching the current runtime scope.
+Finalization/disposal fixtures additionally cover archived reconciled provenance,
+second-claim fencing, irreversible selections, mount-inventory/bind-mount rejection,
+held-directory symlink replacement, interrupted archives/deletions, concurrent
+claims, UI denial/abort/navigation and read-only ownership/allocation inventory.
+They do not mutate real task data, mount tables, providers or daemon history.

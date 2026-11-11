@@ -9,9 +9,10 @@ import { matching, view } from "../pueue/state.ts";
 import { assessReconciliation, transferReconciliation, reconciliationSummary, reconciliationAuthorization, assertCustody, reconciledStatus } from "./reconcile.mjs";
 import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
+import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
-import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
+import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, lifecycleJSON, digest, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
 
 const response = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], details: undefined });
 function renderSubmission(result: { content: Array<{ type: string; text?: string }> }, expanded: boolean, partial: boolean, theme: Theme) {
@@ -66,7 +67,7 @@ export default function (pi: ExtensionAPI) {
   };
   const authority = async (task: any, ctx: ExtensionContext, foreground = false) => {
     await assertCustody(task, owner(ctx));
-    if (task.reconciliationId && !foreground) throw new Error("Reconciled custody permits foreground review/editing only; worker revision/recovery and finalization remain disabled");
+    if (task.reconciliationId && !foreground) throw new Error("Reconciled custody permits foreground review/editing only; worker revision/recovery remain disabled; cleanup requires its own confirmed lifecycle operation");
   };
   async function submit(task: any, runtime: any, runtimePath: string, start: number, signal: AbortSignal | undefined, ctx: ExtensionToolContext) {
     guard(start);
@@ -272,7 +273,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "delegate_finalize", label: "Finalize delegate task", exposure: "model-only", executionMode: "sequential",
     reachesTools: () => ["pueue_status"],
-    description: "After review/feedback and authorized integration/discard, archive source/local files and remove the owned worktree/branch. Requires reviewed fingerprint, terminal status and independent stopped proof for EVERY attempt, plus fresh interactive user confirmation. Uncertainty/stale state blocks removal; partial failures require manual reconciliation, never retry. No automatic cleanup, integration or publication. Evidence stays; integration is caller-declared.",
+    description: "After review/feedback and authorized integration/discard, archive source/local files and remove the owned worktree/branch. Reconciled original attempts use bound archived terminal evidence, never invented backend status. Requires current reviewed fingerprint, terminal evidence and fresh independent stopped proof for EVERY attempt, plus fresh interactive user confirmation. Archives/build state remain; discarded does not mean permanent deletion. Use separately confirmed delegate_dispose for selected finalized payloads. Uncertainty/partial failures block retries. No automatic cleanup, integration or publication.",
     parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1, maxLength: 200 }),
       expectedFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
       disposition: Type.Union([Type.Literal("integrated"), Type.Literal("discarded")]) }),
@@ -281,7 +282,7 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
-      await authority(task, ctx);
+      await authority(task, ctx, true);
       const check = () => {
         guard(start);
         if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Finalization canceled or latest attempt changed");
@@ -289,11 +290,13 @@ export default function (pi: ExtensionAPI) {
       check();
       if (!ctx.hasUI) throw new Error("Finalization requires fresh interactive user authorization");
       const statuses = async () => {
+        if (task.reconciliationId) return []; // finalizationGate verifies archived evidence itself.
         const attempts = await finalizationAttempts(task, runtime), rows = [];
         for (const attempt of attempts) rows.push(...nested(await ctx.executeTool("pueue_status", { nonce: attempt.nonce }, { signal })));
         return rows;
       };
-      const gate = await finalizationGate(task, input, runtime, await statuses());
+      const context = { who: owner(ctx), observe: observeReconciliation, statuses };
+      const gate = await finalizationGate(task, input, runtime, await statuses(), undefined, undefined, context);
       check();
       const approved = await ctx.ui.confirm("Archive and remove this delegate worktree/branch?", [
         `Task: ${task.id}`, `Disposition: ${input.disposition} (caller declaration, not automatic merge verification)`,
@@ -304,9 +307,54 @@ export default function (pi: ExtensionAPI) {
       if (!approved) throw new Error("Finalization not authorized; nothing removed");
       check();
       const authorization = finalizationAuthorization(task, input, gate);
-      const receipt = await finalizeTask(task, input, runtime, await statuses(), authorization, check);
+      const receipt = await finalizeTask(task, input, runtime, await statuses(), authorization, check, undefined, context);
       pi.appendEntry(ENTRY, { ...task, finalized: receipt });
-      return response({ finalized: true, ...receipt });
+      return response({ finalized: true, ...receipt, expectedFinalization: digest(JSON.stringify(receipt)),
+        next: "Recovery data and build outputs remain. Only after separate disposal approval use delegate_dispose with explicit selections; never delete the task directory." });
+    },
+  });
+  pi.registerTool({
+    name: "delegate_dispose", label: "Permanently dispose finalized payloads", exposure: "model-only", executionMode: "sequential",
+    reachesTools: () => ["pueue_status"],
+    description: "Permanently delete explicitly selected build-output and/or recovery payloads from a successfully finalized owned task. Task/nonce alone assesses read-only; supply expectedFinalization and selections to request fresh interactive confirmation. Recovery deletion is irreversible; logs, sessions, identity, claims and audit evidence remain. Requires fresh terminal/stopped evidence for every attempt; reconciled originals retain archived provenance. No task-root purge, symlink target deletion, retry of partial disposal, backend reset or provider action. One disposal claim per task: select the complete intended payload set together. Preserve real-mail plans/sets and Trash journals.",
+    parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1, maxLength: 200 }),
+      expectedFinalization: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      selections: Type.Optional(Type.Array(Type.Union([Type.Literal("build-output"), Type.Literal("recovery")]), { minItems: 1, maxItems: 2 })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, task = owned(ctx, input.task), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      if (input.expectedNonce !== task.nonce) throw new Error("Latest nonce required");
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owned(ctx, input.task).nonce !== task.nonce) throw new Error("Disposal canceled or session changed");
+      };
+      const receipt = await lifecycleJSON(join(task.directory, "finalized.json"));
+      const expectedFinalization = digest(JSON.stringify(receipt));
+      const context = { who: owner(ctx), observe: observeReconciliation, statuses: async () => {
+        const rows = [];
+        for (const attempt of await finalizationAttempts(task, runtime)) rows.push(...nested(await ctx.executeTool("pueue_status", { nonce: attempt.nonce }, { signal })));
+        return rows;
+      } };
+      const committing = input.expectedFinalization !== undefined || input.selections !== undefined;
+      if (committing && (!input.expectedFinalization || !input.selections)) throw new Error("Supply finalization digest and explicit selections together");
+      const request = { ...input, expectedFinalization: input.expectedFinalization ?? expectedFinalization,
+        selections: input.selections ?? ["build-output", "recovery"] };
+      const gate = await disposalGate(task, request, runtime, context);
+      check();
+      if (!committing) return response({ task: task.id, expectedNonce: task.nonce, expectedFinalization,
+        entries: gate.files.length, allocatedBytes: gate.allocatedBytes, availableSelections: ["build-output", "recovery"],
+        instruction: "Assessment only, not deletion approval. Select all intended payload groups together for a separately confirmed one-shot operation. Logs/sessions/audit data remain; archived recovery can be permanently lost." });
+      if (!ctx.hasUI) throw new Error("Permanent disposal requires fresh interactive confirmation");
+      const approved = await ctx.ui.confirm("Permanently delete selected delegate payloads?", [
+        `Task: ${task.id}`, `Directory: ${task.directory}`, `Selections: ${request.selections.join(", ")}`,
+        `Finalization: ${expectedFinalization}`, `Entries: ${gate.files.length} · allocated bytes observed: ${gate.allocatedBytes}`,
+        "Confirm all originating/foreground users and build servers are idle. Worker containment does not fence arbitrary foreground activity.",
+        "No new archive is made. Selecting recovery permanently removes the Git bundle and local-files archive. Shared symlink targets, originating sessions, logs and audit evidence stay.",
+        "If a selected payload contains real-mail plans/sets or Trash journals, stop and preserve that operational evidence; this grants no provider action or unknown-outcome override.",
+        "This is one-shot; interruption/partial failure remains blocked for manual investigation, never an automatic retry.",
+      ].join("\n"));
+      if (!approved) throw new Error("Permanent disposal not authorized");
+      check();
+      return response(await disposeTask(task, request, runtime, context, disposalAuthorization(task, request, gate), check));
     },
   });
   pi.registerTool({

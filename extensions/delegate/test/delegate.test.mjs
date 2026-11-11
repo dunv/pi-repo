@@ -521,7 +521,7 @@ test('real Pi loader: nested Pueue workflow, main-agent review, visible submissi
   const loaded = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], process.cwd());
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
-  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task']);
+  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task']);
   for (const name of ['delegate_models', 'delegate_task', 'delegate_revise'])
     assert.match(tools.find(t => t.name === name).description, /Reserve GMKtec models for simple, well-specified mechanical work/);
   assert.match(tools.find(t => t.name === 'delegate_task').description, /3 cumulative unavailable-tool calls/);

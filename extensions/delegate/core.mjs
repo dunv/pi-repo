@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { timestampLines } from './logging.mjs';
 import { parsePiModelPolicy, assertPiModelAllowed } from './model-policy.mjs';
@@ -13,6 +14,24 @@ export const ENTRY = 'pi.delegate.task.v1';
 export const digest = data => createHash('sha256').update(data).digest('hex');
 export const json = async path => JSON.parse(await readFile(path, 'utf8'));
 export const save = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+export async function lifecycleJSON(path) {
+  const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await fd.stat();
+    if (!before.isFile() || before.uid !== process.getuid() || before.mode & 0o077 || before.size > 128 * 1024 * 1024) throw new Error('Unsafe/oversized private lifecycle record');
+    const buffer = Buffer.alloc(before.size + 1), { bytesRead } = await fd.read(buffer, 0, buffer.length, 0);
+    const after = await fd.stat();
+    if (bytesRead !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('Lifecycle record changed during read');
+    return JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
+  } finally { await fd.close(); }
+}
+// Permanent lifecycle claims/receipts must survive a lost reply or crash.
+export async function durableSave(path, value) {
+  const fd = await open(path, 'wx', 0o600);
+  try { await fd.writeFile(JSON.stringify(value, null, 2) + '\n'); await fd.sync(); } finally { await fd.close(); }
+  const parent = await open(dirname(path), 'r');
+  try { await parent.sync(); } finally { await parent.close(); }
+}
 export const envFor = runtime => ({ HOME: runtime.home, PATH: runtime.path, LANG: 'C.UTF-8',
   GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_SSH_COMMAND: runtime.ssh, GIT_SSH_VARIANT: 'ssh' });
 export async function git(runtime, cwd, args, extraEnv = {}) {
@@ -36,6 +55,7 @@ export async function runtimeFrom(path) {
   if (runtime.claude !== undefined && (typeof runtime.claude !== 'string' || !isAbsolute(runtime.claude))) throw new Error('Invalid delegate runtime: claude');
   if (runtime.containmentProtocol !== undefined && (runtime.containmentProtocol !== 1
     || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
+  if (runtime.disposalProtocol !== undefined && runtime.disposalProtocol !== 1) throw new Error('Invalid delegate disposal runtime');
   if (runtime.reconciliationProtocol !== undefined && runtime.reconciliationProtocol !== 1) throw new Error('Invalid delegate reconciliation runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;
