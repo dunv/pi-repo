@@ -88,8 +88,59 @@ confirm cleanup of that reconciled original; it preserves the reconciliation
 claim and acquires a second exclusive finalization claim. Its terminal evidence
 stays `RECONCILED_EXITED` with `backendAuthority: false`. It never fabricates a live
 Pueue record. Revision/recovery remain disabled. Finalized historical tasks cannot
-be adopted into a new session through the original-attempt reconciliation tool;
-use their owning session, or report the unsupported case rather than bypass it.
+be adopted into a new session through the original-attempt reconciliation tool.
+The separately enabled cleanup-only path below grants no custody and has its own
+repository/evidence gates; otherwise use the owning session or report the blocker.
+
+## Historical cleanup without custody transfer
+
+When installed and explicitly enabled with `cleanupProtocol: 1`,
+`delegate_cleanup` supports original scoped attempts across sessions and after a
+linked source checkout was removed. This is **not** onward foreground custody,
+worker recovery, an ownership reset, or permission to dispose of a task.
+
+1. Provide the exact task UUID, `repository` (the existing canonical **main**
+   checkout, never inferred from cwd), and `action: "finalize"` with an explicit
+   `disposition`, or `action: "dispose"` with the intended payload `selections`.
+   Omit all `expected*` fields for read-only assessment. Before finalization,
+   independently inspect the retained draft and existing review/feedback. A
+   corrected parent merge does not make an unchanged defective draft integrated.
+2. Review the returned repository identity, task, archive/payload scope and expected
+   fields. Reassess with different selections if necessary: the assessment binds
+   the **exact** operation and receiving session. No custody reference is appended
+   to that session. Ordinary review/feedback can still require the prior owner;
+   cleanup does not grant edit/check/retry authority or waive missing feedback.
+3. Only after explicit approval, supply `expectedNonce`, `expectedEvidence` and
+   `expectedFingerprint` (finalize) or `expectedFinalization` (dispose), retaining
+   the exact disposition/selections. Each actual operation requires its own fresh
+   interactive confirmation, including confirmation that originating/custodian
+   sessions and foreground/external build users are idle. Finalization preserves
+   recovery/build data; disposal is separately assessed and confirmed.
+
+The main checkout and retained worker must resolve to the **same local Git common
+directory**, with canonical user-owned paths and recorded device/inode identities.
+A clone, origin URL, matching commit or bundle is not repository identity. New
+finalizations durably bind the main checkout/common-directory identity into their
+authorization, ready record and receipt so later disposal need not depend on the
+removed linked source path. Historical finalized archives **without this binding
+stay blocked**; do not recreate source paths, rewrite receipts or substitute a
+matching clone to make them eligible.
+
+Every cleanup gate revalidates the original private terminal tool record, exact
+backend admission identity, unchanged result/reconciliation provenance and fresh
+same-boot stopped proof. Status remains archived (`RECONCILED_EXITED`,
+`backendAuthority: false`, `authority: "cleanup-only"`), never invented Pueue
+ownership. Revisions, pending/interrupted claims, changed boots, missing records
+and contradictory backend observations remain blockers. Existing permanent
+continuation/reconciliation/finalization/disposal claims are preserved. No claim
+is cleared and no new worker or generic transfer is enabled. Existing destructive
+operations retain their exclusive claims, bounded archives and path/symlink/mount
+checks. Denial creates no lifecycle records; interrupted claimed operations remain
+blocked rather than permitting a second cleanup attempt.
+
+This feature needs separate reviewed deployment/runtime enablement and a fresh Pi
+session; changing source or reading this skill does not enable it. It does not
+retroactively make legacy archives safe or authorize any real-mail/provider action.
 
 ## Protected records and truthful retention
 

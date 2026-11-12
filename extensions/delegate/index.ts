@@ -10,6 +10,7 @@ import { assessReconciliation, transferReconciliation, reconciliationSummary, re
 import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
+import { assessCleanup, cleanupEvidence } from "./cleanup.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
 import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, lifecycleJSON, digest, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
@@ -88,6 +89,73 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
+  pi.registerTool({
+    name: "delegate_cleanup", label: "Assess or confirm historical delegate cleanup", exposure: "model-only", executionMode: "sequential",
+    description: "Original scoped-task cleanup across sessions/missing source checkouts; no custody transfer or workers. Requires opt-in runtime, bound original terminal review, local Git identity and fresh stopped/backend proof. No expected fields: read-only assessment. Returned expected fields request fresh interactive confirmation of finalize or separately selected disposal. Revisions, legacy archives lacking identity, partial claims and uncertainty stay blocked; no retry or claim clearing. Preserve sessions/audit records and real-mail plans/Trash journals.",
+    parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }), repository: Type.String({ description: "Absolute canonical main checkout; never inferred from cwd" }),
+      action: Type.Union([Type.Literal("finalize"), Type.Literal("dispose")]),
+      disposition: Type.Optional(Type.Union([Type.Literal("integrated"), Type.Literal("discarded")])),
+      selections: Type.Optional(Type.Array(Type.Union([Type.Literal("build-output"), Type.Literal("recovery")]), { minItems: 1, maxItems: 2 })),
+      expectedNonce: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+      expectedEvidence: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      expectedFingerprint: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      expectedFinalization: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, who = owner(ctx), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owner(ctx).session !== who.session || owner(ctx).file !== who.file) throw new Error("Cleanup canceled or session changed");
+      };
+      check();
+      if (input.action === "finalize" ? (!input.disposition || input.selections !== undefined || input.expectedFinalization !== undefined)
+        : (input.disposition !== undefined || input.expectedFingerprint !== undefined)) throw new Error("Use an explicit finalization disposition, or disposal selections; do not mix operations");
+      const committing = [input.expectedNonce, input.expectedEvidence, input.expectedFingerprint, input.expectedFinalization].some(v => v !== undefined);
+      if (committing && (!input.expectedNonce || !input.expectedEvidence || (input.action === "finalize"
+        ? !input.expectedFingerprint : !input.expectedFinalization || !input.selections))) throw new Error("Supply all expected fields and the exact operation from a fresh cleanup assessment");
+      const assessed = await assessCleanup(runtime, input, observeReconciliation), task = assessed.task;
+      const context = { cleanupCaller: { session: who.session, file: who.file }, cleanupVerify: (current: any, claim?: string, disposal?: string) => cleanupEvidence(current, input, runtime, observeReconciliation, claim, disposal) };
+      let request: any, gate: any;
+      if (input.action === "finalize") {
+        request = { task: task.id, expectedNonce: input.expectedNonce ?? task.nonce,
+          expectedFingerprint: input.expectedFingerprint ?? assessed.fingerprint, disposition: input.disposition };
+        gate = await finalizationGate(task, request, runtime, [], undefined, undefined, context);
+      } else {
+        request = { task: task.id, expectedNonce: input.expectedNonce ?? task.nonce,
+          expectedFinalization: input.expectedFinalization ?? digest(JSON.stringify(task.finalized)), selections: input.selections ?? ["build-output", "recovery"] };
+        gate = await disposalGate(task, request, runtime, context);
+      }
+      const expectedEvidence = digest(JSON.stringify([who.session, who.file, input.action, request,
+        gate.repository, gate.cleanupEvidence, gate.archiveFingerprint ?? gate.inventory]));
+      check();
+      if (!committing) return response({ task: task.id, action: input.action, repository: gate.repository,
+        expectedNonce: task.nonce, expectedEvidence,
+        ...(input.action === "finalize" ? { expectedFingerprint: assessed.fingerprint, disposition: request.disposition,
+          worktree: task.worktree, localFiles: gate.local.files.length, localBytes: gate.local.bytes }
+          : { expectedFinalization: request.expectedFinalization, selections: request.selections, entries: gate.files.length, allocatedBytes: gate.allocatedBytes }),
+        authority: "cleanup-only", backendAuthority: false,
+        instruction: "Assessment only. Review this exact task and payload scope, then supply all returned expected fields for separate fresh confirmation. No custody transfer, worker start or deletion is authorized by assessment. Legacy identity/uncertainty barriers remain." });
+      if (input.expectedEvidence !== expectedEvidence) throw new Error("Cleanup assessment changed; inspect again before confirmation");
+      if (!ctx.hasUI) throw new Error("Cleanup requires fresh interactive confirmation");
+      const approved = await ctx.ui.confirm(input.action === "finalize" ? "Archive and remove this historical delegate?" : "Permanently delete selected historical delegate payloads?", [
+        `Task: ${task.id}`, `Original source: ${task.repo}`, `Verified main repository: ${gate.repository.main}`,
+        `Git directory: ${gate.repository.common}`, `Original nonce: ${task.nonce}`, `Evidence: ${expectedEvidence}`,
+        ...(input.action === "finalize" ? [`Disposition: ${request.disposition} (not automatic integration proof)`, `Worktree: ${task.worktree}`, `Branch: ${task.branch}`,
+          `Fingerprint: ${request.expectedFingerprint}`, `Archive: ${gate.local.files.length} local/ignored files (${gate.local.bytes} bytes), plus Git bundle. Build outputs, recovery, logs and audit records remain.`]
+          : [`Selections: ${request.selections.join(", ")}`, `Finalization: ${request.expectedFinalization}`, `Entries: ${gate.files.length}; allocated bytes: ${gate.allocatedBytes}`,
+            "No replacement archive. Recovery selection irreversibly removes the Git bundle and local-files archive; allocation is not guaranteed reclaimed free space."]),
+        "Confirm all originating/custodian/foreground sessions and external build servers are idle. Worker containment does not fence arbitrary foreground activity.",
+        "Preserve real-mail plans/sets and Trash journals. Stop if selected payloads contain operational evidence; no provider action or unknown-outcome override is authorized.",
+        "Cleanup only: no foreground custody transfer, worker restart, publication, claim clearing or automatic retry. Interrupted operations stay blocked; sessions and audit records remain.",
+      ].join("\n"));
+      if (!approved) throw new Error("Historical cleanup not authorized");
+      check();
+      const result = input.action === "finalize"
+        ? await finalizeTask(task, request, runtime, [], finalizationAuthorization(task, request, gate), check, undefined, context)
+        : await disposeTask(task, request, runtime, context, disposalAuthorization(task, request, gate), check);
+      return response({ action: input.action, authority: "cleanup-only", backendAuthority: false, ...result,
+        next: "No custody was transferred. Assess again for any separately authorized next lifecycle operation; never retry an interrupted claim or delete a task directory." });
+    },
+  });
   pi.registerTool({
     name: "delegate_reconcile", label: "Reconcile retained delegate custody", exposure: "model-only", executionMode: "sequential",
     description: "Assess a retained original attempt across sessions using its private originating terminal tool record, exact admission identity and independent stopped cgroup proof. Task alone is read-only. With all expected fields, requires fresh interactive user confirmation to transfer foreground-only custody. No invented Pueue status, retry, worker start, integration, publication or cleanup. Revisions, conflicting evidence and pending claims fail closed. Review all changes/checks afterward; archived exit is not acceptance.",

@@ -18,13 +18,14 @@ import { finalizationGate, finalizationAuthorization, finalizeTask } from '../fi
 import { disposalGate, disposalAuthorization, disposeTask } from '../dispose.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-async function fixture(fn) {
-  const dir = await mkdtemp(join(tmpdir(), 'delegate-reconcile-')), repo = join(dir, 'repo');
+async function fixture(fn, { linked = false } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'delegate-reconcile-')), repo = join(dir, 'repo'), main = linked ? join(dir, 'main') : repo;
   try {
-    execFileSync(git, ['init', '-q', repo]);
-    await writeFile(join(repo, 'source.txt'), 'original\n');
-    execFileSync(git, ['-C', repo, 'add', '.']);
-    execFileSync(git, ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '-qm', 'initial']);
+    execFileSync(git, ['init', '-q', main]);
+    await writeFile(join(main, 'source.txt'), 'original\n');
+    execFileSync(git, ['-C', main, 'add', '.']);
+    execFileSync(git, ['-C', main, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '-qm', 'initial']);
+    if (linked) execFileSync(git, ['-C', main, 'worktree', 'add', '-qb', 'source', repo]);
     const runtime = { git, node: process.execPath, pi: '/fixture/pi', flock: '/fixture/flock', ssh: '/fixture/ssh', home: dir,
       state: join(dir, 'state'), launcher: '/fixture/launcher', path: process.env.PATH, revisionProtocol: 1,
       containmentProtocol: 1, reconciliationProtocol: 1, systemdRun: '/fixture/systemd-run', profiles: { fixture: { command: '/fixture/check', args: ['{targets}'] } } };
@@ -61,7 +62,7 @@ async function fixture(fn) {
       return transferReconciliation(runtime, request, to, observe, reconciliationAuthorization(request, to));
     };
     const awaitInput = Symbol('assess');
-    await fn({ dir, repo, runtime, from, to, task, worker, job, status, entries, call, result, append, persist, observe, assess, input, transfer });
+    await fn({ dir, repo, main, runtime, from, to, task, worker, job, status, entries, call, result, append, persist, observe, assess, input, transfer });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -375,6 +376,189 @@ test('no UI, denied approval, abort, namespace mismatch and changed-during-dialo
       await assert.rejects(h.invoke('delegate_reconcile', input, controller.signal));
       assert.equal(h.entries.length, 0);
       assert.ok(!(await readdir(f.task.directory)).some(name => name.startsWith('revision-after-')));
+    } finally { h.close(); }
+  });
+});
+
+function enableCleanup(f) {
+  Object.assign(f.runtime, { cleanupProtocol: 1, finalizationProtocol: 1, disposalProtocol: 1 });
+}
+function cleanupRequest(f, action = 'finalize') {
+  return { task: f.task.id, repository: f.main, action, ...(action === 'finalize' ? { disposition: 'discarded' } : {}) };
+}
+function confirmation(request, assessment) {
+  return { ...request, expectedNonce: assessment.expectedNonce, expectedEvidence: assessment.expectedEvidence,
+    ...(request.action === 'finalize' ? { expectedFingerprint: assessment.expectedFingerprint }
+      : { expectedFinalization: assessment.expectedFinalization, selections: assessment.selections }) };
+}
+async function diagnosticFeedback(f) {
+  await mkdir(join(f.task.directory, 'feedback'));
+  await save(join(f.task.directory, 'feedback', randomUUID() + '.json'), { task: f.task.id, nonce: f.task.nonce,
+    attempt: null, reviewedFingerprint: f.worker.fingerprint, assessment: { reviewStatus: 'reviewed', correctness: 'issues' } });
+}
+
+test('cleanup-only tool handles missing source and previous custody without transferring it; disposal is separately confirmed', async () => {
+  for (const reconciled of [false, true]) await fixture(async f => {
+    enableCleanup(f);
+    let originalClaim;
+    if (reconciled) {
+      await f.transfer();
+      originalClaim = await readFile(join(f.task.directory, `revision-after-${digest(f.task.nonce)}.json`), 'utf8');
+    }
+    await diagnosticFeedback(f);
+    const manifest = await readFile(join(f.task.directory, 'task.json'), 'utf8'), history = await readFile(f.from.file, 'utf8');
+    const h = await host(f);
+    // Receiver differs from both original and prior foreground custodian.
+    h.ctx.sessionManager.getSessionId = () => 'cleanup-session';
+    h.ctx.sessionManager.getSessionFile = () => join(f.dir, 'cleanup-session.jsonl');
+    try {
+      execFileSync(git, ['-C', f.main, 'worktree', 'remove', f.repo]);
+      const request = cleanupRequest(f), before = await readdir(f.task.directory);
+      const assessed = data(await h.invoke('delegate_cleanup', request));
+      assert.equal(assessed.authority, 'cleanup-only'); assert.equal(assessed.backendAuthority, false);
+      assert.deepEqual(await readdir(f.task.directory), before); assert.deepEqual(h.calls, []); assert.deepEqual(h.entries, []);
+      const finalized = data(await h.invoke('delegate_cleanup', confirmation(request, assessed)));
+      assert.equal(finalized.repository.main, f.main);
+      assert.deepEqual(h.calls, ['confirm']); assert.deepEqual(h.entries, []);
+      await assert.rejects(readdir(f.task.worktree), { code: 'ENOENT' });
+      assert.equal(execFileSync(git, ['-C', f.main, 'branch', '--list', f.task.branch], { encoding: 'utf8' }), '');
+      const intent = await json(join(f.task.directory, 'finalization', 'intent.json'));
+      assert.equal(intent.authorization.cleanupCaller.session, 'cleanup-session');
+      assert.equal(intent.statuses[0].backendAuthority, false); assert.equal(intent.statuses[0].authority, 'cleanup-only');
+      if (originalClaim) assert.equal(await readFile(join(f.task.directory, `revision-after-${digest(f.task.nonce)}.json`), 'utf8'), originalClaim);
+      await assert.rejects(assertCustody(f.task, f.from), /Finalization claimed/);
+      // Recovery survives finalization; it needs a new assessment and dialog.
+      assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+      const disposal = cleanupRequest(f, 'dispose'), allocation = data(await h.invoke('delegate_cleanup', disposal));
+      assert.deepEqual(h.calls, ['confirm']);
+      const disposed = data(await h.invoke('delegate_cleanup', confirmation(disposal, allocation)));
+      assert.equal(disposed.entriesRemoved, 2); assert.deepEqual(h.calls, ['confirm', 'confirm']);
+      await assert.rejects(readFile(join(f.task.directory, 'finalization', 'source.bundle')), { code: 'ENOENT' });
+      assert.equal(await readFile(join(f.task.directory, 'task.json'), 'utf8'), manifest);
+      assert.equal(await readFile(f.from.file, 'utf8'), history);
+      for (const file of ['containment.json', 'result.json', 'finalized.json', 'disposed.json']) assert.ok(await readFile(join(f.task.directory, file)));
+      await assert.rejects(h.invoke('delegate_cleanup', disposal), /already claimed/);
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('historical cleanup rejects clones, aliases, replaced source paths and legacy archives without local Git identity', async () => {
+  for (const mode of ['clone', 'symlink', 'replaced-source', 'legacy']) await fixture(async f => {
+    enableCleanup(f); await diagnosticFeedback(f);
+    const h = await host(f);
+    try {
+      let request = cleanupRequest(f);
+      if (mode === 'legacy') {
+        // Produce a genuine finalized fixture, then model the older schema.
+        const assessed = data(await h.invoke('delegate_cleanup', request));
+        await h.invoke('delegate_cleanup', confirmation(request, assessed));
+        const path = join(f.task.directory, 'finalized.json'), receipt = await json(path);
+        delete receipt.repository; delete receipt.authorization.repository;
+        await writeFile(path, JSON.stringify(receipt));
+        request = cleanupRequest(f, 'dispose');
+      } else if (mode === 'clone') {
+        const clone = join(f.dir, 'clone'); execFileSync(git, ['clone', '-q', f.main, clone]); request.repository = clone;
+      } else if (mode === 'symlink') {
+        const alias = join(f.dir, 'alias'); await symlink(f.main, alias); request.repository = alias;
+      } else {
+        execFileSync(git, ['-C', f.main, 'worktree', 'remove', f.repo]);
+        execFileSync(git, ['clone', '-q', f.main, f.repo]);
+      }
+      await assert.rejects(h.invoke('delegate_cleanup', request), undefined, mode);
+      assert.ok(await readFile(join(f.task.directory, 'result.json')));
+      await assert.rejects(readFile(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('cleanup confirmation denies no-UI, cancellation, stale source/history/backend, disabled runtime and session navigation', async () => {
+  for (const mode of ['denied', 'no-ui', 'abort', 'source', 'ignored', 'history', 'backend', 'session', 'tree', 'disabled', 'incomplete']) await fixture(async f => {
+    enableCleanup(f); await diagnosticFeedback(f);
+    const controller = new AbortController();
+    if (mode === 'ignored') {
+      await writeFile(join(f.main, '.git', 'info', 'exclude'), 'ignored\n');
+      await writeFile(join(f.task.worktree, 'ignored'), 'original ignored bytes');
+    }
+    const h = await host(f, async () => {
+      if (mode === 'source') await writeFile(join(f.task.worktree, 'source.txt'), 'changed');
+      if (mode === 'ignored') await writeFile(join(f.task.worktree, 'ignored'), 'unreviewed ignored bytes');
+      if (mode === 'history') { f.call.message.content[0].arguments.openDiff = true; await f.persist(); }
+      if (mode === 'backend') await h.backend({ [f.job.id]: { id: f.job.id, created_at: f.job.created, label: f.job.label, status: { Running: {} } } });
+      if (mode === 'abort') controller.abort();
+      if (mode === 'session') h.ctx.sessionManager.getSessionId = () => randomUUID();
+      if (mode === 'tree') await h.emit('session_tree');
+      return mode !== 'denied';
+    });
+    try {
+      const request = cleanupRequest(f), assessed = data(await h.invoke('delegate_cleanup', request)), commit = confirmation(request, assessed);
+      if (mode === 'no-ui') h.ctx.hasUI = false;
+      if (mode === 'disabled') { delete f.runtime.cleanupProtocol; await writeFile(join(f.dir, 'runtime.json'), JSON.stringify(f.runtime)); }
+      if (mode === 'incomplete') delete commit.expectedEvidence;
+      await assert.rejects(h.invoke('delegate_cleanup', commit, controller.signal), undefined, mode);
+      assert.ok(await readdir(f.task.worktree)); assert.deepEqual(h.entries, []);
+      assert.ok(!(await readdir(f.task.directory)).some(n => n.startsWith('revision-after-') || n.startsWith('finalization-after-')));
+    } finally { h.close(); }
+  });
+});
+
+test('historical cleanup has one winner; interrupted finalization preserves claims, archives and old-owner fencing', async () => {
+  for (const mode of ['concurrent', 'locked']) await fixture(async f => {
+    enableCleanup(f); await diagnosticFeedback(f);
+    const h = await host(f);
+    try {
+      if (mode === 'locked') execFileSync(git, ['-C', f.main, 'worktree', 'lock', f.task.worktree]);
+      const request = cleanupRequest(f), assessed = data(await h.invoke('delegate_cleanup', request)), commit = confirmation(request, assessed);
+      if (mode === 'concurrent') {
+        const results = await Promise.allSettled([h.invoke('delegate_cleanup', commit), h.invoke('delegate_cleanup', commit)]);
+        assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+      } else {
+        await assert.rejects(h.invoke('delegate_cleanup', commit));
+        assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+        assert.ok(await readdir(f.task.worktree));
+        await assert.rejects(h.invoke('delegate_cleanup', request), /Finalization claimed|continuation claim/);
+        await assert.rejects(assertCustody(f.task, f.from), /Finalization claimed/);
+      }
+      assert.equal((await readdir(f.task.directory)).filter(n => n.startsWith('revision-after-')).length, 1);
+      assert.deepEqual(h.entries, []);
+    } finally { h.close(); }
+  });
+});
+
+test('ordinary new finalization records independent Git identity for later cleanup-only disposal after source removal', () => fixture(async f => {
+  enableCleanup(f);
+  const c = await cleanupFixture(f);
+  const receipt = await finalizeTask(c.task, c.input, f.runtime, [], c.authorization, undefined, undefined, c.context);
+  assert.equal(receipt.repository.main, f.main);
+  const h = await host(f);
+  try {
+    execFileSync(git, ['-C', f.main, 'worktree', 'remove', f.repo]);
+    const request = { ...cleanupRequest(f, 'dispose'), selections: ['recovery'] };
+    const assessed = data(await h.invoke('delegate_cleanup', request));
+    const commit = confirmation(request, assessed);
+    // An operation selection cannot be changed using an earlier assessment.
+    await assert.rejects(h.invoke('delegate_cleanup', { ...commit, selections: ['build-output'] }), /assessment changed/);
+    const disposed = data(await h.invoke('delegate_cleanup', commit));
+    assert.equal(disposed.entriesRemoved, 2);
+    assert.equal((await json(join(f.task.directory, 'reconciliation.json'))).to.session, f.to.session);
+  } finally { h.close(); }
+}, { linked: true }));
+
+test('cleanup keeps old uncertainty, partial-claim and revision barriers intact', async () => {
+  for (const mode of ['boot', 'containment', 'claim', 'archive', 'revision', 'feedback', 'integrated-issues', 'missing-history', 'result']) await fixture(async f => {
+    enableCleanup(f); await diagnosticFeedback(f);
+    if (mode === 'boot') { const path = join(f.task.directory, 'containment.json'); await writeFile(path, JSON.stringify({ ...await json(path), bootId: randomUUID() })); }
+    if (mode === 'containment') await rm(join(f.task.directory, 'containment.json'));
+    if (mode === 'claim') await save(join(f.task.directory, `revision-after-${digest(f.task.nonce)}.json`), { attempt: randomUUID() });
+    if (mode === 'archive') await mkdir(join(f.task.directory, 'finalization'));
+    if (mode === 'revision') await mkdir(join(f.task.directory, 'revisions'));
+    if (mode === 'feedback') await rm(join(f.task.directory, 'feedback'), { recursive: true });
+    if (mode === 'missing-history') await rm(f.from.file);
+    if (mode === 'result') await writeFile(join(f.task.directory, 'result.json'), JSON.stringify({ ...f.worker, code: 7 }));
+    const h = await host(f);
+    try {
+      const request = cleanupRequest(f); if (mode === 'integrated-issues') request.disposition = 'integrated';
+      await assert.rejects(h.invoke('delegate_cleanup', request), undefined, mode);
+      assert.deepEqual(h.calls, []); assert.ok(await readdir(f.task.worktree));
     } finally { h.close(); }
   });
 });

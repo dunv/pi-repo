@@ -62,7 +62,7 @@ function ancestors(entry, entries) {
   }
   return result.reverse();
 }
-async function archived(task, nonce, finalizationClaim) {
+export async function archived(task, nonce, finalizationClaim) {
   let text, lines;
   try {
     text = await privateText(task.owner.file, 64 * 1024 * 1024);
@@ -182,6 +182,10 @@ export async function assessReconciliation(runtime, input, who, observe, stopped
   return { task, fingerprint, evidenceDigest, evidence, current, stopped: proof, receipt };
 }
 export async function assertCustody(task, who, finalizationClaim) {
+  if (task.nonce && !await missing(claimPath(task))) {
+    const claim = await privateJSON(claimPath(task));
+    if (claim.finalization && claim.finalization !== finalizationClaim) throw new Error('Finalization claimed; no further foreground use or automatic retry');
+  }
   const cleanup = join(task.directory, `finalization-after-${digest(task.nonce ?? '')}.json`);
   if (!await missing(cleanup) && (!finalizationClaim || (await privateJSON(cleanup)).finalization !== finalizationClaim)) {
     throw new Error('Finalization claimed; no further foreground use or automatic retry');

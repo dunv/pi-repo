@@ -6,6 +6,7 @@ import { join, dirname, basename, resolve, relative } from 'node:path';
 import { attemptDirectory, digest, git, json, lifecycleJSON, privateDir, durableSave, snapshot } from './core.mjs';
 import { assertStopped } from './containment.mjs';
 import { reconciledStatus } from './reconcile.mjs';
+import { repositoryIdentity, assertFinalizationMounts } from './repository.mjs';
 
 export const finalizationClaimPath = task => join(task.directory,
   `${task.reconciliationId ? 'finalization' : 'revision'}-after-${digest(task.nonce)}.json`);
@@ -91,9 +92,12 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
     throw new Error('Latest task and reviewed fingerprint/disposition required');
   }
   const attempts = await finalizationAttempts(task, runtime);
-  if (await realpath(task.worktree) !== task.worktree || await realpath(task.repo) !== task.repo) throw new Error('Checkout path changed');
-  const common = async path => resolve(path, (await git(runtime, path, ['rev-parse', '--git-common-dir'])).trim());
-  if (await realpath(await common(task.repo)) !== await realpath(await common(task.worktree))) throw new Error('Worker repository identity changed');
+  const cleanup = context.cleanupVerify ? await context.cleanupVerify(task, claim) : null;
+  const repo = cleanup ? cleanup.repository.main : task.repo;
+  if (await realpath(task.worktree) !== task.worktree || await realpath(repo) !== repo) throw new Error('Checkout path changed');
+  const repository = await repositoryIdentity(repo, runtime);
+  if (digest(JSON.stringify(repository)) !== digest(JSON.stringify(await repositoryIdentity(task.worktree, runtime)))) throw new Error('Worker repository identity changed');
+  await assertFinalizationMounts(task);
   const claimPath = finalizationClaimPath(task);
   if (!await absent(claimPath)) {
     const existing = await lifecycleJSON(claimPath);
@@ -101,7 +105,8 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
   }
   if (!await absent(join(task.directory, 'finalized.json'))) throw new Error('Task already finalized');
   if (!claim && !await absent(join(task.directory, 'finalization'))) throw new Error('Existing/interrupted finalization archive; investigate manually');
-  if (task.reconciliationId) {
+  if (cleanup) statuses = [cleanup.status];
+  else if (task.reconciliationId) {
     if (attempts.length !== 1 || task.attempt !== undefined) throw new Error('Reconciled cleanup supports original attempts only');
     if (!context.who || typeof context.observe !== 'function') throw new Error('Reconciled cleanup requires current custody and archived evidence verification');
     statuses = [await reconciledStatus(task, runtime, context.who, context.observe, stopped, claim)];
@@ -110,7 +115,7 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
   if (!Array.isArray(statuses) || statuses.length !== attempts.length) throw new Error('Every attempt needs authoritative terminal status');
   for (const row of attempts) {
     const matches = statuses.filter(status => status.nonce === row.nonce);
-    if (matches.length !== 1 || !(task.reconciliationId ? matches[0].phase === 'RECONCILED_EXITED' && matches[0].backendAuthority === false
+    if (matches.length !== 1 || !((task.reconciliationId || cleanup) ? matches[0].phase === 'RECONCILED_EXITED' && matches[0].backendAuthority === false
         : ['EXITED', 'KILLED'].includes(matches[0].phase))
       || (matches[0].phase !== 'KILLED' && !Number.isSafeInteger(matches[0].exitCode))) {
       throw new Error('Absent/UNKNOWN/active attempt; finalization blocked');
@@ -144,17 +149,21 @@ export async function finalizationGate(task, input, runtime, statuses, stopped =
   }
   // 'integrated' is the caller's disposition, not automatic verification of a merge.
   const local = await localFiles(task, runtime);
-  return { attempts, proofs, local, statuses, archiveFingerprint: digest(JSON.stringify(local)) };
+  return { attempts, proofs, local, statuses, repository, cleanupCaller: cleanup ? context.cleanupCaller : null, cleanupEvidence: cleanup?.evidence ?? null, archiveFingerprint: digest(JSON.stringify(local)) };
 }
 export function finalizationAuthorization(task, input, gate) {
   return { id: randomUUID(), task: task.id, nonce: task.nonce, fingerprint: input.expectedFingerprint,
-    disposition: input.disposition, archiveFingerprint: gate.archiveFingerprint, confirmedAt: new Date().toISOString() };
+    disposition: input.disposition, archiveFingerprint: gate.archiveFingerprint, repository: gate.repository,
+    cleanupCaller: gate.cleanupCaller, cleanupEvidence: gate.cleanupEvidence, confirmedAt: new Date().toISOString() };
 }
 export async function finalizeTask(task, input, runtime, statuses, authorization, guard = () => {}, stopped = assertStopped, context = {}) {
   const gate = await finalizationGate(task, input, runtime, statuses, stopped, undefined, context);
   if (!authorization || authorization.task !== task.id || authorization.nonce !== task.nonce
     || authorization.fingerprint !== input.expectedFingerprint || authorization.disposition !== input.disposition
-    || authorization.archiveFingerprint !== gate.archiveFingerprint || !uuid.test(authorization.id) || !authorization.confirmedAt) {
+    || authorization.archiveFingerprint !== gate.archiveFingerprint
+    || digest(JSON.stringify(authorization.repository)) !== digest(JSON.stringify(gate.repository))
+    || authorization.cleanupEvidence !== gate.cleanupEvidence
+    || JSON.stringify(authorization.cleanupCaller) !== JSON.stringify(gate.cleanupCaller) || !uuid.test(authorization.id) || !authorization.confirmedAt) {
     throw new Error('Fresh bound interactive authorization required');
   }
   guard();
@@ -166,10 +175,11 @@ export async function finalizeTask(task, input, runtime, statuses, authorization
   try { await parent.sync(); } finally { await parent.close(); }
   await durableSave(join(directory, 'intent.json'), { task: task.id, input, authorization, attempts: gate.attempts,
     statuses: gate.statuses, stopped: gate.proofs, reconciliationId: task.reconciliationId ?? null });
+  const repo = context.cleanupVerify ? gate.repository.main : task.repo;
   const bundle = join(directory, 'source.bundle');
-  await git(runtime, task.repo, ['bundle', 'create', bundle, `refs/heads/${task.branch}`]);
+  await git(runtime, repo, ['bundle', 'create', bundle, `refs/heads/${task.branch}`]);
   await chmod(bundle, 0o600);
-  await git(runtime, task.repo, ['bundle', 'verify', bundle]);
+  await git(runtime, repo, ['bundle', 'verify', bundle]);
   const bundled = await open(bundle, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { await bundled.sync(); } finally { await bundled.close(); }
   const patch = await git(runtime, task.worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']);
@@ -177,22 +187,23 @@ export async function finalizeTask(task, input, runtime, statuses, authorization
   await durableSave(join(directory, 'local-files.json'), archive);
   if (digest(JSON.stringify(await json(join(directory, 'local-files.json')))) !== digest(JSON.stringify(archive))) throw new Error('Recovery archive verification failed');
   const fresh = await finalizationGate(task, input, runtime, context.statuses ? await context.statuses() : statuses, stopped, authorization.id, context);
-  if (fresh.archiveFingerprint !== authorization.archiveFingerprint) throw new Error('Local/ignored files changed after confirmation');
+  if (fresh.archiveFingerprint !== authorization.archiveFingerprint || fresh.cleanupEvidence !== authorization.cleanupEvidence
+    || digest(JSON.stringify(fresh.repository)) !== digest(JSON.stringify(authorization.repository))) throw new Error('Local/ignored files or repository/evidence changed after confirmation');
   guard();
-  await durableSave(join(directory, 'ready.json'), { archiveFingerprint: fresh.archiveFingerprint, recordedAt: new Date().toISOString() });
+  await durableSave(join(directory, 'ready.json'), { archiveFingerprint: fresh.archiveFingerprint, repository: fresh.repository, recordedAt: new Date().toISOString() });
   // Git refuses locked/nested worktrees; never use double-force or rm -rf.
-  await git(runtime, task.repo, ['worktree', 'remove', '--force', task.worktree]);
+  await git(runtime, repo, ['worktree', 'remove', '--force', task.worktree]);
   guard();
   // Do not delete a ref reused by another checkout during the disposal window.
-  const worktrees = (await git(runtime, task.repo, ['worktree', 'list', '--porcelain', '-z'])).split('\0');
+  const worktrees = (await git(runtime, repo, ['worktree', 'list', '--porcelain', '-z'])).split('\0');
   if (worktrees.includes(`branch refs/heads/${task.branch}`)) throw new Error('Delegate branch is checked out elsewhere; retained for manual reconciliation');
   // Compare-and-delete: a moved ref must survive even after worktree removal.
-  await git(runtime, task.repo, ['update-ref', '-d', `refs/heads/${task.branch}`, task.base]);
+  await git(runtime, repo, ['update-ref', '-d', `refs/heads/${task.branch}`, task.base]);
   // Remove only an empty direct container, never recursively or through symlinks.
   let containerRemoved = false;
   try { await rmdir(dirname(task.worktree)); containerRemoved = true; } catch { /* Nonempty/inaccessible containers stay. */ }
   const receipt = { version: 1, task: task.id, attempt: task.attempt ?? null, nonce: task.nonce,
-    disposition: input.disposition, directory, authorization, containerRemoved, finalizedAt: new Date().toISOString(), evidenceRetained: true };
+    disposition: input.disposition, directory, authorization, repository: fresh.repository, containerRemoved, finalizedAt: new Date().toISOString(), evidenceRetained: true };
   await durableSave(join(task.directory, 'finalized.json'), receipt);
   return receipt;
 }

@@ -13,6 +13,7 @@ import { scopeName } from '../containment.mjs';
 import { finalizationGate, finalizationAuthorization, finalizeTask } from '../finalize.mjs';
 import { disposalGate, disposalAuthorization, disposeTask, assertNoPayloadMounts } from '../dispose.mjs';
 import { inventory } from '../../../skills/delegate-cleanup/scripts/inventory.mjs';
+import { assertFinalizationMounts } from '../repository.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 const who = { session: 'finalize-session', file: '/fixture/session.jsonl' };
@@ -79,6 +80,15 @@ test('mount inventory rejects same-device bind mounts, nested mounts and escaped
   assert.throws(() => assertNoPayloadMounts('/state/task name', ['/state/task name/build-output'], row('/state/task\\040name/build-output')), /Mounted payload/);
   assertNoPayloadMounts('/state/task', ['/state/task/build-output'], row('/state') + row('/state/unrelated'));
   assert.throws(() => assertNoPayloadMounts('/state/task', ['/state/task/build-output'], 'invalid'), /Invalid mount/);
+});
+
+test('finalization rejects worker/archive bind mounts before fingerprinting or archiving external contents', async () => {
+  const task = { worktree: '/worker', directory: '/state/task' };
+  const row = path => `42 1 8:1 / ${path} rw - ext4 /dev/fixture rw\n`;
+  for (const mount of ['/worker', '/worker/sdk', '/state/task', '/state/task/finalization']) {
+    await assert.rejects(assertFinalizationMounts(task, row(mount)), /Mounted payload/);
+  }
+  await assertFinalizationMounts(task, row('/') + row('/state/task/build-output'));
 });
 
 test('inventory is read-only, reports worktree/branch allocation and never follows shared symlinks or declares disposable state', () => fixture(async f => {

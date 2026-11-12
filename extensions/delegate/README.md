@@ -179,6 +179,75 @@ Missing/uncertain evidence never permits automatic retry. Branch ownership and
 session identity are preserved; a fork does not gain another session's authority.
 Preparation/admission failures retain artifacts for manual reconciliation.
 
+## Cleanup-only historical operations
+
+`delegate_cleanup {task, repository, action, disposition?, selections?,
+expectedNonce?, expectedEvidence?, expectedFingerprint?, expectedFinalization?}`
+provides a separately confirmed cleanup route across sessions or after removal of
+a linked source checkout. Enable `cleanupProtocol: 1` alongside scoped
+reconciliation/finalization (and disposal for permanent payload deletion), only
+after separate reviewed deployment and a fresh Pi session. No runtime flag or
+provisioning change is implicit in this package.
+
+The tool never adopts a task into the caller's branch, transfers foreground
+custody onward, edits a manifest/history, starts a worker or changes backend
+ownership. It performs only the existing finalization or disposal operation,
+using bound original private terminal evidence rather than a missing live job as
+proof. No model-supplied statuses, stopped proofs or repository identities are
+accepted. Original scoped attempts only: revision chains and uncertain records
+stay blocked. The recorded status is `RECONCILED_EXITED`,
+`backendAuthority: false`, `authority: "cleanup-only"` even for an unreconciled
+original; it describes archived provenance, not a new reconciliation grant.
+
+1. Supply the task UUID and absolute canonical **main checkout** as `repository`.
+   For archive-and-remove use `action: "finalize"` and explicit `disposition`;
+   for permanent payload removal use `action: "dispose"` and intended `selections`.
+   With no expected fields the call is read-only. Existing review/feedback and
+   integrated-disposition check requirements still apply. A defective original
+   draft is not integrated merely because the corrected parent feature merged.
+2. The assessment binds exact operation fields, current source/local archive or
+   payload inventory, recipient session, original terminal provenance and local
+   repository identity. Review it and obtain explicit candidate/disposition
+   approval. To change payload selections, assess those selections again.
+3. Supply all returned expected fields: `expectedNonce`, `expectedEvidence`, plus
+   `expectedFingerprint` for finalize or `expectedFinalization` for dispose.
+   Each operation requests fresh interactive confirmation and revalidates after
+   the dialog and after exclusively claiming it. Confirm all original/custodian
+   sessions and foreground users/external build servers are idle. Worker cgroups
+   cannot fence arbitrary foreground activity. Denial/abort/session navigation
+   admits nothing; an interrupted claim stays blocked, never automatically retried.
+4. Finalization preserves the old reconciliation claim when present, takes the
+   existing exclusive finalization/continuation claim, archives local work, then
+   removes only the registered worktree and unchanged branch. It retains recovery,
+   build outputs and diagnostics. Disposal is a **separate** read-only assessment,
+   exact payload selection and confirmation, with the existing one-shot claim,
+   no replacement archive and no task-root/session/audit purge. Cleanup caller
+   session/file and archived provenance are retained in operation authorization.
+
+For a retained worker, canonical main and worker paths must prove the same local
+Git common-directory identity; an extant original source must agree too. Main
+checkout and common-directory paths must be canonical/user-owned, with a standard
+main `.git` directory. Clones, aliases, bare/nonstandard layouts and replacement
+source paths fail closed; origin URLs and matching commits are not identity.
+New finalizations record main-checkout/common-directory paths and device/inode
+identities in authorization, ready record and receipt. Those bound records allow
+future cleanup-only disposal even if the linked source no longer exists.
+**Older finalized archives without that independent identity remain blocked.**
+No fallback fabricates the binding from bundle ancestry, recreates a source
+checkout, edits manifests/receipts or clears claims. Existing owning-session
+operations remain available under their original gates; legacy scoped/stopped
+limitations are unchanged.
+
+All historical cleanup gates recheck exact original admission identity against a
+complete fresh backend snapshot (absent or exactly agreeing), original private
+review ancestry, unchanged worker result and reconciliation provenance, and
+independent same-boot stopped proof. Active/UNKNOWN/reused identities, missing
+history, legacy containment and prior-boot evidence remain blockers. Mailhub
+plans/sets/Trash journals and unknown-outcome barriers remain protected: inspect
+selected payload scope and stop for protected operational evidence, never invoke
+a provider action to make cleanup possible. See the [cleanup skill](../../skills/delegate-cleanup/SKILL.md)
+for inventory, fish-compatible usage and retained-space reporting.
+
 ## Working-state snapshots
 
 Preparation copies the source index to a private temporary index and captures its
@@ -514,7 +583,10 @@ explicitly provision the skill directory if it should be discoverable.
    Reconciled originals revalidate their private originating terminal record and
    retain archived provenance. Live, unknown, rebooted, conflicting or incomplete
    evidence blocks. A new session cannot adopt already-finalized historical tasks
-   via original-attempt reconciliation; use the owning session or investigate.
+   via original-attempt reconciliation. Separately enabled cleanup-only disposal
+   can operate without custody only when the finalization records durably bind
+   independent local repository identity; legacy archives lacking that binding
+   stay blocked. Otherwise use the owning session or investigate.
 4. The tool inventories the exact selected payload metadata, ownership, inode,
    device, mode, size, link count and timestamps without copying build contents.
    Confirmation binds that inventory. A durable exclusive `disposal-claim.json`
@@ -891,6 +963,10 @@ staging, inherited additions, deletions/renames, binary/unusual filenames,
 symlinks/executable modes, ignored caches, split indexes/linked sources, source
 movement, fail-closed unsupported states, worker-only review and source drift. Linux with Git, Bash and
 `flock` is required for these tests, matching the current runtime scope.
+Cleanup-only fixtures additionally cover removed linked sources, previous custody,
+ordinary new finalization identity receipts, clone/alias/replaced-source rejection,
+legacy-archive refusal, exact operation/session binding, no custody append,
+exclusive claims, interrupted cleanup and stale/denied/non-UI confirmations.
 Finalization/disposal fixtures additionally cover archived reconciled provenance,
 second-claim fencing, irreversible selections, mount-inventory/bind-mount rejection,
 held-directory symlink replacement, interrupted archives/deletions, concurrent
