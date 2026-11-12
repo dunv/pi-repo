@@ -549,7 +549,14 @@ blocks/snapshots and concurrent changes can retain storage. Report actual remove
 paths/groups and remaining blockers, and compare before/after allocation/free
 space honestly; archiving is retention, not space reclamation. The inventory
 script labels every task unassessed: age, a merged branch, receipts or historical
-exit files alone are not a deletion manifest.
+exit files alone are not a deletion manifest. Its default scan measures task-state
+allocation and Git registration, without recursively measuring worktree contents.
+Use `inventory.mjs --worktrees` to opt into potentially expensive worktree allocation;
+state scans can still be large when build outputs remain. The JSON
+`worktreeAllocationRequested` flag records the scope, and absent
+`worktreeAllocatedBytes` means unmeasured/unavailable, not zero. Optional worktree
+scan failures retain state accounting and add a blocker. Direct script paths and
+installed skill-directory symlinks both work; `--help` needs no runtime.
 
 ## Caller feedback
 

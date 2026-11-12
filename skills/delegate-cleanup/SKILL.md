@@ -14,7 +14,14 @@ to emulate them with shell deletion or a different task ID.
 ## Inventory first (read-only)
 
 `scripts/inventory.mjs` reports task ownership, repository/worktree/branch
-registration and allocated blocks by build/archive/log/evidence category. It uses
+registration and task-state allocated blocks by build/archive/log/evidence category.
+By default it validates worktree root paths but does not recursively scan their
+contents. Add `--worktrees` only when worktree allocation is needed; that scan can
+be expensive. Task-state scans
+still traverse build outputs and can be large. The JSON flag
+`worktreeAllocationRequested` identifies the scope; omitted `worktreeAllocatedBytes`
+means unmeasured/unavailable, never zero. A failed optional worktree scan adds a
+blocker without hiding the task-state accounting or registration results. It uses
 the existing `PI_DELEGATE_RUNTIME`, never starts a model/build/server, and labels
 all candidates **unassessed**. Its output contains private local paths; keep any
 saved report private. It is not a deletion manifest or a liveness check.
@@ -23,9 +30,14 @@ Fish-compatible invocation, with no shell initialization or credential copying:
 
 ```fish
 set -l delegate_node (jq -r .node "$PI_DELEGATE_RUNTIME")
-"$delegate_node" /absolute/path/to/pi-repo/skills/delegate-cleanup/scripts/inventory.mjs
+"$delegate_node" "$HOME/.agents/skills/delegate-cleanup/scripts/inventory.mjs"
+# Optional, potentially expensive worktree allocation scan:
+"$delegate_node" "$HOME/.agents/skills/delegate-cleanup/scripts/inventory.mjs" --worktrees
 ```
 
+The installed skill-directory symlink and a direct checkout path are both supported.
+For another skill location, substitute its absolute script path. `--help` describes
+the scan modes without requiring a runtime; unknown or positional arguments fail.
 Resolve the script relative to this skill when using agent tools. Inspect the
 original manifest/submission, all revision attempts, current backend identity,
 current independent containment proof, current review/checks and intended

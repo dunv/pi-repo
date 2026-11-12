@@ -88,7 +88,7 @@ test('inventory is read-only, reports worktree/branch allocation and never follo
   await mkdir(join(f.task.directory, 'bazel-output'));
   await writeFile(join(f.task.directory, 'bazel-output', 'legacy'), 'legacy cache');
   const before = await readdir(f.task.directory), status = f.g('status', '--porcelain');
-  const report = await inventory(f.runtime), row = report.tasks[0];
+  const report = await inventory(f.runtime, { worktrees: true }), row = report.tasks[0];
   assert.equal(row.task, f.task.id); assert.equal(row.classification, 'unassessed');
   assert.equal(row.branchExists, true); assert.equal(row.branchRegistered, true); assert.equal(row.worktreeRegistered, true);
   assert.ok(row.worktreeAllocatedBytes > 0); assert.ok(row.allocatedBytes.legacyBuild > 0);

@@ -22,7 +22,8 @@ async function allocation(path, device, seen = new Set()) {
 async function exists(path) {
   try { await lstat(path); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
-export async function inventory(runtime) {
+export async function inventory(runtime, { worktrees = false } = {}) {
+  if (typeof worktrees !== 'boolean') throw new Error('worktrees must be a boolean');
   const root = runtime.state, st = await lstat(root);
   if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.getuid() || st.mode & 0o077 || await realpath(root) !== root) throw new Error('Canonical private state directory required');
   const tasks = [], repositories = new Map();
@@ -40,11 +41,6 @@ export async function inventory(runtime) {
         || !task.worktree.endsWith(id)) throw new Error('Task ownership/path identity incomplete');
       Object.assign(row, { repo: task.repo, worktree: task.worktree, branch: task.branch,
         owner: { session: task.owner?.session, file: task.owner?.file }, worktreeExists: await exists(task.worktree) });
-      if (row.worktreeExists) {
-        const ws = await lstat(task.worktree);
-        if (!ws.isDirectory() || ws.isSymbolicLink() || await realpath(task.worktree) !== task.worktree) throw new Error('Worktree path changed');
-        row.worktreeAllocatedBytes = await allocation(task.worktree, ws.dev);
-      }
       for (const [name, path] of Object.entries({ finalized: 'finalized.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
       for (const name of await readdir(directory)) {
         const category = name === 'build-output' ? 'build' : name === 'bazel-output' ? 'legacyBuild' : name === 'finalization' ? 'archivesAndReceipts'
@@ -61,14 +57,35 @@ export async function inventory(runtime) {
       row.branchRegistered = registration ? registration.worktrees.includes(`branch refs/heads/${task.branch}`) : null;
       row.worktreeRegistered = registration ? registration.worktrees.includes(`worktree ${task.worktree}`) : null;
       if (!registration) row.blockers.push('Repository identity/registration unavailable');
+      if (row.worktreeExists) {
+        let ws;
+        try {
+          const checked = await lstat(task.worktree);
+          if (!checked.isDirectory() || checked.isSymbolicLink() || await realpath(task.worktree) !== task.worktree) throw new Error('Worktree path changed');
+          ws = checked;
+        } catch {
+          row.blockers.push('Worktree path unavailable/changed; allocation not measured');
+        }
+        if (worktrees && ws) {
+          try { row.worktreeAllocatedBytes = await allocation(task.worktree, ws.dev); }
+          catch { row.blockers.push('Worktree allocation unavailable; scan failed'); }
+        }
+      }
       row.blockers.push('No live terminal/stopped-worker, current review or integration/discard assessment performed');
     } catch (error) { row.blockers.push(error.code ?? 'Invalid/incomplete local evidence; manual inspection required'); }
   }
-  return { state: root, observedAt: new Date().toISOString(), tasks,
+  return { state: root, observedAt: new Date().toISOString(), worktreeAllocationRequested: worktrees, tasks,
     accounting: 'Allocated blocks per category, deduplicated within each top-level artifact only; shared hardlinks, snapshots, open files and concurrent changes prevent treating this as reclaimable space.',
     instruction: 'Not a deletion manifest. Inspect live attempt identity/status, stopped proof, source/review and external foreground users separately. Never infer disposability from age, exit files or a merged ref.' };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length !== 2) throw new Error('No positional arguments; use the existing PI_DELEGATE_RUNTIME');
-  console.log(JSON.stringify(await inventory(await runtimeFrom(process.env.PI_DELEGATE_RUNTIME)), null, 2));
+// Node resolves the module URL through symlinks, but leaves argv[1] as invoked.
+const invokedPath = process.argv[1] ? await realpath(process.argv[1]).catch(() => null) : null;
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === '--help') {
+    console.log('Usage: inventory.mjs [--worktrees]\nUses PI_DELEGATE_RUNTIME. Default: task-state allocation and Git registration only.\n--worktrees also recursively measures worktree allocation (potentially expensive).');
+  } else {
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--worktrees')) throw new Error('Usage: inventory.mjs [--worktrees]; use the existing PI_DELEGATE_RUNTIME');
+    console.log(JSON.stringify(await inventory(await runtimeFrom(process.env.PI_DELEGATE_RUNTIME), { worktrees: args.length === 1 }), null, 2));
+  }
 }
