@@ -16,6 +16,7 @@ import { assessReconciliation, reconciliationSummary, reconciliationAuthorizatio
 import { feedbackTask, writeFeedback } from '../feedback.mjs';
 import { finalizationGate, finalizationAuthorization, finalizeTask } from '../finalize.mjs';
 import { disposalGate, disposalAuthorization, disposeTask } from '../dispose.mjs';
+import { cleanupEvidence } from '../cleanup.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 async function fixture(fn, { linked = false } = {}) {
@@ -561,4 +562,173 @@ test('cleanup keeps old uncertainty, partial-claim and revision barriers intact'
       assert.deepEqual(h.calls, []); assert.ok(await readdir(f.task.worktree));
     } finally { h.close(); }
   });
+});
+
+// Model actual pre-identity receipts in synthetic state only. Production records
+// must NEVER be edited or downgraded to obtain this exception.
+async function legacyArchive(f) {
+  enableCleanup(f); f.runtime.legacyRecoveryDisposalProtocol = 1;
+  await diagnosticFeedback(f);
+  const h = await host(f);
+  try {
+    const request = cleanupRequest(f), assessed = data(await h.invoke('delegate_cleanup', request));
+    await h.invoke('delegate_cleanup', confirmation(request, assessed));
+  } finally { h.close(); }
+  for (const rel of ['finalized.json', 'finalization/intent.json', 'finalization/ready.json']) {
+    const path = join(f.task.directory, rel), value = await json(path);
+    delete value.repository;
+    if (value.authorization) delete value.authorization.repository;
+    await writeFile(path, JSON.stringify(value));
+  }
+  execFileSync(git, ['-C', f.main, 'worktree', 'remove', f.repo]);
+  return { ...cleanupRequest(f, 'dispose'), selections: ['recovery'], legacyRecovery: true };
+}
+
+test('legacy recovery exception is explicit, read-only until confirmed, truthful and preserves old records/builds/sessions', () => fixture(async f => {
+  const request = await legacyArchive(f);
+  await mkdir(join(f.task.directory, 'build-output'));
+  await writeFile(join(f.task.directory, 'build-output', 'keep'), 'rebuildable but NOT selected');
+  const protectedPaths = ['task.json', 'submission.json', 'result.json', 'containment.json', 'finalized.json',
+    'finalization/intent.json', 'finalization/ready.json', `revision-after-${digest(f.task.nonce)}.json`];
+  const before = await Promise.all(protectedPaths.map(p => readFile(join(f.task.directory, p), 'utf8')));
+  const history = await readFile(f.from.file, 'utf8');
+  const h = await host(f, async (title, message) => {
+    assert.match(title, /legacy recovery without historical repository identity/);
+    assert.match(message, /historical relationship UNVERIFIED/);
+    assert.match(message, /LEGACY EXCEPTION/);
+    assert.match(message, /source\.bundle and local-files\.json/);
+    assert.match(message, /sessions and external build servers are idle/);
+    assert.match(message, /Trash journals/);
+    return true;
+  });
+  try {
+    const task = { ...f.task, finalized: await json(join(f.task.directory, 'finalized.json')) };
+    await assert.rejects(disposalGate(task, { ...request, expectedNonce: task.nonce,
+      expectedFinalization: digest(JSON.stringify(task.finalized)) }, f.runtime,
+    { who: f.from, statuses: async () => [f.status] }), /separately enabled cleanup-only gate/);
+    const names = await readdir(f.task.directory);
+    await assert.rejects(h.invoke('delegate_cleanup', { ...request, legacyRecovery: false }), /lacks matching durable/);
+    const assessed = data(await h.invoke('delegate_cleanup', request));
+    assert.equal(assessed.legacyRecovery, true);
+    assert.equal(assessed.repositoryBinding, 'operator-selected; historical identity unverified');
+    assert.equal(assessed.entries, 2); assert.deepEqual(await readdir(f.task.directory), names);
+    assert.deepEqual(h.calls, []); assert.deepEqual(h.entries, []);
+    const disposed = data(await h.invoke('delegate_cleanup', confirmation(request, assessed)));
+    assert.equal(disposed.entriesRemoved, 2);
+    assert.equal(disposed.authorization.legacyRecovery, true);
+    assert.equal(disposed.authorization.repositoryBinding, assessed.repositoryBinding);
+    assert.deepEqual(h.calls, ['confirm']); assert.deepEqual(h.entries, []);
+    assert.deepEqual(await Promise.all(protectedPaths.map(p => readFile(join(f.task.directory, p), 'utf8'))), before);
+    assert.equal(await readFile(f.from.file, 'utf8'), history);
+    assert.equal(await readFile(join(f.task.directory, 'build-output', 'keep'), 'utf8'), 'rebuildable but NOT selected');
+    for (const p of ['source.bundle', 'local-files.json']) await assert.rejects(readFile(join(f.task.directory, 'finalization', p)), { code: 'ENOENT' });
+    await assert.rejects(h.invoke('delegate_cleanup', request), /already claimed/);
+  } finally { h.close(); }
+}, { linked: true }));
+
+test('legacy exception cannot enable finalization, builds, defaults, invalid flags, modern or partial identity bypass', async () => {
+  for (const mode of ['disabled', 'bad-runtime', 'flag-type', 'finalize', 'build', 'both', 'default', 'modern', 'partial-receipt', 'partial-ready', 'partial-intent']) await fixture(async f => {
+    const request = await legacyArchive(f);
+    if (mode === 'disabled') delete f.runtime.legacyRecoveryDisposalProtocol;
+    if (mode === 'bad-runtime') f.runtime.legacyRecoveryDisposalProtocol = 2;
+    if (mode === 'flag-type') request.legacyRecovery = 'true';
+    if (mode === 'finalize') { request.action = 'finalize'; request.disposition = 'discarded'; delete request.selections; }
+    if (mode === 'build') request.selections = ['build-output'];
+    if (mode === 'both') request.selections = ['build-output', 'recovery'];
+    if (mode === 'default') delete request.selections;
+    const binding = { fake: 'must not be overwritten or ignored' };
+    if (['modern', 'partial-receipt'].includes(mode)) {
+      const p = join(f.task.directory, 'finalized.json'), value = await json(p);
+      if (mode === 'modern') value.repository = binding;
+      else value.authorization.repository = null; // Even a null/partial binding blocks downgrade.
+      await writeFile(p, JSON.stringify(value));
+    }
+    if (['partial-ready', 'partial-intent'].includes(mode)) {
+      const p = join(f.task.directory, 'finalization', mode === 'partial-ready' ? 'ready.json' : 'intent.json');
+      const value = await json(p);
+      if (mode === 'partial-ready') value.repository = binding;
+      else value.authorization.repository = binding;
+      await writeFile(p, JSON.stringify(value));
+    }
+    const h = await host(f);
+    try {
+      await assert.rejects(h.invoke('delegate_cleanup', request), undefined, mode);
+      assert.deepEqual(h.calls, []);
+      assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+      await assert.rejects(readFile(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('legacy recovery retains backend, containment, original-review, incomplete-finalization and revision barriers', async () => {
+  for (const mode of ['boot', 'containment', 'history', 'backend', 'result', 'revision', 'ready', 'receipt', 'claim']) await fixture(async f => {
+    const request = await legacyArchive(f);
+    if (mode === 'boot') { const p = join(f.task.directory, 'containment.json'); await writeFile(p, JSON.stringify({ ...await json(p), bootId: randomUUID() })); }
+    if (mode === 'containment') await rm(join(f.task.directory, 'containment.json'));
+    if (mode === 'history') await rm(f.from.file);
+    if (mode === 'result') await writeFile(join(f.task.directory, 'result.json'), JSON.stringify({ ...f.worker, code: 3 }));
+    if (mode === 'revision') await mkdir(join(f.task.directory, 'revisions'));
+    if (mode === 'ready') await rm(join(f.task.directory, 'finalization', 'ready.json'));
+    if (mode === 'receipt') await rm(join(f.task.directory, 'finalized.json'));
+    if (mode === 'claim') await save(join(f.task.directory, 'disposal-claim.json'), { id: randomUUID() });
+    const h = await host(f);
+    try {
+      if (mode === 'backend') await h.backend({ [f.job.id]: { id: f.job.id, created_at: f.job.created, label: f.job.label, status: { Running: {} } } });
+      await assert.rejects(h.invoke('delegate_cleanup', request), undefined, mode);
+      assert.deepEqual(h.calls, []); assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('legacy confirmation binds exception mode, inventory, old lifecycle records and session; denial never claims', async () => {
+  for (const mode of ['denied', 'no-ui', 'abort', 'mode', 'source', 'ready', 'session', 'symlink', 'public-root']) await fixture(async f => {
+    const request = await legacyArchive(f), controller = new AbortController();
+    const h = await host(f, async () => {
+      if (mode === 'abort') controller.abort();
+      if (mode === 'source') await writeFile(join(f.task.directory, 'finalization', 'source.bundle'), 'changed');
+      if (mode === 'ready') { const p = join(f.task.directory, 'finalization', 'ready.json'); await writeFile(p, JSON.stringify({ ...await json(p), recordedAt: 'changed' })); }
+      if (mode === 'symlink') {
+        const p = join(f.task.directory, 'finalization', 'source.bundle');
+        await rm(p); await symlink(f.from.file, p);
+      }
+      if (mode === 'public-root') await chmod(f.task.directory, 0o755);
+      if (mode === 'session') h.ctx.sessionManager.getSessionId = () => randomUUID();
+      return mode !== 'denied';
+    });
+    try {
+      const assessed = data(await h.invoke('delegate_cleanup', request));
+      if (mode === 'no-ui') h.ctx.hasUI = false;
+      const input = confirmation(request, assessed);
+      if (mode === 'mode') input.legacyRecovery = false;
+      await assert.rejects(h.invoke('delegate_cleanup', input, controller.signal), undefined, mode);
+      await assert.rejects(readFile(join(f.task.directory, 'disposal-claim.json')), { code: 'ENOENT' });
+      assert.ok(await readFile(join(f.task.directory, 'finalization', 'local-files.json')));
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('legacy recovery has one concurrent winner and interrupted disposal preserves its permanent claim', async () => {
+  for (const mode of ['concurrent', 'interrupted']) await fixture(async f => {
+    const request = await legacyArchive(f), h = await host(f);
+    try {
+      const assessed = data(await h.invoke('delegate_cleanup', request)), input = confirmation(request, assessed);
+      if (mode === 'concurrent') {
+        const results = await Promise.allSettled([h.invoke('delegate_cleanup', input), h.invoke('delegate_cleanup', input)]);
+        assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+      } else {
+        const task = { ...f.task, finalized: await json(join(f.task.directory, 'finalized.json')) };
+        const context = { cleanupCaller: { session: 'synthetic', file: join(f.dir, 'synthetic.jsonl') },
+          cleanupVerify: (current, claim, disposal) => cleanupEvidence(current, request, f.runtime, f.observe, claim, disposal) };
+        const gate = await disposalGate(task, input, f.runtime, context);
+        let calls = 0;
+        await assert.rejects(disposeTask(task, input, f.runtime, context, disposalAuthorization(task, input, gate), () => {
+          if (++calls === 3) throw new Error('synthetic interruption during unlink');
+        }), /synthetic interruption/);
+        assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+        await assert.rejects(readFile(join(f.task.directory, 'disposed.json')), { code: 'ENOENT' });
+      }
+      assert.ok(await readFile(join(f.task.directory, 'disposal-claim.json')));
+      await assert.rejects(h.invoke('delegate_cleanup', request), /already claimed/);
+    } finally { h.close(); }
+  }, { linked: true });
 });

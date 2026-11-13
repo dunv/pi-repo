@@ -4,7 +4,7 @@ import { lstat, realpath, opendir } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { digest, lifecycleJSON, snapshot } from './core.mjs';
 import { archived, assertCustody } from './reconcile.mjs';
-import { finalizationAttempts } from './finalize.mjs';
+import { finalizationAttempts, finalizationClaimPath } from './finalize.mjs';
 import { repositoryIdentity, assertFinalizationMounts } from './repository.mjs';
 import { assertStopped } from './containment.mjs';
 
@@ -24,6 +24,11 @@ export async function cleanupTask(runtime, input) {
   if (runtime.cleanupProtocol !== 1 || runtime.containmentProtocol !== 1 || runtime.reconciliationProtocol !== 1
     || runtime.finalizationProtocol !== 1 || !uuid.test(input.task) || !['finalize', 'dispose'].includes(input.action)
     || typeof input.repository !== 'string' || !isAbsolute(input.repository)) throw new Error('Explicit cleanup runtime, exact task/action and canonical repository required');
+  if (input.legacyRecovery !== undefined && typeof input.legacyRecovery !== 'boolean') throw new Error('legacyRecovery must be an explicit boolean');
+  if (input.legacyRecovery === true && (runtime.legacyRecoveryDisposalProtocol !== 1 || runtime.disposalProtocol !== 1
+    || input.action !== 'dispose' || input.disposition !== undefined || !equal(input.selections, ['recovery']))) {
+    throw new Error('Legacy recovery disposal requires separate runtime opt-in and recovery-only disposal selection');
+  }
   await privateDirectory(runtime.state);
   const directory = join(runtime.state, input.task); await privateDirectory(directory);
   const task = await lifecycleJSON(join(directory, 'task.json'));
@@ -72,11 +77,23 @@ export async function cleanupEvidence(task, input, runtime, observe, finalizatio
   }
   const repository = await repositoryIdentity(input.repository, runtime);
   if (repository.main !== input.repository) throw new Error('Select the canonical main checkout, not a linked checkout');
-  if (finalization) {
-    // Legacy archives have no independent local-repository binding. A clone or
-    // matching bundle/commit is insufficient; never manufacture that evidence.
+  let legacyRecords = null;
+  if (finalization && input.legacyRecovery === true) {
+    // This is explicit permission to lose a finalized legacy recovery copy, NOT
+    // proof of its historical Git identity. Never manufacture or backfill it.
+    const intent = await lifecycleJSON(join(task.directory, 'finalization', 'intent.json'));
+    const ready = await lifecycleJSON(join(task.directory, 'finalization', 'ready.json'));
+    if (Object.hasOwn(finalization, 'repository') || Object.hasOwn(finalization.authorization ?? {}, 'repository')
+      || Object.hasOwn(intent, 'repository') || Object.hasOwn(intent.authorization ?? {}, 'repository') || Object.hasOwn(ready, 'repository')) {
+      throw new Error('Legacy exception requires entirely absent repository bindings; partial or modern identity must not be bypassed');
+    }
+    // An existing source must agree, but even this does not upgrade the absent
+    // historical identity. Worktree/ref absence is checked by disposalGate.
+    if (await exists(task.repo) && !equal(await repositoryIdentity(task.repo, runtime), repository)) throw new Error('Original repository path was replaced');
+    legacyRecords = { intent, ready, claim: await lifecycleJSON(finalizationClaimPath(task)) };
+  } else if (finalization) {
     if (!finalization.repository || !equal(finalization.repository, repository)
-      || !equal(finalization.authorization?.repository, repository)) throw new Error('Finalization lacks matching durable repository identity; legacy cleanup remains blocked');
+      || !equal(finalization.authorization?.repository, repository)) throw new Error('Finalization lacks matching durable repository identity; legacy cleanup remains blocked without explicit legacy recovery disposal');
   } else {
     if (!equal(await repositoryIdentity(task.worktree, runtime), repository)) throw new Error('Retained worker belongs to another repository');
     if (await exists(task.repo) && !equal(await repositoryIdentity(task.repo, runtime), repository)) throw new Error('Original repository path was replaced');
@@ -104,8 +121,8 @@ export async function cleanupEvidence(task, input, runtime, observe, finalizatio
   const evidence = digest(JSON.stringify({ task: await lifecycleJSON(join(task.directory, 'task.json')),
     history: archive.historyHash, job: archive.job, status: archive.status, result, reconciliation,
     containment: await lifecycleJSON(join(task.directory, 'containment.json')), repository,
-    finalization: finalization ?? null }));
-  return { repository, evidence, stopped, backendPresent: backend !== null,
+    finalization: finalization ?? null, legacyRecovery: input.legacyRecovery === true, legacyRecords }));
+  return { repository, evidence, stopped, backendPresent: backend !== null, legacyRecovery: input.legacyRecovery === true,
     status: { ...archive.status, phase: 'RECONCILED_EXITED', backendAuthority: false,
       provenance: 'original-session-terminal-review-v1', authority: 'cleanup-only' } };
 }

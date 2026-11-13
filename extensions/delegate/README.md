@@ -182,7 +182,7 @@ Preparation/admission failures retain artifacts for manual reconciliation.
 ## Cleanup-only historical operations
 
 `delegate_cleanup {task, repository, action, disposition?, selections?,
-expectedNonce?, expectedEvidence?, expectedFingerprint?, expectedFinalization?}`
+expectedNonce?, expectedEvidence?, expectedFingerprint?, expectedFinalization?, legacyRecovery?}`
 provides a separately confirmed cleanup route across sessions or after removal of
 a linked source checkout. Enable `cleanupProtocol: 1` alongside scoped
 reconciliation/finalization (and disposal for permanent payload deletion), only
@@ -232,9 +232,10 @@ source paths fail closed; origin URLs and matching commits are not identity.
 New finalizations record main-checkout/common-directory paths and device/inode
 identities in authorization, ready record and receipt. Those bound records allow
 future cleanup-only disposal even if the linked source no longer exists.
-**Older finalized archives without that independent identity remain blocked.**
-No fallback fabricates the binding from bundle ancestry, recreates a source
-checkout, edits manifests/receipts or clears claims. Existing owning-session
+**Older finalized archives without that independent identity remain blocked by default.**
+The separately enabled recovery-only exception below explicitly authorizes loss
+without claiming historical identity. No fallback fabricates a binding from bundle
+ancestry, recreates a source checkout, edits manifests/receipts or clears claims. Existing owning-session
 operations remain available under their original gates; legacy scoped/stopped
 limitations are unchanged.
 
@@ -247,6 +248,46 @@ plans/sets/Trash journals and unknown-outcome barriers remain protected: inspect
 selected payload scope and stop for protected operational evidence, never invoke
 a provider action to make cleanup possible. See the [cleanup skill](../../skills/delegate-cleanup/SKILL.md)
 for inventory, fish-compatible usage and retained-space reporting.
+
+### Explicit legacy recovery-only exception
+
+`legacyRecoveryDisposalProtocol: 1` is a separate operator opt-in, requiring all
+ordinary cleanup/disposal/scoped protocols and a reviewed deployment/fresh Pi
+session. It enables only `delegate_cleanup` with `action: "dispose"`,
+`selections: ["recovery"]` and `legacyRecovery: true` for already-finalized
+original scoped attempts whose old receipt/authorization/intent/ready records
+entirely lack repository bindings. Missing, partial/null, mismatched or modern
+identity records cannot be downgraded through this flag. Do not rewrite real
+records to make them eligible. The ordinary path still refuses legacy archives.
+
+The user explicitly selects a canonical user-owned current main checkout. Its
+local identity is checked for path safety/reused delegate refs, but the archive's
+historical repository relationship is **unverified**, not reconstructed from a
+bundle, origin or matching commits. An extant original source must agree. The
+exception authorizes loss of recovery copies despite that missing historical
+binding, not source disposal or proof that the original work was integrated.
+
+First assess with no expected fields. Review exact payload scope/protected data
+and obtain explicit approval. Then supply the returned nonce, evidence and
+finalization digests with the same flag/selections. Assessment binds the caller,
+mode, current repository, payload metadata and unchanged old finalization records.
+The fresh confirmation names the legacy exception and irreversible loss. Denial,
+no UI, abort, navigation or changed evidence admits nothing. Original terminal
+review ancestry, backend consistency, fresh independent same-boot stopped proof,
+complete coherent finalization, no revisions, absent worker/ref and exclusive
+permanent disposal claims remain mandatory. Old uncontained/prior-boot evidence
+and interrupted/partial operations remain blockers; no force/retry/claim clearing.
+
+Only `finalization/source.bundle` and `finalization/local-files.json` are unlinked
+using the existing held-directory, ownership, symlink and mount safeguards. No
+new archive or retroactive identity record is created; build outputs, worktrees,
+branches, task roots, sessions and audit records are not deleted. The new disposal
+authorization/claim/receipt record `legacyRecovery: true` and
+`repositoryBinding: "operator-selected; historical identity unverified"`.
+Inspect and preserve real-mail plans/sets/Trash journals before approval; the
+exception grants no provider action or unknown-outcome override. See the
+[cleanup skill](../../skills/delegate-cleanup/SKILL.md#explicit-legacy-recovery-disposal)
+for the operation sequence and retention/accounting limits.
 
 ## Working-state snapshots
 
@@ -586,7 +627,8 @@ explicitly provision the skill directory if it should be discoverable.
    via original-attempt reconciliation. Separately enabled cleanup-only disposal
    can operate without custody only when the finalization records durably bind
    independent local repository identity; legacy archives lacking that binding
-   stay blocked. Otherwise use the owning session or investigate.
+   stay blocked unless separately opted into the explicit recovery-only legacy
+   exception above. Otherwise use the owning session or investigate.
 4. The tool inventories the exact selected payload metadata, ownership, inode,
    device, mode, size, link count and timestamps without copying build contents.
    Confirmation binds that inventory. A durable exclusive `disposal-claim.json`
@@ -967,6 +1009,12 @@ Cleanup-only fixtures additionally cover removed linked sources, previous custod
 ordinary new finalization identity receipts, clone/alias/replaced-source rejection,
 legacy-archive refusal, exact operation/session binding, no custody append,
 exclusive claims, interrupted cleanup and stale/denied/non-UI confirmations.
+Legacy recovery fixtures cover explicit runtime/mode/selections, truthful missing
+historical identity, read-only assessment, preservation of old receipts/builds/
+sessions, partial/modern binding rejection, retained terminal/stopped/revision
+barriers, denial/stale mode/data/lifecycle/session, concurrent one-shot disposal
+and interrupted claims with no retry. They create old-schema fixtures only in
+temporary repositories; no production receipts are rewritten.
 Finalization/disposal fixtures additionally cover archived reconciled provenance,
 second-claim fencing, irreversible selections, mount-inventory/bind-mount rejection,
 held-directory symlink replacement, interrupted archives/deletions, concurrent

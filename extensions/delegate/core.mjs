@@ -57,6 +57,7 @@ export async function runtimeFrom(path) {
     || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
   if (runtime.disposalProtocol !== undefined && runtime.disposalProtocol !== 1) throw new Error('Invalid delegate disposal runtime');
   if (runtime.cleanupProtocol !== undefined && runtime.cleanupProtocol !== 1) throw new Error('Invalid delegate cleanup runtime');
+  if (runtime.legacyRecoveryDisposalProtocol !== undefined && runtime.legacyRecoveryDisposalProtocol !== 1) throw new Error('Invalid delegate legacy recovery disposal runtime');
   if (runtime.reconciliationProtocol !== undefined && runtime.reconciliationProtocol !== 1) throw new Error('Invalid delegate reconciliation runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;

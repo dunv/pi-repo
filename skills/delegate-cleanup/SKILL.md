@@ -123,8 +123,9 @@ A clone, origin URL, matching commit or bundle is not repository identity. New
 finalizations durably bind the main checkout/common-directory identity into their
 authorization, ready record and receipt so later disposal need not depend on the
 removed linked source path. Historical finalized archives **without this binding
-stay blocked**; do not recreate source paths, rewrite receipts or substitute a
-matching clone to make them eligible.
+stay blocked by default**. A separately enabled, explicitly confirmed recovery-only
+exception is described below; do not recreate source paths, rewrite receipts or
+substitute a matching clone to fabricate historical identity.
 
 Every cleanup gate revalidates the original private terminal tool record, exact
 backend admission identity, unchanged result/reconciliation provenance and fresh
@@ -141,6 +142,51 @@ blocked rather than permitting a second cleanup attempt.
 This feature needs separate reviewed deployment/runtime enablement and a fresh Pi
 session; changing source or reading this skill does not enable it. It does not
 retroactively make legacy archives safe or authorize any real-mail/provider action.
+
+## Explicit legacy recovery disposal
+
+Older completed finalizations can lack independent historical repository identity.
+That missing binding need not make recovery copies undeletable forever, but it
+must not silently become verified identity. Only after separately reviewed
+publication/deployment, enable `legacyRecoveryDisposalProtocol: 1` alongside all
+cleanup/disposal/scoped protocols and start a fresh Pi session. No installed
+runtime is changed by reading this skill.
+
+Use `delegate_cleanup` with the exact task UUID, an explicitly selected canonical
+main `repository`, `action: "dispose"`, `selections: ["recovery"]` and
+`legacyRecovery: true`. Omit expected fields for read-only assessment. The current
+repository is path/ownership checked and checked for reused delegate refs; it is
+**operator-selected, not proven to be the historical repository**. An existing
+original source path must still agree. A matching bundle/commit/clone is not a
+replacement identity proof.
+
+This mode is allowed only when the receipt, authorization, intent and ready record
+entirely lack repository bindings. Partial/null/conflicting or modern bindings
+are not legacy exceptions. Never edit production records to downgrade them.
+Successful finalization must already be complete and coherent; original private
+terminal review, exact backend identity/consistency, fresh same-boot stopped proof,
+absent worker checkout/ref and existing one-shot claim gates still apply.
+Revisions, unknown outcomes, rebooted/legacy-uncontained attempts, incomplete or
+interrupted finalization/disposal remain blocked. This is not a general legacy
+worker/worktree cleanup route or a cache-deletion option.
+
+Independently inspect the exact archive payloads and existing review first.
+Preserve protected operational evidence. Obtain approval for irreversible loss of
+those recovery copies despite the missing historical binding, then supply the
+assessment's `expectedNonce`, `expectedEvidence`, `expectedFinalization` and the
+same exact selections and `legacyRecovery: true`. Each task gets a fresh UI
+confirmation naming the exception and requiring idle originating/custodian,
+foreground and external build users. Denial/non-UI/stale state grants nothing.
+
+Only `finalization/source.bundle` and `finalization/local-files.json` are deleted,
+with held-directory traversal and the ordinary exclusive permanent disposal claim.
+No replacement archive is created. Old records are never rewritten or backfilled;
+the new claim/receipt explicitly record `legacyRecovery: true` and
+`repositoryBinding: "operator-selected; historical identity unverified"`.
+Identity, sessions, logs, previous claims and audit evidence remain. Report exact
+removed/skipped tasks, observed allocation and free-space changes. This exception
+never authorizes build-output deletion, finalization, source/worktree/branch
+removal, provider actions, journal removal or retry of uncertain operations.
 
 ## Protected records and truthful retention
 

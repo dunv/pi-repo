@@ -56,6 +56,7 @@ async function payloads(task, selections) {
 export async function disposalGate(task, input, runtime, context, ownClaim) {
   if (runtime.disposalProtocol !== 1 || runtime.finalizationProtocol !== 1 || runtime.containmentProtocol !== 1) throw new Error('Explicit scoped disposal runtime required');
   if (input.task !== task.id || input.expectedNonce !== task.nonce || !/^[a-f0-9]{64}$/.test(input.expectedFinalization)
+    || (input.legacyRecovery !== undefined && typeof input.legacyRecovery !== 'boolean')
     || !Array.isArray(input.selections) || !input.selections.length || input.selections.length > 2
     || new Set(input.selections).size !== input.selections.length || input.selections.some(s => !Object.hasOwn(choices, s))) throw new Error('Exact task/finalization and explicit payload selections required');
   if (!await absent(claimPath(task)) && (!ownClaim || (await json(claimPath(task))).id !== ownClaim)) throw new Error('Disposal already claimed or interrupted; no automatic retry');
@@ -70,6 +71,9 @@ export async function disposalGate(task, input, runtime, context, ownClaim) {
     || !equal(intent.authorization, receipt.authorization) || intent.task !== task.id
     || ready.archiveFingerprint !== receipt.authorization.archiveFingerprint) throw new Error('Incomplete/mismatched finalization; retain all payloads');
   const cleanup = context.cleanupVerify ? await context.cleanupVerify(task, receipt.authorization.id, ownClaim) : null;
+  if (input.legacyRecovery === true && (runtime.legacyRecoveryDisposalProtocol !== 1 || !cleanup?.legacyRecovery
+    || !equal(input.selections, ['recovery']))) throw new Error('Legacy recovery disposal requires the separately enabled cleanup-only gate');
+  if (Boolean(cleanup?.legacyRecovery) !== (input.legacyRecovery === true)) throw new Error('Legacy disposal mode mismatch');
   if (!cleanup) await assertCustody(task, context.who, receipt.authorization.id);
   const attempts = await finalizationAttempts(task, runtime), proofs = [];
   const statuses = cleanup ? [cleanup.status] : task.reconciliationId
@@ -97,12 +101,13 @@ export async function disposalGate(task, input, runtime, context, ownClaim) {
     await readFile('/proc/self/mountinfo', 'utf8'));
   const root = await canonicalDirectory(task.directory), rootIdentity = [root.dev, root.ino];
   const files = await payloads(task, input.selections);
-  return { receipt, files, proofs, statuses, rootIdentity, repository, cleanupCaller: cleanup ? context.cleanupCaller : null, cleanupEvidence: cleanup?.evidence ?? null, inventory: digest(JSON.stringify([rootIdentity, files])),
+  return { receipt, files, proofs, statuses, rootIdentity, repository, legacyRecovery: input.legacyRecovery === true, cleanupCaller: cleanup ? context.cleanupCaller : null, cleanupEvidence: cleanup?.evidence ?? null, inventory: digest(JSON.stringify([rootIdentity, files])),
     allocatedBytes: files.reduce((n, f) => n + f.allocatedBytes, 0) };
 }
 export function disposalAuthorization(task, input, gate) {
   return { id: randomUUID(), task: task.id, nonce: task.nonce, finalization: input.expectedFinalization,
     selections: input.selections, inventory: gate.inventory, repository: gate.repository,
+    legacyRecovery: gate.legacyRecovery, repositoryBinding: gate.legacyRecovery ? 'operator-selected; historical identity unverified' : 'verified',
     cleanupCaller: gate.cleanupCaller, cleanupEvidence: gate.cleanupEvidence, confirmedAt: new Date().toISOString() };
 }
 // Use held directory descriptors through Linux /proc/self/fd so an intermediate
@@ -150,6 +155,8 @@ export async function disposeTask(task, input, runtime, context, authorization, 
   if (!authorization || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(authorization.id) || authorization.task !== task.id || authorization.nonce !== task.nonce
     || authorization.finalization !== input.expectedFinalization || !equal(authorization.selections, input.selections)
     || authorization.inventory !== gate.inventory || !equal(authorization.repository, gate.repository)
+    || authorization.legacyRecovery !== gate.legacyRecovery
+    || authorization.repositoryBinding !== (gate.legacyRecovery ? 'operator-selected; historical identity unverified' : 'verified')
     || authorization.cleanupEvidence !== gate.cleanupEvidence || !equal(authorization.cleanupCaller, gate.cleanupCaller) || !Number.isFinite(Date.parse(authorization.confirmedAt))) throw new Error('Fresh bound interactive disposal authorization required');
   guard();
   await durableSave(claimPath(task), { ...authorization, kind: 'permanent-payload-disposal', files: gate.files,

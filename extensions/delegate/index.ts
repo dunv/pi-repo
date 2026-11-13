@@ -91,9 +91,10 @@ export default function (pi: ExtensionAPI) {
   }
   pi.registerTool({
     name: "delegate_cleanup", label: "Assess or confirm historical delegate cleanup", exposure: "model-only", executionMode: "sequential",
-    description: "Original scoped-task cleanup across sessions/missing source checkouts; no custody transfer or workers. Requires opt-in runtime, bound original terminal review, local Git identity and fresh stopped/backend proof. No expected fields: read-only assessment. Returned expected fields request fresh interactive confirmation of finalize or separately selected disposal. Revisions, legacy archives lacking identity, partial claims and uncertainty stay blocked; no retry or claim clearing. Preserve sessions/audit records and real-mail plans/Trash journals.",
+    description: "Historical original-task cleanup; no custody transfer or workers. Opt-in runtime, bound terminal review and fresh stopped/backend proof required. No expected fields: read-only assessment; returned fields request fresh interactive confirmation. Git identity required except separately enabled legacyRecovery recovery-only disposal. Revisions, uncertainty and partial claims block; no retry/claim clearing. Preserve sessions/audit and real-mail plans/Trash journals.",
     parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }), repository: Type.String({ description: "Absolute canonical main checkout; never inferred from cwd" }),
       action: Type.Union([Type.Literal("finalize"), Type.Literal("dispose")]),
+      legacyRecovery: Type.Optional(Type.Boolean({ description: "Recovery-only legacy exception: opt-in runtime required; historical repository identity stays unverified." })),
       disposition: Type.Optional(Type.Union([Type.Literal("integrated"), Type.Literal("discarded")])),
       selections: Type.Optional(Type.Array(Type.Union([Type.Literal("build-output"), Type.Literal("recovery")]), { minItems: 1, maxItems: 2 })),
       expectedNonce: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -121,7 +122,8 @@ export default function (pi: ExtensionAPI) {
         gate = await finalizationGate(task, request, runtime, [], undefined, undefined, context);
       } else {
         request = { task: task.id, expectedNonce: input.expectedNonce ?? task.nonce,
-          expectedFinalization: input.expectedFinalization ?? digest(JSON.stringify(task.finalized)), selections: input.selections ?? ["build-output", "recovery"] };
+          expectedFinalization: input.expectedFinalization ?? digest(JSON.stringify(task.finalized)), selections: input.selections ?? ["build-output", "recovery"],
+          legacyRecovery: input.legacyRecovery === true };
         gate = await disposalGate(task, request, runtime, context);
       }
       const expectedEvidence = digest(JSON.stringify([who.session, who.file, input.action, request,
@@ -132,17 +134,22 @@ export default function (pi: ExtensionAPI) {
         ...(input.action === "finalize" ? { expectedFingerprint: assessed.fingerprint, disposition: request.disposition,
           worktree: task.worktree, localFiles: gate.local.files.length, localBytes: gate.local.bytes }
           : { expectedFinalization: request.expectedFinalization, selections: request.selections, entries: gate.files.length, allocatedBytes: gate.allocatedBytes }),
-        authority: "cleanup-only", backendAuthority: false,
-        instruction: "Assessment only. Review this exact task and payload scope, then supply all returned expected fields for separate fresh confirmation. No custody transfer, worker start or deletion is authorized by assessment. Legacy identity/uncertainty barriers remain." });
+        authority: "cleanup-only", backendAuthority: false, legacyRecovery: gate.legacyRecovery ?? false,
+        repositoryBinding: gate.legacyRecovery ? "operator-selected; historical identity unverified" : "verified",
+        instruction: "Assessment only. Review this exact task and payload scope, then supply all returned expected fields and the same legacyRecovery mode for separate fresh confirmation. No custody transfer, worker start or deletion is authorized by assessment. Other identity/uncertainty barriers remain." });
       if (input.expectedEvidence !== expectedEvidence) throw new Error("Cleanup assessment changed; inspect again before confirmation");
       if (!ctx.hasUI) throw new Error("Cleanup requires fresh interactive confirmation");
-      const approved = await ctx.ui.confirm(input.action === "finalize" ? "Archive and remove this historical delegate?" : "Permanently delete selected historical delegate payloads?", [
-        `Task: ${task.id}`, `Original source: ${task.repo}`, `Verified main repository: ${gate.repository.main}`,
+      const approved = await ctx.ui.confirm(input.action === "finalize" ? "Archive and remove this historical delegate?"
+        : gate.legacyRecovery ? "Irreversibly discard legacy recovery without historical repository identity?" : "Permanently delete selected historical delegate payloads?", [
+        `Task: ${task.id}`, `Original source: ${task.repo}`,
+        `${gate.legacyRecovery ? "Operator-selected current main repository (historical relationship UNVERIFIED)" : "Verified main repository"}: ${gate.repository.main}`,
         `Git directory: ${gate.repository.common}`, `Original nonce: ${task.nonce}`, `Evidence: ${expectedEvidence}`,
         ...(input.action === "finalize" ? [`Disposition: ${request.disposition} (not automatic integration proof)`, `Worktree: ${task.worktree}`, `Branch: ${task.branch}`,
           `Fingerprint: ${request.expectedFingerprint}`, `Archive: ${gate.local.files.length} local/ignored files (${gate.local.bytes} bytes), plus Git bundle. Build outputs, recovery, logs and audit records remain.`]
           : [`Selections: ${request.selections.join(", ")}`, `Finalization: ${request.expectedFinalization}`, `Entries: ${gate.files.length}; allocated bytes: ${gate.allocatedBytes}`,
             "No replacement archive. Recovery selection irreversibly removes the Git bundle and local-files archive; allocation is not guaranteed reclaimed free space."]),
+        ...(gate.legacyRecovery ? ["LEGACY EXCEPTION: historical repository identity was not recorded. You explicitly authorize loss of only these finalized recovery copies despite that missing binding; this does not prove integration or grant authority over source/worktrees/builds.",
+          `Exact archive directory: ${task.directory}/finalization`, "Only source.bundle and local-files.json are deleted. No old receipt or identity is rewritten."] : []),
         "Confirm all originating/custodian/foreground sessions and external build servers are idle. Worker containment does not fence arbitrary foreground activity.",
         "Preserve real-mail plans/sets and Trash journals. Stop if selected payloads contain operational evidence; no provider action or unknown-outcome override is authorized.",
         "Cleanup only: no foreground custody transfer, worker restart, publication, claim clearing or automatic retry. Interrupted operations stay blocked; sessions and audit records remain.",
