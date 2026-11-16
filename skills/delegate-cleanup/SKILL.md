@@ -143,6 +143,59 @@ This feature needs separate reviewed deployment/runtime enablement and a fresh P
 session; changing source or reading this skill does not enable it. It does not
 retroactively make legacy archives safe or authorize any real-mail/provider action.
 
+## Later retained-artifact pruning
+
+When a reviewed deployment explicitly enables `retentionProtocol: 1` alongside the
+cleanup/disposal/reconciliation/finalization/containment protocols, `delegate_prune`
+offers a **separate** later operation. It is never a replacement for
+`delegate_dispose`: it applies only after a coherent completed `disposal-claim.json`
+and `disposed.json`, and interrupted/partial/mismatched ordinary claims remain blocked.
+Use the exact historical task UUID and an explicit canonical main `repository`.
+
+First call with explicit retained `selections` and no expected fields. The assessment is
+read-only and returns nonce, finalization, evidence and exact inventory fields. Inventory
+pages default to 50 rows (`inventoryOffset`, `inventoryLimit` up to 1,000). Follow
+`nextInventoryOffset` until null, verifying an unchanged `expectedInventory` digest
+across pages; changed evidence requires a fresh assessment, not combining snapshots.
+Confirm all original/custodian/foreground/external build users are idle, inspect protected
+operational contents, then supply all returned fields in the same receiving session for
+a fresh UI confirmation. Every operation rechecks independent repository identity,
+original archived terminal evidence/backend consistency and same-boot stopped proof.
+There is no custody transfer, worker/provider/process action, task-root deletion, retry
+or claim clearing.
+
+Only currently retained `build-output`, recovery's `finalization/source.bundle` and
+`finalization/local-files.json`, and an exact package-produced diagnostics allowlist are
+candidates: root `brief.md`, `report.md`, `worker.log`, `metrics.jsonl`, `tracked.diff`,
+`claude-result.json`, package check logs named `check-<0..7>-<UUID>.log`, and regular private unshared
+Pi transcript files named `<timestamp>_<UUID>.jsonl` directly in task-local `sessions/`.
+Unknown/nested session entries block rather than being recursively purged. Check
+intent/result summaries, feedback records, worker result/containment, invalid-tool
+records, lifecycle identities, finalization/disposal evidence and repository bindings
+stay retained. External initiating/custodian Pi/Claude sessions always stay retained;
+`task.owner.file` is required for future `archived()` validation and is never pruned,
+including through a symlink/hardlink alias. Diagnostic content is read through held
+no-follow FDs and content hashes bind confirmation. Stop on detectable Mailhub/real-mail
+plans, approved sets, Trash journals or unknown-outcome evidence. Recovery archive
+paths/content receive a bounded check, but operator inspection of arbitrary build/archive
+content remains mandatory: classification cannot prove arbitrary data is safe.
+
+Each successful later operation appends a permanent receipt chained to the completed
+predecessor. Missing receipts, dangling claims, duplicate predecessors or unknown
+records block all future operations rather than allowing a retry. `compactDisposalClaim:
+true` is an empty-selection, separately confirmed audit compaction: it replaces only
+the completed disposal claim with a held-root fsync/rename durable tombstone retaining
+its same original operation ID/authorization fields, all non-file proof fields, original
+byte SHA-256 and inventory digest/count/allocation summary. The assessment names exact
+old claim metadata/allocation and irreversible loss of per-file paths/stamps/kinds/
+targets/allocation details. Hardlinked claims cannot be replaced. A crash leaves the new
+claim pending and blocking; a tombstone alone does not declare completion. Complete-chain
+receipts and tombstone hashes are revalidated. Only the original disposal inventory is
+compactable; later prune claims retain their own selected-file inventories.
+Compaction is not archival or a free-space guarantee. Report candidate/retained groups,
+before/after allocated blocks and filesystem free-space observations with durable-record,
+open-file, snapshot and concurrency limitations.
+
 ## Explicit legacy recovery disposal
 
 Older completed finalizations can lack independent historical repository identity.
@@ -201,10 +254,13 @@ operation or unknown-outcome override.
 
 Required lifecycle records remain: task/attempt/submission identity, permanent
 claims, reconciliation provenance, results, containment, finalization
-intent/ready/receipt, disposal intent/receipt and review/check evidence. This
-version conservatively also retains briefs, reports, feedback, logs and session
-artifacts; there is no age limit, automatic pruning, log/session purge, or generic
-permanent deletion tool. Large unselected data can therefore remain.
+intent/ready/receipt, disposal intent/receipt and review/check evidence. Ordinary
+finalization/disposal conservatively retain briefs, reports, feedback, logs
+and session artifacts. The separately enabled later `delegate_prune` operation has no
+age policy and can remove only its documented task-local diagnostics, including exact
+allowlisted task-local worker transcript files and check-log/review content. It never
+purges external initiating/custodian sessions, feedback/check summaries, unknown files
+or arbitrary logs. Large unselected data can therefore remain.
 
 Report exact tasks/payload groups actually removed and reasons others remain
 blocked. `unlinkedAllocatedBytes` excludes multiply-linked files, but is not a

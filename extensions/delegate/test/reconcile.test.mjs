@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, mkdir, rm, readdir, chmod, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm, readdir, chmod, symlink, link, lstat, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +16,8 @@ import { assessReconciliation, reconciliationSummary, reconciliationAuthorizatio
 import { feedbackTask, writeFeedback } from '../feedback.mjs';
 import { finalizationGate, finalizationAuthorization, finalizeTask } from '../finalize.mjs';
 import { disposalGate, disposalAuthorization, disposeTask } from '../dispose.mjs';
-import { cleanupEvidence } from '../cleanup.mjs';
+import { cleanupTask, cleanupEvidence } from '../cleanup.mjs';
+import { assessPrune, pruneExpectedEvidence, pruneAuthorization, pruneTask, compactDisposalClaim } from '../prune.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 async function fixture(fn, { linked = false } = {}) {
@@ -732,3 +733,307 @@ test('legacy recovery has one concurrent winner and interrupted disposal preserv
     } finally { h.close(); }
   }, { linked: true });
 });
+
+async function completedPruneFixture(f, selections = ['build-output']) {
+  Object.assign(f.runtime, { cleanupProtocol: 1, finalizationProtocol: 1, disposalProtocol: 1, retentionProtocol: 1 });
+  const c = await cleanupFixture(f), finalized = await finalizeTask(c.task, c.input, f.runtime, [], c.authorization, undefined, undefined, c.context);
+  const task = { ...c.task, finalized };
+  await mkdir(join(task.directory, 'build-output'));
+  await writeFile(join(task.directory, 'build-output', 'cache'), 'synthetic rebuildable cache');
+  await writeFile(join(task.directory, 'report.md'), 'Synthetic worker report.', { mode: 0o600 });
+  await writeFile(join(task.directory, 'worker.log'), 'Synthetic worker log.', { mode: 0o600 });
+  await writeFile(join(task.directory, 'metrics.jsonl'), '{"synthetic":true}\n', { mode: 0o600 });
+  await writeFile(join(task.directory, 'tracked.diff'), 'synthetic review patch', { mode: 0o600 });
+  const checkId = `check-0-${randomUUID()}`;
+  await writeFile(join(task.directory, checkId + '.log'), 'synthetic check output', { mode: 0o600 });
+  await writeFile(join(task.directory, checkId + '.json'), JSON.stringify({ index: 0, passed: true }), { mode: 0o600 });
+  await mkdir(join(task.directory, 'sessions'), { mode: 0o700 });
+  await writeFile(join(task.directory, 'sessions', `2026-11-15T22-01-36-463Z_${randomUUID()}.jsonl`), '{"synthetic":"task-local worker session"}\n', { mode: 0o600 });
+  const disposalInput = { task: task.id, expectedNonce: task.nonce, expectedFinalization: digest(JSON.stringify(finalized)), selections };
+  const disposal = await disposalGate(task, disposalInput, f.runtime, c.context);
+  await disposeTask(task, disposalInput, f.runtime, c.context, disposalAuthorization(task, disposalInput, disposal));
+  return { task, context: c.context, disposalInput, originalHistory: await readFile(f.from.file, 'utf8') };
+}
+function confirmedPrune(gate, input, caller) {
+  const confirmation = { ...input, expectedNonce: gate.task.nonce, expectedFinalization: digest(JSON.stringify(gate.task.finalized)),
+    expectedInventory: gate.inventory, expectedEvidence: pruneExpectedEvidence(gate, input, caller) };
+  return { input: confirmation, authorization: pruneAuthorization(gate, confirmation, caller) };
+}
+
+// This fixture reaches the prune implementation through real reconciliation,
+// finalization and disposeTask records; no invented disposal schema is used.
+test('later retention operations are sequential, retain external provenance, and compact the real disposal claim coherently', () => fixture(async f => {
+  const prepared = await completedPruneFixture(f), caller = f.to;
+  assert.equal(await readFile(f.from.file, 'utf8'), prepared.originalHistory);
+  const recoveryRequest = { task: f.task.id, repository: f.main, selections: ['recovery'] };
+  const recoveryGate = await assessPrune(f.runtime, recoveryRequest, f.observe);
+  assert.deepEqual(recoveryGate.files.map(row => row.path).sort(), ['finalization/local-files.json', 'finalization/source.bundle']);
+  const recovery = confirmedPrune(recoveryGate, recoveryRequest, caller);
+  const recoveryReceipt = await pruneTask(f.runtime, recovery.input, f.observe, recovery.authorization, () => {}, caller);
+  assert.deepEqual(recoveryReceipt.removedGroups, ['recovery']);
+  await assert.rejects(lstat(join(f.task.directory, 'finalization', 'source.bundle')), { code: 'ENOENT' });
+
+  const diagnosticsRequest = { task: f.task.id, repository: f.main, selections: ['diagnostics'] };
+  const diagnosticsGate = await assessPrune(f.runtime, diagnosticsRequest, f.observe);
+  assert.ok(diagnosticsGate.files.some(row => row.path.startsWith('sessions/')));
+  assert.ok(diagnosticsGate.files.filter(row => row.kind === 'file').every(row => /^[a-f0-9]{64}$/.test(row.contentSha256)));
+  const diagnostics = confirmedPrune(diagnosticsGate, diagnosticsRequest, caller);
+  await pruneTask(f.runtime, diagnostics.input, f.observe, diagnostics.authorization, () => {}, caller);
+  await assert.rejects(lstat(join(f.task.directory, 'sessions')), { code: 'ENOENT' });
+  assert.equal(await readFile(f.from.file, 'utf8'), prepared.originalHistory, 'originating session is external and retained');
+  assert.ok(await readFile(join(f.task.directory, 'task.json'))); assert.ok(await readFile(join(f.task.directory, 'result.json')));
+  const retainedCheck = (await readdir(f.task.directory)).find(name => /^check-0-[a-f0-9-]{36}\.json$/.test(name));
+  assert.ok(retainedCheck); assert.ok(await readFile(join(f.task.directory, retainedCheck)));
+  assert.ok(await readFile(join(f.task.directory, 'feedback', (await readdir(join(f.task.directory, 'feedback')))[0])));
+
+  const compactRequest = { task: f.task.id, repository: f.main, selections: [], compactDisposalClaim: true };
+  const compactGate = await assessPrune(f.runtime, compactRequest, f.observe);
+  assert.equal(compactGate.files[0].path, 'disposal-claim.json'); assert.ok(compactGate.allocatedBytes > 0);
+  assert.equal(compactGate.compaction.inventoryEntries, (await json(join(f.task.directory, 'disposed.json'))).entriesRemoved);
+  const old = await json(join(f.task.directory, 'disposal-claim.json')), compact = confirmedPrune(compactGate, compactRequest, caller);
+  const compactReceipt = await compactDisposalClaim(f.runtime, compact.input, f.observe, compact.authorization, () => {}, caller);
+  const tombstone = await json(join(f.task.directory, 'disposal-claim.json'));
+  assert.equal(tombstone.id, old.id); assert.equal(tombstone.task, old.task); assert.equal(tombstone.compacted, true);
+  assert.equal(Object.hasOwn(tombstone, 'files'), false); assert.equal(compactReceipt.compaction.entries, old.files.length);
+  assert.match(compactReceipt.compaction.irreversibleLoss, /Per-file/);
+  assert.ok(await assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: ['diagnostics'] }, f.observe)
+    .then(() => false, error => /no longer present|previously removed/.test(error.message)));
+  await assert.rejects(disposalGate(prepared.task, prepared.disposalInput, f.runtime, prepared.context), /already claimed/);
+  const oldCleanupInput = { task: f.task.id, repository: f.main, action: 'dispose' };
+  await assert.rejects(cleanupEvidence(await cleanupTask(f.runtime, oldCleanupInput), oldCleanupInput, f.runtime, f.observe), /already claimed/);
+}, { linked: true }));
+
+test('prune rejects missing/corrupt completion, stale lower-level authorization, interruption and reintroduced groups', async () => {
+  for (const mode of ['missing-receipt', 'claim-result-mismatch', 'stale', 'interrupted', 'reintroduced']) await fixture(async f => {
+    await completedPruneFixture(f); const caller = f.to, request = { task: f.task.id, repository: f.main, selections: ['recovery'] };
+    if (mode === 'missing-receipt') await rm(join(f.task.directory, 'disposed.json'));
+    if (mode === 'claim-result-mismatch') {
+      const path = join(f.task.directory, 'disposed.json'), value = await json(path); value.entriesRemoved++; await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+    }
+    if (mode === 'missing-receipt' || mode === 'claim-result-mismatch') {
+      await assert.rejects(assessPrune(f.runtime, request, f.observe), /completed coherent|incomplete|mismatched|inventory/); return;
+    }
+    const gate = await assessPrune(f.runtime, request, f.observe), confirmed = confirmedPrune(gate, request, caller);
+    if (mode === 'stale') {
+      confirmed.input.expectedInventory = 'f'.repeat(64);
+      await assert.rejects(pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller), /expected fields/);
+      assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false);
+    } else if (mode === 'interrupted') {
+      await assert.rejects(pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => { throw new Error('synthetic abort'); }, caller), /synthetic abort/);
+      assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false, 'abort before claim writes nothing');
+      let calls = 0;
+      await assert.rejects(pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => { if (++calls === 2) throw new Error('after claim'); }, caller), /after claim/);
+      await assert.rejects(assessPrune(f.runtime, request, f.observe), /claimed|interrupted|Dangling/);
+    } else {
+      await pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller);
+      await mkdir(join(f.task.directory, 'finalization'), { recursive: true });
+      await writeFile(join(f.task.directory, 'finalization', 'source.bundle'), 'reintroduced');
+      await assert.rejects(assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: ['diagnostics'] }, f.observe), /reappeared/);
+    }
+  }, { linked: true });
+});
+
+test('diagnostic/recovery inspection fails closed for protected text, unknown entries, symlinks and hardlink aliases', async () => {
+  for (const mode of ['protected', 'archive-protected', 'unknown', 'symlink', 'hardlink']) await fixture(async f => {
+    await completedPruneFixture(f); const report = join(f.task.directory, 'report.md');
+    if (mode === 'protected') await writeFile(report, 'unknown-outcome mail journal');
+    if (mode === 'archive-protected') {
+      const path = join(f.task.directory, 'finalization', 'local-files.json'), archive = await json(path);
+      archive.files.push({ name: 'mailhub-approved-set.json', mode: 0o600, base64: Buffer.from('trash journal').toString('base64') });
+      await writeFile(path, JSON.stringify(archive), { mode: 0o600 });
+    }
+    if (mode === 'unknown') await writeFile(join(f.task.directory, 'sessions', 'mystery.bin'), 'unknown');
+    if (mode === 'symlink') { await rm(report); await symlink(f.from.file, report); }
+    if (mode === 'hardlink') { await rm(report); await link(f.from.file, report); }
+    await assert.rejects(assessPrune(f.runtime, { task: f.task.id, repository: f.main,
+      selections: [mode === 'archive-protected' ? 'recovery' : 'diagnostics'] }, f.observe),
+      /Protected|unknown|unsafe|shared|symlink|Diagnostics|aliases/);
+    assert.ok(await readFile(f.from.file));
+    assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false);
+  }, { linked: true });
+});
+
+test('prune revalidates repository, finalization, result, archived history and same-boot containment without writing', async () => {
+  for (const mode of ['repository', 'finalization', 'result', 'history', 'containment', 'boot', 'private-root']) await fixture(async f => {
+    await completedPruneFixture(f);
+    if (mode === 'repository') await rename(f.main, f.main + '-moved');
+    if (mode === 'finalization') {
+      const path = join(f.task.directory, 'finalization', 'ready.json'), value = await json(path); value.archiveFingerprint = 'f'.repeat(64); await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+    }
+    if (mode === 'result') {
+      const path = join(f.task.directory, 'result.json'), value = await json(path); value.code = 9; await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+    }
+    if (mode === 'history') { f.call.message.content[0].arguments.openDiff = true; await f.persist(); }
+    if (mode === 'containment') await rm(join(f.task.directory, 'containment.json'));
+    if (mode === 'boot') {
+      const path = join(f.task.directory, 'containment.json'), value = await json(path); value.bootId = randomUUID(); await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+    }
+    if (mode === 'private-root') await chmod(f.task.directory, 0o755);
+    await assert.rejects(assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: ['recovery'] }, f.observe));
+    assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false);
+  }, { linked: true });
+});
+
+test('retention claims have one concurrent winner and compact mode cannot be changed through the lower-level API', () => fixture(async f => {
+  await completedPruneFixture(f); const caller = f.to, request = { task: f.task.id, repository: f.main, selections: ['recovery'] };
+  const gate = await assessPrune(f.runtime, request, f.observe), confirmed = confirmedPrune(gate, request, caller);
+  const results = await Promise.allSettled([
+    pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller),
+    pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller),
+  ]);
+  assert.equal(results.filter(row => row.status === 'fulfilled').length, 1);
+  const compactGate = await assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: [], compactDisposalClaim: true }, f.observe);
+  const compact = confirmedPrune(compactGate, { task: f.task.id, repository: f.main, selections: [], compactDisposalClaim: true }, caller);
+  await assert.rejects(compactDisposalClaim(f.runtime, { ...compact.input, compactDisposalClaim: false }, f.observe,
+    compact.authorization, () => {}, caller), /explicit compact mode/);
+  await assert.rejects(pruneTask(f.runtime, compact.input, f.observe, compact.authorization, () => {}, caller), /Payload API cannot/);
+  assert.ok(await readFile(join(f.task.directory, 'disposal-claim.json')));
+}, { linked: true }));
+
+test('delegate_prune tool assessment is read-only and denied/no-UI/abort/stale-session confirmation creates no claim', async () => {
+  for (const mode of ['denied', 'no-ui', 'abort', 'stale', 'session', 'inventory', 'backend', 'tree']) await fixture(async f => {
+    await completedPruneFixture(f); const controller = new AbortController();
+    const h = await host(f, async () => {
+      if (mode === 'session') h.ctx.sessionManager.getSessionId = () => randomUUID();
+      if (mode === 'abort') controller.abort();
+      if (mode === 'inventory') await writeFile(join(f.task.directory, 'finalization', 'source.bundle'), 'changed during confirmation', { mode: 0o600 });
+      if (mode === 'backend') await h.backend({ [f.job.id]: { id: f.job.id, label: f.job.label, created_at: f.job.created, status: 'Running' } });
+      if (mode === 'tree') await h.emit('session_tree');
+      return mode !== 'denied';
+    });
+    try {
+      const request = { task: f.task.id, repository: f.main, selections: ['recovery'] }, before = await readdir(f.task.directory);
+      const assessment = data(await h.invoke('delegate_prune', request));
+      assert.deepEqual(await readdir(f.task.directory), before); assert.deepEqual(h.calls, []);
+      assert.deepEqual(assessment.paths.sort(), ['finalization/local-files.json', 'finalization/source.bundle']);
+      if (mode === 'no-ui') h.ctx.hasUI = false;
+      await assert.rejects(h.invoke('delegate_prune', { ...request, expectedNonce: assessment.expectedNonce,
+        expectedFinalization: assessment.expectedFinalization,
+        expectedInventory: mode === 'stale' ? 'f'.repeat(64) : assessment.expectedInventory,
+        expectedEvidence: assessment.expectedEvidence }, controller.signal));
+      assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false);
+    } finally { h.close(); }
+  }, { linked: true });
+});
+
+test('retention compaction permits a later combined build and diagnostics selection and preserves unknown root files', () => fixture(async f => {
+  await completedPruneFixture(f, ['recovery']);
+  const caller = f.to, unknown = join(f.task.directory, 'unrecognized-operational-data');
+  await writeFile(unknown, 'retain unknown root data', { mode: 0o600 });
+  const request = { task: f.task.id, repository: f.main, selections: [], compactDisposalClaim: true };
+  const compact = confirmedPrune(await assessPrune(f.runtime, request, f.observe), request, caller);
+  await compactDisposalClaim(f.runtime, compact.input, f.observe, compact.authorization, () => {}, caller);
+  const payload = { task: f.task.id, repository: f.main, selections: ['build-output', 'diagnostics'] };
+  const confirmed = confirmedPrune(await assessPrune(f.runtime, payload, f.observe), payload, caller);
+  const result = await pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller);
+  assert.deepEqual(result.removedGroups, ['build-output', 'diagnostics']);
+  assert.deepEqual(result.retainedGroups, []);
+  assert.equal(await readFile(unknown, 'utf8'), 'retain unknown root data');
+  assert.ok(await readFile(f.from.file));
+  assert.equal((await json(join(f.task.directory, 'disposal-claim.json'))).compacted, true);
+}, { linked: true }));
+
+test('retention partial unlink and post-rename interruption retain blocking claims and never authorize a retry', async () => {
+  for (const mode of ['unlink', 'rename']) await fixture(async f => {
+    await completedPruneFixture(f); const caller = f.to;
+    const request = { task: f.task.id, repository: f.main, selections: mode === 'unlink' ? ['recovery'] : [],
+      ...(mode === 'rename' ? { compactDisposalClaim: true } : {}) };
+    const confirmed = confirmedPrune(await assessPrune(f.runtime, request, f.observe), request, caller);
+    let guards = 0;
+    const operation = mode === 'unlink' ? pruneTask : compactDisposalClaim;
+    await assert.rejects(operation(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {
+      if (++guards === (mode === 'unlink' ? 5 : 3)) throw new Error('synthetic partial interruption');
+    }, caller), /synthetic partial/);
+    assert.ok((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')));
+    await assert.rejects(lstat(join(f.task.directory, `retention-${confirmed.authorization.id}.json`)), { code: 'ENOENT' });
+    if (mode === 'unlink') await assert.rejects(lstat(join(f.task.directory, 'finalization', 'source.bundle')), { code: 'ENOENT' });
+    else assert.equal((await json(join(f.task.directory, 'disposal-claim.json'))).compacted, true);
+    await assert.rejects(assessPrune(f.runtime, request, f.observe));
+    await assert.rejects(operation(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller));
+    assert.ok(await readFile(join(f.task.directory, 'disposed.json')));
+    assert.ok(await readFile(f.from.file));
+  }, { linked: true });
+});
+
+test('retention history rejects corrupted receipts, duplicate identities, disconnected and unknown records', async () => {
+  for (const mode of ['receipt', 'duplicate', 'disconnected', 'unknown']) await fixture(async f => {
+    await completedPruneFixture(f); const caller = f.to, request = { task: f.task.id, repository: f.main, selections: ['recovery'] };
+    const confirmed = confirmedPrune(await assessPrune(f.runtime, request, f.observe), request, caller);
+    const receipt = await pruneTask(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller);
+    if (mode === 'receipt') {
+      receipt.removedGroups = [];
+      await writeFile(join(f.task.directory, `retention-${receipt.operation}.json`), JSON.stringify(receipt), { mode: 0o600 });
+    } else if (mode === 'duplicate') {
+      const old = await json(join(f.task.directory, `retention-after-${receipt.predecessor}.json`));
+      old.predecessor = 'f'.repeat(64);
+      await save(join(f.task.directory, `retention-after-${old.predecessor}.json`), old);
+    } else if (mode === 'disconnected') {
+      const orphan = { ...receipt, operation: randomUUID() };
+      await save(join(f.task.directory, `retention-${orphan.operation}.json`), orphan);
+    } else await writeFile(join(f.task.directory, 'retention-unrecognized'), 'unknown', { mode: 0o600 });
+    await assert.rejects(assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: ['diagnostics'] }, f.observe));
+    assert.ok(await readFile(join(f.task.directory, 'report.md')));
+  }, { linked: true });
+});
+
+test('retention compaction is denied for shared claims and still validates finalization and tombstone history afterward', async () => {
+  for (const mode of ['shared', 'finalization', 'tombstone', 'compaction-receipt']) await fixture(async f => {
+    await completedPruneFixture(f); const caller = f.to, path = join(f.task.directory, 'disposal-claim.json');
+    const request = { task: f.task.id, repository: f.main, selections: [], compactDisposalClaim: true };
+    if (mode === 'shared') {
+      await link(path, join(f.dir, 'shared-claim'));
+      await assert.rejects(assessPrune(f.runtime, request, f.observe), /unshared/); return;
+    }
+    const confirmed = confirmedPrune(await assessPrune(f.runtime, request, f.observe), request, caller);
+    const receipt = await compactDisposalClaim(f.runtime, confirmed.input, f.observe, confirmed.authorization, () => {}, caller);
+    if (mode === 'finalization') {
+      const ready = join(f.task.directory, 'finalization', 'ready.json'), record = await json(ready);
+      record.archiveFingerprint = 'e'.repeat(64); await writeFile(ready, JSON.stringify(record), { mode: 0o600 });
+    } else if (mode === 'tombstone') {
+      const record = await json(path); record.inventoryEntries++;
+      await writeFile(path, JSON.stringify(record), { mode: 0o600 });
+    } else {
+      receipt.compaction.inventoryAllocatedBytes++;
+      await writeFile(join(f.task.directory, `retention-${receipt.operation}.json`), JSON.stringify(receipt), { mode: 0o600 });
+    }
+    await assert.rejects(assessPrune(f.runtime, { task: f.task.id, repository: f.main, selections: ['recovery'] }, f.observe));
+    assert.ok(await readFile(join(f.task.directory, 'finalization', 'source.bundle')));
+  }, { linked: true });
+});
+
+test('delegate_prune pages exact read-only inventories with stable binding and confirms successful operations', () => fixture(async f => {
+  await completedPruneFixture(f); const h = await host(f);
+  try {
+    const request = { task: f.task.id, repository: f.main, selections: ['recovery'], inventoryLimit: 1 };
+    const first = data(await h.invoke('delegate_prune', request));
+    assert.equal(first.inventoryEntries.length, 1); assert.equal(first.nextInventoryOffset, 1);
+    const second = data(await h.invoke('delegate_prune', { ...request, inventoryOffset: first.nextInventoryOffset }));
+    assert.equal(second.inventoryEntries.length, 1); assert.equal(second.nextInventoryOffset, null);
+    assert.equal(second.expectedInventory, first.expectedInventory); assert.equal(second.expectedEvidence, first.expectedEvidence);
+    assert.notEqual(first.paths[0], second.paths[0]);
+    assert.deepEqual(h.calls, []);
+    const receipt = data(await h.invoke('delegate_prune', { ...request, expectedNonce: first.expectedNonce,
+      expectedInventory: first.expectedInventory, expectedEvidence: first.expectedEvidence, expectedFinalization: first.expectedFinalization }));
+    assert.deepEqual(receipt.removedGroups, ['recovery']); assert.deepEqual(h.calls, ['confirm']);
+    assert.ok(await readFile(f.from.file));
+  } finally { h.close(); }
+}, { linked: true }));
+
+test('retention protocol opt-in, paging bounds and fresh caller authorization cannot be bypassed', () => fixture(async f => {
+  await completedPruneFixture(f); const caller = f.to, request = { task: f.task.id, repository: f.main, selections: ['recovery'] };
+  for (const protocol of ['retentionProtocol', 'cleanupProtocol', 'disposalProtocol', 'reconciliationProtocol', 'finalizationProtocol', 'containmentProtocol']) {
+    await assert.rejects(assessPrune({ ...f.runtime, [protocol]: undefined }, request, f.observe), /protocols required/);
+  }
+  for (const invalid of [{ inventoryOffset: -1 }, { inventoryLimit: 1001 }, { selections: ['recovery', 'recovery'] },
+    { selections: [] }, { compactDisposalClaim: true }, { compactDisposalClaim: 'true' }]) {
+    await assert.rejects(assessPrune(f.runtime, { ...request, ...invalid }, f.observe), /explicit retained payload/);
+  }
+  const confirmed = confirmedPrune(await assessPrune(f.runtime, request, f.observe), request, caller);
+  for (const authorization of [{ ...confirmed.authorization, confirmedAt: 'not-a-date' },
+    { ...confirmed.authorization, confirmedAt: '2000-01-01T00:00:00Z' },
+    { ...confirmed.authorization, caller: { ...caller, session: randomUUID() } },
+    { ...confirmed.authorization, mode: 'compaction' }]) {
+    await assert.rejects(pruneTask(f.runtime, confirmed.input, f.observe, authorization, () => {}, caller), /Fresh bound/);
+  }
+  assert.equal((await readdir(f.task.directory)).some(name => name.startsWith('retention-after-')), false);
+}, { linked: true }));

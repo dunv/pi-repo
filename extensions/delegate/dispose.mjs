@@ -11,7 +11,8 @@ import { assertStopped } from './containment.mjs';
 import { repositoryIdentity, assertNoPayloadMounts } from './repository.mjs';
 export { assertNoPayloadMounts } from './repository.mjs';
 
-const choices = { 'build-output': ['build-output'], recovery: ['finalization/source.bundle', 'finalization/local-files.json'] };
+export const disposalChoices = { 'build-output': ['build-output'], recovery: ['finalization/source.bundle', 'finalization/local-files.json'] };
+const choices = disposalChoices;
 const claimPath = task => join(task.directory, 'disposal-claim.json');
 async function absent(path) {
   try { await lstat(path); return false; } catch (error) { if (error.code === 'ENOENT') return true; throw error; }
@@ -26,7 +27,7 @@ const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // Metadata binds disposable build state, not a claim that its contents were
 // reviewed. Source/ignored bytes were separately bound at finalization. Never
 // read build-file bodies or copy them into another disk-sized archive.
-async function payloads(task, selections) {
+export async function inventoryPayloads(task, paths) {
   const files = [], root = await canonicalDirectory(task.directory); let inventoryBytes = 0;
   async function walk(rel) {
     if (files.length >= 250000) throw new Error('Disposal inventory exceeds 250000 entries; investigate manually');
@@ -47,11 +48,14 @@ async function payloads(task, selections) {
       if (!equal(row.stamp, stamp(after).map(v => typeof v === 'bigint' ? v.toString() : v))) throw new Error('Build state changed during inventory');
     }
   }
-  for (const selection of selections) for (const rel of choices[selection]) {
+  for (const rel of paths) {
     await canonicalDirectory(join(task.directory, rel.split('/').slice(0, -1).join('/')));
     if (!await absent(join(task.directory, rel))) await walk(rel);
   }
   return files;
+}
+async function payloads(task, selections) {
+  return inventoryPayloads(task, selections.flatMap(selection => choices[selection]));
 }
 export async function disposalGate(task, input, runtime, context, ownClaim) {
   if (runtime.disposalProtocol !== 1 || runtime.finalizationProtocol !== 1 || runtime.containmentProtocol !== 1) throw new Error('Explicit scoped disposal runtime required');
@@ -114,7 +118,7 @@ export function disposalAuthorization(task, input, gate) {
 // directory swapped for a symlink cannot redirect traversal to an SDK/cache.
 // This fences cooperating callers, not hostile same-user mutation; any observed
 // change leaves a permanent claim and partial evidence, never an automatic retry.
-async function removePayloads(task, files, guard, rootIdentity) {
+export async function removePayloadInventory(task, files, guard, rootIdentity) {
   const root = await open(task.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   let unlinkedAllocatedBytes = 0;
   const rows = new Map(files.map(row => [row.path, row]));
@@ -165,7 +169,7 @@ export async function disposeTask(task, input, runtime, context, authorization, 
   if (fresh.inventory !== gate.inventory || !equal(fresh.repository, gate.repository)
     || fresh.cleanupEvidence !== gate.cleanupEvidence) throw new Error('Payload/repository/evidence changed after disposal claim; investigate manually');
   guard();
-  const unlinkedAllocatedBytes = await removePayloads(task, gate.files, guard, gate.rootIdentity);
+  const unlinkedAllocatedBytes = await removePayloadInventory(task, gate.files, guard, gate.rootIdentity);
   guard();
   const root = await canonicalDirectory(task.directory);
   if (!equal([root.dev, root.ino], gate.rootIdentity)) throw new Error('Task directory moved during disposal; investigate partial outcome');

@@ -11,6 +11,7 @@ import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
 import { assessCleanup, cleanupEvidence } from "./cleanup.mjs";
+import { assessPrune, pruneExpectedEvidence, pruneAuthorization, pruneTask, compactDisposalClaim } from "./prune.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
 import { ENTRY, initiatorLabel, prepare, prepareRevision, attemptDirectory, runtimeFrom, tasksFrom, json, lifecycleJSON, digest, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
@@ -89,6 +90,63 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
+  pi.registerTool({
+    name: "delegate_prune", label: "Later prune retained delegate artifacts", exposure: "model-only", executionMode: "sequential",
+    description: "Separately opt-in later cleanup of a modern independently repository-bound original task only after a coherent completed delegate_dispose claim and receipt; legacyRecovery never enables it. No custody transfer, worker/provider/process action, task-root purge or retry. Read-only without expected fields; confirmation binds this receiving session, exact metadata/content-hash inventory, completed disposal/finalization history and fresh terminal/stopped evidence. Only documented payloads, diagnostic/review content and task-local worker transcripts are candidates. Unknown/protected evidence, external initiating/custodian sessions, summaries, claims and lifecycle identity remain retained.",
+    parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }), repository: Type.String({ description: "Absolute canonical main checkout; never inferred from cwd" }),
+      selections: Type.Array(Type.Union([Type.Literal("build-output"), Type.Literal("recovery"), Type.Literal("diagnostics")]), { maxItems: 3 }),
+      inventoryOffset: Type.Optional(Type.Integer({ minimum: 0, description: "Read-only exact-inventory page offset; default 0." })),
+      inventoryLimit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000, description: "Inventory rows per assessment page; default 50." })),
+      compactDisposalClaim: Type.Optional(Type.Boolean({ description: "Separate audit-inventory compaction only; selections must be empty. Replaces the completed disposal claim with a durable tombstone, never removes it." })),
+      expectedNonce: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), expectedEvidence: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      expectedFinalization: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })), expectedInventory: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, who = owner(ctx), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => { guard(start); if (signal?.aborted || owner(ctx).session !== who.session || owner(ctx).file !== who.file) throw new Error("Retention prune canceled or session changed"); };
+      if (input.compactDisposalClaim ? input.selections.length !== 0 : input.selections.length === 0) throw new Error("Compaction is separate and has no payload selection; pruning requires explicit retained payload groups");
+      const committing = [input.expectedNonce, input.expectedEvidence, input.expectedFinalization, input.expectedInventory].some(value => value !== undefined);
+      if (committing && (!input.expectedNonce || !input.expectedEvidence || !input.expectedFinalization || !input.expectedInventory)) throw new Error("Supply all expected fields from a fresh retention assessment");
+      check();
+      const gate = await assessPrune(runtime, input, observeReconciliation);
+      const expectedFinalization = digest(JSON.stringify(gate.task.finalized));
+      const expectedEvidence = pruneExpectedEvidence(gate, input, { session: who.session, file: who.file });
+      check();
+      const offset = input.inventoryOffset ?? 0, limit = input.inventoryLimit ?? 50;
+      const page = gate.files.slice(offset, offset + limit);
+      const retainedGroups = Object.fromEntries(Object.entries(gate.retainedGroups).map(([group, value]: [string, any]) =>
+        [group, { present: value.present, entries: value.entries, allocatedBytes: value.allocatedBytes, pathsDigest: digest(JSON.stringify(value.paths)) }]));
+      if (!committing) return response({ task: gate.task.id, repository: gate.proof.repository, selections: input.selections,
+        compactDisposalClaim: input.compactDisposalClaim === true, availableGroups: gate.availableGroups, retainedGroups,
+        entries: gate.files.length, inventoryOffset: offset, inventoryLimit: limit,
+        nextInventoryOffset: offset + limit < gate.files.length ? offset + limit : null,
+        paths: page.map((row: any) => row.path), inventoryEntries: page,
+        allocatedBytes: gate.allocatedBytes, filesystemBefore: gate.filesystemBefore, compaction: gate.compaction,
+        expectedNonce: gate.task.nonce, expectedFinalization, expectedInventory: gate.inventory, expectedEvidence,
+        predecessor: gate.predecessor, authority: "retention-cleanup-only", backendAuthority: false,
+        instruction: "Assessment only. Exact inventory/content hashes are paginated; follow nextInventoryOffset until null and require the same expectedInventory digest across pages. UI display summarizes paths. Arbitrary build/archive content still requires operator inspection. Confirm original/custodian/foreground/external-build users are idle, then supply every returned expected field in this same receiving session. Unknown files, sessions and lifecycle records remain retained." });
+      if (input.expectedNonce !== gate.task.nonce || input.expectedFinalization !== expectedFinalization || input.expectedInventory !== gate.inventory || input.expectedEvidence !== expectedEvidence) throw new Error("Retention assessment changed; inspect again before confirmation");
+      if (!ctx.hasUI) throw new Error("Retention prune requires fresh interactive confirmation");
+      const approved = await ctx.ui.confirm(input.compactDisposalClaim ? "Compact completed delegate disposal audit inventory?" : "Permanently prune later retained delegate artifacts?", [
+        `Task: ${gate.task.id}`, `Receiving session: ${who.session}`, `Repository: ${gate.proof.repository.main}`, `Finalization: ${expectedFinalization}`,
+        `Exact inventory: ${gate.inventory}`, `Selections: ${input.compactDisposalClaim ? "disposal-claim audit compaction only" : input.selections.join(", ")}`,
+        `Candidate paths (${gate.files.length}): ${gate.files.slice(0, 20).map((row: any) => row.path).join(", ")}${gate.files.length > 20 ? " … (see full assessment inventory)" : ""}`,
+        `Observed allocated blocks: ${gate.allocatedBytes}; filesystem available bytes: ${gate.filesystemBefore.availableBytes}. Unlinking is not guaranteed free-space reclamation.`,
+        ...(input.compactDisposalClaim ? ["This irreversibly destroys the old disposal claim's per-file paths/stamps/targets/allocation details while preserving its original operation identity and non-file proof fields."] : ["Operator inspection is mandatory for arbitrary build/archive content; allowlist heuristics do not prove absence of mail or unknown-outcome state."]),
+        "Confirm originating/custodian/foreground sessions and external build users are idle. Fresh containment does not fence arbitrary foreground work.",
+        "Preserve real-mail plans/approved sets/Trash journals and unknown-outcome evidence. Stop for protected content; no provider action is authorized.",
+        "No task root, original Pi/Claude session, owner session file, lifecycle identity, finalization/disposal receipt or external symlink target is deleted. Interrupted claims stay blocked and are never retried.",
+      ].join("\n"));
+      if (!approved) throw new Error("Retention prune not authorized");
+      check();
+      const caller = { session: who.session, file: who.file };
+      const authorization = pruneAuthorization(gate, input, caller);
+      const receipt = input.compactDisposalClaim
+        ? await compactDisposalClaim(runtime, input, observeReconciliation, authorization, check, caller)
+        : await pruneTask(runtime, input, observeReconciliation, authorization, check, caller);
+      return response({ authority: "retention-cleanup-only", backendAuthority: false, ...receipt,
+        next: "Later retained operations require a new assessment against this completed history. Do not clear or retry interrupted claims." });
+    },
+  });
   pi.registerTool({
     name: "delegate_cleanup", label: "Assess or confirm historical delegate cleanup", exposure: "model-only", executionMode: "sequential",
     description: "Historical original-task cleanup; no custody transfer or workers. Opt-in runtime, bound terminal review and fresh stopped/backend proof required. No expected fields: read-only assessment; returned fields request fresh interactive confirmation. Git identity required except separately enabled legacyRecovery recovery-only disposal. Revisions, uncertainty and partial claims block; no retry/claim clearing. Preserve sessions/audit and real-mail plans/Trash journals.",

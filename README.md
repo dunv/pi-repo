@@ -5,7 +5,7 @@ Source-only [Pi](https://pi.dev) extension package (Node 24+, tested with Pi 1.3
 - [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-files panel and read-only diff viewer for linked worktrees and branches.
 - [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**, with session-owned jobs and retained evidence.
 - [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only Git snapshot. No watcher, fetch, or per-prompt scan.
-- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans, review/revision evidence, explicitly confirmed stopped-attempt recovery, opt-in foreground-only cross-session reconciliation, retained caller feedback, recoverable task finalization (including separately confirmed reconciled originals), opt-in permanent disposal of selected finalized build/recovery payloads, and separately confirmed cleanup-only historical operations without custody transfer (requiring independent local repository identity by default, with a separately opted-in recovery-only legacy exception).
+- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans, review/revision evidence, explicitly confirmed stopped-attempt recovery, opt-in foreground-only cross-session reconciliation, retained caller feedback, recoverable task finalization, opt-in one-shot disposal, cleanup-only historical operations, and a separate later retained-artifact prune/claim-compaction operation. Later pruning accepts only modern completed disposal records with independently bound canonical repository identity; the recovery-only legacy exception applies solely to the older one-shot cleanup/disposal route and never enables pruning.
 - [`skills/delegate-cleanup`](skills/delegate-cleanup/SKILL.md): read-only ownership/allocation inventory and explicit cleanup guidance; no age-based purge or deletion authority.
 
 ## Installation
@@ -41,7 +41,13 @@ or cleanup. After authorized integration/discard, `delegate_finalize` explicitly
 archives and removes a task worktree/branch with fresh confirmation and stopped-worker
 proof, retaining diagnostic evidence and build state. Separately confirmed
 `delegate_dispose` can permanently remove selected finalized build/recovery payloads;
-it never purges task identities, sessions or audit evidence. Opt-in `delegate_cleanup`
+it never purges task identities, sessions or audit evidence. A separate later
+`delegate_prune` operation, requiring a coherent completed modern disposal history,
+independently bound canonical repository identity and its own retention protocol/
+confirmation, can remove only selected still-retained payloads or compact the disposal
+file inventory while preserving permanent identity/evidence. `legacyRecovery` never
+makes a task eligible for this later operation.
+Opt-in `delegate_cleanup`
 assesses and separately confirms those lifecycle operations across sessions or
 when a linked source checkout disappeared, without adopting custody or enabling
 workers. Historical finalized archives lacking durable repository identity stay

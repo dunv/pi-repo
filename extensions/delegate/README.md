@@ -161,6 +161,7 @@ Pi-only levels such as `off` are rejected, not silently converted.
   finalized payloads read-only, or permanently removes explicitly selected per-task
   build outputs/recovery payloads after separate fresh interactive confirmation.
   See [Permanent payload disposal](#permanent-payload-disposal). This is not a task-root purge.
+- `delegate_prune {task, repository, selections, compactDisposalClaim?, expectedNonce?, expectedEvidence?, expectedFinalization?, expectedInventory?}` is a separate opt-in later operation. It only follows one coherent successfully completed `delegate_dispose`; it never changes ordinary disposal/cleanup semantics, custody, workers or providers. Omitted expected fields are read-only.
 - `delegate_feedback {task, expectedNonce, reviewStatus, usefulness, correctness,
   instructionFollowing, reviewEffort, wouldDelegateAgain, rationale, problems,
   improvements, evidence, reviewedFingerprint?, supersedes?}` records the **calling
@@ -288,6 +289,71 @@ Inspect and preserve real-mail plans/sets/Trash journals before approval; the
 exception grants no provider action or unknown-outcome override. See the
 [cleanup skill](../../skills/delegate-cleanup/SKILL.md#explicit-legacy-recovery-disposal)
 for the operation sequence and retention/accounting limits.
+
+## Later retained-artifact pruning
+
+`delegate_prune` requires `retentionProtocol: 1` together with cleanup, disposal,
+reconciliation, finalization and containment protocols, followed by reviewed deployment
+and a fresh Pi session. It is limited to original scoped historical tasks with a
+coherent completed `disposal-claim.json` and `disposed.json`. Interrupted, partial or
+mismatched ordinary disposal is never completion and remains blocked. The caller must
+supply the canonical independent main repository and first obtain a read-only exact
+inventory/nonce/finalization/evidence binding. A committing call supplies every
+returned field and requires a fresh UI confirmation bound to the same receiving
+session; all repository, original terminal review/backend and same-boot stopped-worker
+gates are rechecked after the dialog and exclusive claim.
+
+Selections are only retained `build-output`, the two recovery archive files, and an
+exact diagnostics allowlist: root `brief.md`, `report.md`, `worker.log`,
+`metrics.jsonl`, `tracked.diff`, `claude-result.json`, package check logs named
+`check-<0..7>-<UUID>.log`, plus regular private one-link Pi transcript files with the package's
+`<timestamp>_<UUID>.jsonl` name directly inside task-local `sessions/`. Unknown or
+nested session entries block the whole diagnostics selection; there is no recursive
+unknown-directory purge. Check intent/result summaries, feedback records, the worker
+`result.json`, invalid-tool evidence and Claude MCP configuration remain. The package
+may therefore remove review/report/transcript **content**, but not the minimum durable
+check/feedback/finalization summaries needed by safety gates.
+
+The tool never deletes owner/custodian/initiating external Pi/Claude sessions (in
+particular `task.owner.file` remains required by archived terminal validation),
+identities, submissions/results/containment, finalization records, disposal receipts,
+repository bindings or external symlink targets. Candidate diagnostic bodies are read
+through held no-follow FDs and their hashes bind the confirmation; shared/hardlinked,
+symlinked, replaced, public, oversized or unknown entries block. Any symlink in a later
+selected payload group, or any inode alias of an initiating/custodian session, blocks
+that prune selection rather than unlinking an uncertain alias. Recovery archive paths
+and bounded decoded content are checked for known protected evidence. Detection is only
+a blocker, not proof that arbitrary build/archive content is safe: operator inspection
+remains mandatory for plans/approved sets/Trash journals and unknown-outcome evidence.
+No external session purge or provider action exists. The legacy recovery exception is
+not eligibility for this modern independently-bound prune route.
+
+Completed prune operations are append-only and uniquely identified. A missing receipt,
+dangling claim, duplicate predecessor or unrecognized history blocks rather than
+retrying or clearing anything. Groups can be selected in later completed operations
+only if still present; reappearance of a previously removed group is an unknown new
+state and blocks. Assessments return exact candidate metadata/paths in pages (default
+50 rows; `inventoryOffset` and `inventoryLimit`, maximum 1,000). Follow
+`nextInventoryOffset` until null and require the same `expectedInventory` digest across
+pages. Display paging does not change the authorized selection. Retained-group summaries
+and UI paths are bounded. Receipts include before/after filesystem free-space
+observations and durable-record overhead limitations. Reported allocated/unlinked blocks
+are not guaranteed free-space reclamation.
+
+`compactDisposalClaim: true` is a separate, empty-selection audit operation. It can
+atomically replace a successfully completed old disposal claim with a durable tombstone
+that retains the same original operation ID/authorization fields and all other non-file
+proof fields, original byte SHA-256 and exact inventory digest/count/allocation summary.
+The assessment reports old claim metadata/allocation and explicitly names irreversible
+loss of per-file paths/stamps/kinds/targets/allocation details. Its exclusive temporary
+claim, held-root no-follow/unshared-file check, fsync/rename/directory-fsync protocol and
+compaction receipt are permanent; a crash leaves the pending claim blocking future
+operations. Future reads validate the original completion, complete retention chain,
+tombstone hashes/count/digest and receipt. A tombstone alone never declares completion:
+its matching receipt and complete operation chain are mandatory. Compaction discards
+per-file detail only, not a replacement archive or any other evidence. Later prune claims
+retain their own selected-file inventories; this compaction targets only the original
+disposal claim, not arbitrary lifecycle records.
 
 ## Working-state snapshots
 
@@ -649,11 +715,14 @@ explicitly provision the skill directory if it should be discoverable.
 
 At minimum, task/attempt/submission identities, permanent claims, reconciliation
 provenance, results/containment, finalization intent/ready/receipt, disposal
-intent/receipt and review/check evidence remain. This version additionally keeps
-briefs, reports, feedback, logs and session artifacts: **no log/session purge or
-retention deadline** is implemented. Originating sessions, real-mail plans/sets
-and Trash journals must be preserved. Inspect candidate payloads for protected
-operational state; if present, stop rather than treating it as disposable cache.
+intent/receipt and review/check evidence remain. Ordinary finalization/disposal keep
+briefs, reports, feedback, logs and session artifacts. The separately enabled later
+`delegate_prune` operation may remove only its documented task-local diagnostic/review
+content and exact task-local worker transcripts; it never removes originating/custodian
+Pi/Claude sessions, feedback/check summaries or unknown files, and has no retention
+deadline. Originating sessions, real-mail
+plans/sets and Trash journals must be preserved. Inspect candidate payloads for
+protected operational state; if present, stop rather than treating it as disposable cache.
 In particular, Mailhub unknown-outcome barriers and metadata-only investigation
 requirements are unchanged; no provider action or journal removal is authorized.
 
@@ -1020,3 +1089,9 @@ second-claim fencing, irreversible selections, mount-inventory/bind-mount reject
 held-directory symlink replacement, interrupted archives/deletions, concurrent
 claims, UI denial/abort/navigation and read-only ownership/allocation inventory.
 They do not mutate real task data, mount tables, providers or daemon history.
+Later-pruning fixtures construct genuine completed disposal records, exercise sequential
+and combined payload selections before/after compaction, paginated read-only assessment,
+fresh UI/caller/protocol gates, concurrent claims, partial unlink/post-rename interruption,
+corrupt/disconnected history, protected aliases/content, retained external provenance,
+and missing/rebooted containment. The ordinary disposal/cleanup tools remain fenced by
+the original permanent claim, including after its supported compaction.
