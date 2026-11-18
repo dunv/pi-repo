@@ -61,12 +61,12 @@ export async function finalizationAttempts(task, runtime) {
 }
 // Include ignored local files as well: their contents were not covered by review.
 // Bounded JSON/base64 recovery avoids relying on an external archive executable.
-export async function localFiles(task, runtime) {
-  const names = new Set((await git(runtime, task.worktree, ['diff', '--name-only', '--no-ext-diff', '--no-textconv', 'HEAD', '-z'])
-    + await git(runtime, task.worktree, ['ls-files', '--others', '--exclude-standard', '-z'])
-    + await git(runtime, task.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean));
+export async function localFiles(task, runtime, { retirementToolAllowance = false } = {}) {
+  const ignored = new Set((await git(runtime, task.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean));
+  const names = new Set([...ignored, ...(await git(runtime, task.worktree, ['diff', '--name-only', '--no-ext-diff', '--no-textconv', 'HEAD', '-z'])
+    + await git(runtime, task.worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)]);
   if (names.size > 10000) throw new Error('Too many local files to archive; reconcile manually');
-  const files = []; let bytes = 0;
+  const files = []; let bytes = 0, ordinaryBytes = 0, toolAllowance = false;
   for (const name of [...names].sort()) {
     const path = resolve(task.worktree, name), rel = relative(task.worktree, path);
     if (!rel || rel.startsWith('../') || rel.startsWith('/') || rel.split('/').includes('.git')) throw new Error('Unsafe archive path');
@@ -77,10 +77,26 @@ export async function localFiles(task, runtime) {
     // Never follow an intermediate symlink outside the checkout.
     const parent = await realpath(dirname(path));
     if (parent !== task.worktree && !parent.startsWith(task.worktree + '/')) throw new Error('Archive path escapes checkout');
-    bytes += stat.size;
-    if (bytes > limit || !(stat.isFile() || stat.isSymbolicLink())) throw new Error('Unsupported/oversized local archive; reconcile manually');
-    const data = stat.isSymbolicLink() ? await readlink(path) : await readFile(path);
-    if (!stat.isSymbolicLink() && data.length !== stat.size) throw new Error('Local file changed during archive');
+    // Preserve every byte: this is a bounded retirement-only archive allowance,
+    // NOT cache disposal/exclusion. Ordinary lifecycle limits remain unchanged.
+    const tool = retirementToolAllowance && name === '.cache/gobin/golangci-lint' && ignored.has(name)
+      && stat.isFile() && stat.uid === process.getuid() && stat.nlink === 1 && (stat.mode & 0o111) !== 0;
+    toolAllowance ||= tool;
+    bytes += stat.size; ordinaryBytes += tool ? 0 : stat.size;
+    if (ordinaryBytes > limit || bytes > (toolAllowance ? 80 * 1024 * 1024 : limit)
+      || !(stat.isFile() || stat.isSymbolicLink())) throw new Error('Unsupported/oversized local archive; reconcile manually');
+    let data;
+    if (stat.isSymbolicLink()) data = await readlink(path);
+    else {
+      const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const stamp = st => [st.dev, st.ino, st.mode, st.uid, st.nlink, st.size, st.mtimeMs, st.ctimeMs];
+      try {
+        if (JSON.stringify(stamp(await fd.stat())) !== JSON.stringify(stamp(stat))) throw new Error('Local file replaced before archive');
+        data = await fd.readFile();
+        if (data.length !== stat.size || JSON.stringify(stamp(await fd.stat())) !== JSON.stringify(stamp(stat))
+          || JSON.stringify(stamp(await lstat(path))) !== JSON.stringify(stamp(stat))) throw new Error('Local file changed during archive');
+      } finally { await fd.close(); }
+    }
     files.push({ name, mode: stat.mode, ...(stat.isSymbolicLink() ? { symlink: data } : { base64: data.toString('base64') }) });
   }
   return { files, bytes };

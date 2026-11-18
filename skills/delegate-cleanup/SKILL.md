@@ -63,21 +63,33 @@ not proving it integrated, completed or stopped.
   local/ignored file, existing feedback and every attempt. Never infer obsolescence
   solely from a parent merge or a branch name.
 - Review the current complete backend observations and process-reference scan.
+  An unrelated recycled numeric ID is not original-job authority; reused original
+  labels or mismatched ID/creation/namespace still block. Ordinary reconciliation
+  and recovery identity rules are unchanged.
   Active/UNKNOWN/contradictory jobs, unresolved admissions/claims, prior lifecycle
   operations, protected operational evidence or unsupported/oversized archives
   block. Rebooted/uncontained attempts can be assessed without manufacturing a
   stopped proof. Absence and KILLED stay observations, never terminal/stopped proof.
 - `/proc` can expose positive cwd/open-file/task-UUID references, but cannot prove
   unreferenced or escaped workers are absent. Investigate listed permission-limited
-  PIDs independently. If the human cannot establish that all original/custodian/
-  foreground/old-client/build users and workers/descendants are idle, stop.
+  PIDs independently. The fresh UI binds CURRENT boot/PID/start-time/command/cgroup
+  identities and visibility gaps separately from source evidence; its list can differ
+  from the earlier assessment. After confirmation, disappearing gaps are allowed,
+  but new/changed opaque identities or gaps and changed boots block. Unreadable
+  process identities block rather than being ignored. No lucky-scan retry loops.
+  If the human cannot establish that all original/custodian/foreground/old-client/
+  build users and workers/descendants are idle, stop.
 - Obtain explicit exact-task discard authorization and the independent human
   idleness declaration, then supply the same reason and both returned
   `expectedEvidence`/`expectedFingerprint` fields in this receiving session for
   fresh UI confirmation. Denial/non-UI/stale evidence grants nothing.
 - The tool archives source/local/ignored files and symlink targets (without
-  dereferencing them) before removing the worktree/unchanged ref. Permanent
-  latest-continuation and retirement claims fence updated cooperating clients;
+  dereferencing them) before removing the worktree/unchanged ref. Retirement can
+  preserve up to 80 MiB total only with the exact ignored, user-owned, unshared
+  executable `.cache/gobin/golangci-lint`; other local bytes stay within 64 MiB.
+  It archives every byte, never silently excludes or deletes cache data. Ordinary
+  finalization keeps its 64-MiB limit; larger/unsafe content remains blocked.
+  Permanent latest-continuation and retirement claims fence updated cooperating clients;
   old clients must stay idle. Never clear a claim or retry partial retirement.
 - Report `operator-attested-retirement`, `discarded`, `terminalVerified: false`,
   `stoppedProof: false`, `backendAuthority: false`. Preserve original history,
@@ -108,6 +120,10 @@ first eligible run after the cutoff. Existing archives are NOT silently enrolled
    and closure, private admission history, backend/process observations and protected state.
    Potential Mailhub plans/approved sets/Trash journals/unknown outcomes stop
    enrollment; content hashes/heuristics never replace operator inspection.
+   Recognized Go object/index cache bytes have only two exact FIPS-context
+   exceptions, reported as `contentExceptions` rule IDs/counts alongside full
+   hashes in the sealed inventory/claim. Inspect these too: no binary/cache blanket
+   exemption exists, and other protected markers in the same file still block.
 3. Obtain explicit exact-task consent for **automatic irreversible loss** at the
    displayed UTC deadlines, including the possibility that already overdue data
    expires on the first run. Confirm all owners/custodians/foreground/build users

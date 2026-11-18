@@ -11,13 +11,13 @@ import { admissions, observeRetirementProcesses } from './retire.mjs';
 import { inventoryPayloads, removePayloadInventory } from './dispose.mjs';
 import { repositoryIdentity, assertNoPayloadMounts } from './repository.mjs';
 import { Backend, configuration } from '../pueue/backend.ts';
+import { protectedText, protectedContentScanner } from './protected-content.mjs';
 
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const DAY = 86400000;
 const sha256 = /^[a-f0-9]{64}$/;
 const groups = ['build-output', 'recovery'];
-const protectedText = /(?:mailhub|trash[-_ ]?journal|approved[-_ ]?(?:mail|message)?[-_ ]?set|unknown[-_ ]?outcome)/i;
 const enrollmentName = 'automatic-retention-enrollment.json';
 const groupClaim = group => `automatic-retention-${group}-claim.json`;
 const groupReceipt = group => `automatic-retention-${group}-receipt.json`;
@@ -133,16 +133,11 @@ export async function observeAutomaticProcesses(task) {
     if (!st.isFile() || st.uid !== 0 || st.mode & 0o022 || !/^[a-f0-9]{32}$/.test(text)) block('host-identity-unavailable');
     hostIdentity = digest(text);
   } finally { await host.close(); }
-  const visibilityRecords = [];
-  for (const pid of observation.uninspectablePids) {
-    const base = `/proc/${pid}`, before = await readFile(join(base, 'stat'), 'utf8');
-    const startTime = before.slice(before.lastIndexOf(')') + 2).split(' ')[19];
-    if (!/^\d+$/.test(startTime ?? '')) block('process-identity-unavailable');
-    const command = await readFile(join(base, 'cmdline')), cgroup = await readFile(join(base, 'cgroup'));
-    const after = await readFile(join(base, 'stat'), 'utf8');
-    if (after.slice(after.lastIndexOf(')') + 2).split(' ')[19] !== startTime) block('process-identity-changed-during-observation');
-    visibilityRecords.push({ pid, startTime, commandSha256: digest(command), cgroupSha256: digest(cgroup) });
-  }
+  // The reference scan already read these identities before/after inspecting
+  // each PID. Avoid a second racy /proc pass. Preserve the existing enrollment
+  // identity schema; no historical records or consent are rewritten.
+  const visibilityRecords = observation.visibilityRecords.map(({ pid, startTime, commandSha256, cgroupSha256 }) =>
+    ({ pid, startTime, commandSha256, cgroupSha256 }));
   return { ...observation, hostIdentity, visibilityRecords };
 }
 function permittedVisibility(current, enrolled) {
@@ -199,16 +194,18 @@ async function sealFiles(task, rootIdentity, files) {
           const before = await fd.stat({ bigint: true });
           if (!before.isFile() || before.uid !== BigInt(process.getuid()) || before.nlink !== 1n || !equal(row.stamp, rowStamp(before))) block('payload-changed-before-inspection');
           total += Number(before.size); if (total > 16 * 1024 ** 3) block('payload-inspection-exceeds-16-gib');
-          const hash = createHash('sha256'), buffer = Buffer.alloc(65536); let position = 0, tail = '';
+          const hash = createHash('sha256'), buffer = Buffer.alloc(65536), scanner = protectedContentScanner(row.path); let position = 0;
           while (position < Number(before.size)) {
             const { bytesRead } = await fd.read(buffer, 0, Math.min(buffer.length, Number(before.size) - position), position);
             if (!bytesRead) block('payload-truncated');
             const chunk = buffer.subarray(0, bytesRead); hash.update(chunk);
-            const text = tail + chunk.toString('utf8'); if (protectedText.test(text)) block('potential-protected-operational-content');
-            tail = text.slice(-256); position += bytesRead;
+            try { scanner.push(chunk); } catch { block('potential-protected-operational-content'); }
+            position += bytesRead;
           }
           if (!equal(rowStamp(await fd.stat({ bigint: true })), row.stamp) || !equal(rowStamp(await lstat(path, { bigint: true })), row.stamp)) block('payload-changed-during-inspection');
-          sealed.push({ ...row, sha256: hash.digest('hex') });
+          let contentExceptions;
+          try { contentExceptions = scanner.finish(); } catch { block('potential-protected-operational-content'); }
+          sealed.push({ ...row, sha256: hash.digest('hex'), ...(contentExceptions.length ? { contentExceptions } : {}) });
         } finally { await fd.close(); }
       } finally { for (const fd of parents.reverse()) await fd.close(); }
     }
@@ -240,7 +237,7 @@ async function inspectRecovery(closed) {
     if (row.base64 !== undefined) {
       if (typeof row.base64 !== 'string') block('invalid-recovery-encoding');
       const body = Buffer.from(row.base64, 'base64'); bytes += body.length;
-      if (bytes > 64 * 1024 * 1024 || body.toString('base64') !== row.base64 || protectedText.test(body.toString('utf8'))) block('protected-or-oversized-decoded-recovery');
+      if (bytes > (closed.kind === 'retirement' ? 80 : 64) * 1024 * 1024 || body.toString('base64') !== row.base64 || protectedText.test(body.toString('utf8'))) block('protected-or-oversized-decoded-recovery');
     }
   }
   if (bytes !== archive.bytes) block('recovery-byte-count-changed');

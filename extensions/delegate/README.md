@@ -202,8 +202,12 @@ verified historical worker completion. Retiring is not acceptance or integration
    complete linear revision claims, current source and ignored/local contents.
    A removed linked source need not be recreated. A clone is not identity.
 2. Each exact original backend identity is queried against a fresh complete
-   original-namespace snapshot. Query failure, reused identity, active/queued/
-   paused/UNKNOWN jobs or contradictory retained exit evidence blocks retirement.
+   original-namespace snapshot. An unrelated job reusing only the numeric ID is
+   not the original job and supplies no authority. Reused original labels,
+   mismatched ID/creation, duplicate labels, query failure, active/queued/
+   paused/UNKNOWN jobs or contradictory retained exit evidence block retirement.
+   This retirement-specific observer does not relax ordinary reconciliation,
+   recovery, cleanup or terminal/stopped-evidence observers.
    EXITED/KILLED/absence is retained as an observation only. Unresolved admissions,
    orphan/forked revision claims, prior reconciliation, finalization/disposal,
    interrupted retirement, locked/nested worktrees, mounts, sparse entries and
@@ -211,8 +215,16 @@ verified historical worker completion. Retiring is not acceptance or integration
 3. A bounded Linux current-user `/proc` scan checks cwd, command-line task UUID
    and open-file references to the worktree/task state. A positive reference
    blocks; the tool does not signal processes or stop build servers. Permission-
-   limited PIDs are explicitly listed and bound to confirmation; investigate them
-   independently. Even an unobstructed scan cannot prove arbitrary unreferenced
+   limited PIDs are explicitly listed with boot, PID/start-time, command/cgroup
+   hashes and unavailable fields; investigate them independently. Unreadable
+   command/cgroup/start identity, PID reuse during scanning and changed boot block.
+   Source `expectedEvidence` binds the boot but not unrelated opaque-PID churn:
+   the fresh UI displays and separately authorizes the CURRENT complete visibility
+   observation, which may differ from the earlier assessment. After that dialog,
+   disappearing gaps are allowed; any new/changed opaque identity or visibility
+   gap blocks before claiming and at every later gate. Authorization expires after
+   five minutes. No retry-until-lucky loop or process stopping is involved.
+   Even an unobstructed scan cannot prove arbitrary unreferenced
    processes or escaped workers will not mutate files later. It is **not stopped
    proof**. Do not approve when their idleness cannot independently be established.
 4. Personally inspect the retained draft, every new/local/ignored file, existing
@@ -231,8 +243,16 @@ verified historical worker completion. Retiring is not acceptance or integration
    Recheck all evidence after claiming and immediately before removal. Archive a
    verified/fsynced Git bundle and the bounded binary patch plus changed/new/
    ignored file contents/modes/symlink targets in `<task>/retirement/`. Ordinary
-   finalization's 10,000-file/64-MiB local archive limits still apply. Symlink
-   targets are neither followed nor deleted. Oversized/unsafe archives block.
+   finalization's 10,000-file/64-MiB local archive limits apply, with one bounded
+   retirement-only preservation allowance: an untracked ignored regular executable
+   at exactly `.cache/gobin/golangci-lint`, user-owned and not hardlinked, can bring
+   the total to 80 MiB. All other local content together stays within 64 MiB.
+   Every tool byte is included in the same private base64 recovery archive, bound
+   to confirmation and rechecked; nothing is excluded or disposed to evade a gate.
+   Ordinary finalization remains limited to 64 MiB. Retirement recovery inspection
+   accepts the corresponding 80-MiB decoded total (below the existing 128-MiB
+   serialized-record bound). Symlink targets are neither followed nor deleted.
+   Oversized/unsafe archives still block.
 6. Only after archival, Git removes the registered worktree (retaining its locked/
    nested protection) and compare-and-deletes the unchanged delegate ref. A durable
    `retired.json` receipt follows successful completion. Intent/ready/receipt,
@@ -303,6 +323,17 @@ no-follow directory FDs; shared files, mounts, unsupported entries, protected
 names/content and decoded recovery markers block. Recovery schema/byte counts,
 closed archive fingerprint and bundle ref/verification are checked. Symlink
 entries are sealed but never dereferenced or deleted outside their group.
+Two demonstrated compiled-cache false positives have narrow versioned exceptions:
+`RecordNonApprovedsetIndicatorcrypto/internal/fips140` in recognized Go object
+archives, and `FIPS-approved settings.\nfipstls.go\nfips140tls` in Go index-v2
+objects. Only exact rules_go FIPS stdlib paths or hash-shaped Gazelle Go-cache
+paths under `build-output` qualify, with matching format headers. All other
+protected matches in the SAME file still block; arbitrary binaries/cache files
+are not whitelisted. Each exception's rule ID/count is reported as
+`contentExceptions` in the sealed inventory and durable enrollment claim, alongside
+its full SHA-256; expiry must reproduce that exact seal. Streaming inspection
+covers chunk-boundary and final-byte markers. Recovery, path and symlink checks
+retain their ordinary protection without these cache-only exceptions.
 Content heuristics cannot certify arbitrary data: the enrolling human must still
 inspect for Mailhub plans/approved sets/Trash journals/unknown outcomes and must
 not enroll protected evidence. External original/custodian sessions remain.

@@ -17,10 +17,11 @@ import { automaticPolicy, assessAutomaticEnrollment, automaticEnrollmentAuthoriz
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 const DAY = 86400000;
-async function fixture(fn, { finalized = false } = {}) {
+async function fixture(fn, { finalized = false, largeTool = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'delegate-auto-retention-')), repo = join(dir, 'repo');
   try {
     execFileSync(git, ['init', '-q', repo]); await writeFile(join(repo, 'source.txt'), 'initial\n');
+    if (largeTool) await writeFile(join(repo, '.gitignore'), '.cache/\n');
     execFileSync(git, ['-C', repo, 'add', '.']);
     execFileSync(git, ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '-qm', 'initial']);
     const runtime = { git, node: process.execPath, pi: '/fixture/pi', flock: '/fixture/flock', ssh: '/fixture/ssh', home: dir, state: join(dir, 'state'),
@@ -31,6 +32,10 @@ async function fixture(fn, { finalized = false } = {}) {
     const from = { session: randomUUID(), file: join(dir, 'origin.jsonl') }, who = { session: randomUUID(), file: join(dir, 'receiver.jsonl') };
     const task = { ...await prepare({ repo, brief: 'Synthetic expired draft.', model: 'fixture/model', thinking: 'low', profile: 'fixture', checks: [] }, runtime, from), nonce: randomUUID() };
     await save(join(task.directory, 'submission.json'), { nonce: task.nonce }); await writeFile(join(task.worktree, 'source.txt'), 'obsolete\n');
+    if (largeTool) {
+      const directory = join(task.worktree, '.cache', 'gobin'); await mkdir(directory, { recursive: true });
+      const path = join(directory, 'golangci-lint'); await writeFile(path, 'synthetic rebuildable tool', { mode: 0o700 }); await truncate(path, 69 * 1024 * 1024);
+    }
     const job = { session: from.session, file: from.file, namespace: randomUUID(), nonce: task.nonce, id: 5, admitted: true, created: '2026-11-01T00:00:00Z' };
     job.label = `pi:${job.namespace}:${job.nonce}`;
     const entries = [{ type: 'session', version: 3, id: from.session, cwd: repo },
@@ -307,6 +312,40 @@ test('real-clock runs record actual phase times and recheck later groups against
     assert.ok(Date.parse(receipt.completedAt) > Date.parse(claim.claimedAt));
   } finally { Date.now = originalNow; }
 }));
+
+test('demonstrated Go cache markers are sealed with exact exception audit and hashes, not a binary whitelist', () => fixture(async f => {
+  const directory = join(f.task.directory, 'build-output', 'external', 'gazelle++non_module_deps+bazel_gazelle_go_repository_cache', 'gocache', 'aa');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, 'a'.repeat(64) + '-d');
+  const body = '!<arch>\n__.PKGDEF       0           0     0     644     12654     `\ngo object linux amd64 go1.27.1 GOAMD64=v1\nRecordNonApprovedsetIndicatorcrypto/internal/fips140';
+  await writeFile(path, body);
+  const gate = await f.assess(), sealed = gate.seals['build-output'].find(row => row.path.endsWith('-d'));
+  assert.deepEqual(sealed.contentExceptions, [{ rule: 'go-fips140-symbol-v1', matches: 1 }]);
+  assert.equal(sealed.sha256, digest(body));
+  await f.enroll();
+  const claim = await json(join(f.task.directory, 'disposal-claim.json'));
+  assert.deepEqual(claim.seals['build-output'].find(row => row.path.endsWith('-d')).contentExceptions, sealed.contentExceptions);
+  assert.equal((await f.run(f.closedAt + 7 * DAY)).removedGroups, 1);
+}));
+
+test('protected operational data in otherwise recognized Go cache bytes blocks before enrollment and leaves no claim', () => fixture(async f => {
+  const directory = join(f.task.directory, 'build-output', 'external', 'gazelle++non_module_deps+bazel_gazelle_go_repository_cache', 'gocache', 'aa');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, 'a'.repeat(64) + '-d');
+  await writeFile(path, 'go index v2\ncrypto/tls requires FIPS-approved settings.\nfipstls.go\nfips140tls\0Mailhub Trash-journal unknown-outcome');
+  await assert.rejects(f.enroll(), /potential-protected-operational-content/);
+  assert.ok(await lstat(path)); assert.ok(!(await readdir(f.task.directory)).includes('disposal-claim.json'));
+}));
+
+test('oversized ignored tool is fully preserved through retirement and independently sealable for recovery expiry', () => fixture(async f => {
+  const archive = await json(join(f.task.directory, 'retirement', 'local-files.json'));
+  const tool = archive.files.find(row => row.name === '.cache/gobin/golangci-lint');
+  assert.equal(Buffer.from(tool.base64, 'base64').length, 69 * 1024 * 1024);
+  assert.equal(Buffer.from(tool.base64, 'base64').subarray(0, Buffer.byteLength('synthetic rebuildable tool')).toString(), 'synthetic rebuildable tool');
+  assert.ok(archive.bytes > 64 * 1024 * 1024 && archive.bytes < 80 * 1024 * 1024);
+  const gate = await f.assess(); assert.ok(gate.seals.recovery.some(row => row.path.endsWith('local-files.json')));
+  assert.ok(!(await readdir(f.task.directory)).includes('disposal-claim.json'));
+}, { largeTool: true }));
 
 test('two concurrent automatic runs have at most one deleting winner and preserve audit receipts', () => fixture(async f => {
   await f.enroll(); const reports = await Promise.all([f.run(f.closedAt + 7 * DAY), f.run(f.closedAt + 7 * DAY)]);

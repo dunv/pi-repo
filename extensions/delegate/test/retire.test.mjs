@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, readdir, mkdir, rm, symlink, chmod, lstat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, mkdir, rm, symlink, chmod, lstat, truncate } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { prepare, prepareRevision, snapshot, save, json, digest, ENTRY, writable, runtimeFrom } from '../core.mjs';
 import { assertCustody } from '../reconcile.mjs';
 import { assertStopped } from '../containment.mjs';
+import { localFiles } from '../finalize.mjs';
 import { assessRetirement, retirementAuthorization, retireTask, observeRetirementProcesses } from '../retire.mjs';
 
 const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
@@ -151,7 +152,7 @@ test('KILLED is recorded only as an observation, not stopped proof', () => fixtu
 }));
 
 test('stale assessment/caller/reason/source/ignored content and forged authorization are rejected before claiming', async () => {
-  for (const mode of ['caller', 'reason', 'source', 'ignored', 'authorization', 'missing-expected']) await fixture(async f => {
+  for (const mode of ['caller', 'reason', 'source', 'ignored', 'authorization', 'expired', 'missing-expected']) await fixture(async f => {
     const gate = await f.assess(), input = { ...f.input, expectedEvidence: gate.evidence, expectedFingerprint: gate.fingerprint };
     const auth = retirementAuthorization(gate, f.who, f.input.reason);
     let who = f.who;
@@ -160,6 +161,7 @@ test('stale assessment/caller/reason/source/ignored content and forged authoriza
     if (mode === 'source') await writeFile(join(f.task.worktree, 'source.txt'), 'changed');
     if (mode === 'ignored') await writeFile(join(f.task.worktree, 'ignored'), 'local config');
     if (mode === 'authorization') auth.stoppedProof = true;
+    if (mode === 'expired') auth.confirmedAt = new Date(Date.now() - 301000).toISOString();
     if (mode === 'missing-expected') delete input.expectedEvidence;
     await assert.rejects(retireTask(f.runtime, input, who, f.observe, auth));
     assert.ok(!(await readdir(f.task.directory)).includes('retirement-claim.json'));
@@ -249,7 +251,7 @@ test('real Pi tool assessment is read-only, confirmation is exact and retirement
 }));
 
 test('real Pi confirmation denies no-UI, denied/aborted/stale/session/backend/runtime/incomplete assessments without claims', async () => {
-  for (const mode of ['no-ui', 'denied', 'abort', 'source', 'ignored', 'reason', 'session', 'tree', 'backend', 'runtime', 'incomplete']) await fixture(async f => {
+  for (const mode of ['no-ui', 'denied', 'abort', 'source', 'ignored', 'reason', 'session', 'tree', 'backend', 'backend-reused-label', 'ref', 'runtime', 'incomplete']) await fixture(async f => {
     const controller = new AbortController();
     const h = await host(f, async () => {
       if (mode === 'abort') controller.abort();
@@ -257,10 +259,11 @@ test('real Pi confirmation denies no-UI, denied/aborted/stale/session/backend/ru
       if (mode === 'ignored') await writeFile(join(f.task.worktree, 'ignored'), 'local');
       if (mode === 'session') h.ctx.sessionManager.getSessionId = () => randomUUID();
       if (mode === 'tree') await h.emit('session_tree');
-      if (mode === 'backend') {
-        const job = f.entries[2].data;
-        await writeFile(h.status, JSON.stringify({ tasks: { [job.id]: { id: job.id, created_at: job.created, label: job.label, status: { Running: {} } } } }));
+      if (mode === 'backend' || mode === 'backend-reused-label') {
+        const job = f.entries[2].data, id = mode === 'backend' ? job.id : job.id + 100;
+        await writeFile(h.status, JSON.stringify({ tasks: { [id]: { id, created_at: job.created, label: job.label, status: { Running: {} } } } }));
       }
+      if (mode === 'ref') execFileSync(git, ['-C', f.task.worktree, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '--allow-empty', '-qm', 'moved']);
       return mode !== 'denied';
     });
     try {
@@ -276,6 +279,74 @@ test('real Pi confirmation denies no-UI, denied/aborted/stale/session/backend/ru
     } finally { h.close(); }
   });
 });
+
+test('real Pi retirement disregards unrelated numeric recycling but rejects genuine identity reuse and failed/partial snapshots', async () => {
+  for (const mode of ['unrelated', 'label-id', 'creation', 'duplicate', 'partial', 'failed']) await fixture(async f => {
+    const h = await host(f, async () => true), job = f.entries[2].data;
+    try {
+      const row = { id: job.id, created_at: job.created, label: job.label, status: { Done: { result: 'Success' } } };
+      let tasks = { [job.id]: row };
+      if (mode === 'unrelated') tasks = { [job.id]: { ...row, label: 'another job', created_at: '2026-11-18T01:00:00Z', status: { Running: {} } } };
+      if (mode === 'label-id') tasks = { 999: { ...row, id: 999 } };
+      if (mode === 'creation') row.created_at = '2026-11-18T01:00:00Z';
+      if (mode === 'duplicate') tasks[999] = { ...row, id: 999 };
+      if (mode === 'partial') tasks[999] = { id: 999 };
+      await writeFile(h.status, mode === 'failed' ? 'invalid-json' : JSON.stringify({ tasks }));
+      if (mode === 'unrelated') {
+        const gate = JSON.parse((await h.invoke(f.input)).content[0].text);
+        assert.equal(gate.attempts[0].backend, 'absent-not-terminal-proof');
+        const receipt = JSON.parse((await h.invoke({ ...f.input, expectedEvidence: gate.expectedEvidence, expectedFingerprint: gate.expectedFingerprint })).content[0].text);
+        assert.equal(receipt.backendAuthority, false); assert.equal(receipt.stoppedProof, false);
+      } else {
+        await assert.rejects(h.invoke(f.input));
+        assert.ok(!(await readdir(f.task.directory)).includes('retirement-claim.json'));
+      }
+    } finally { h.close(); }
+  });
+});
+
+test('current UI process consent is separate from stable source evidence; only disappearing gaps pass subsequent gates', async () => {
+  for (const mode of ['disappeared', 'new-before-claim', 'new-after-claim', 'new-before-removal']) await fixture(async f => {
+    const bootId = randomUUID(), row = { pid: 777, startTime: '123', commandSha256: 'a'.repeat(64), cgroupSha256: 'b'.repeat(64), unavailable: ['fd'] };
+    const observation = records => ({ bootId, observation: 'current-user-process-reference-scan', stoppedProof: false,
+      uninspectablePids: records.map(item => item.pid), visibilityRecords: records });
+    const gate = await assessRetirement(f.runtime, f.input, f.who, f.observe, undefined, async () => observation([row]));
+    const empty = await assessRetirement(f.runtime, f.input, f.who, f.observe, undefined, async () => observation([]));
+    assert.equal(gate.evidence, empty.evidence);
+    const request = { ...f.input, expectedEvidence: gate.evidence, expectedFingerprint: gate.fingerprint };
+    const auth = retirementAuthorization(gate, f.who, f.input.reason);
+    let calls = 0;
+    const processes = async () => {
+      calls++;
+      const unchanged = mode === 'new-after-claim' && calls === 1 || mode === 'new-before-removal' && calls <= 2;
+      return observation(mode === 'disappeared' ? [] : unchanged ? [row] : [{ ...row, startTime: '999' }]);
+    };
+    if (mode === 'disappeared') assert.equal((await retireTask(f.runtime, request, f.who, f.observe, auth, undefined, processes)).stoppedProof, false);
+    else {
+      await assert.rejects(retireTask(f.runtime, request, f.who, f.observe, auth, undefined, processes));
+      assert.ok(await lstat(f.task.worktree));
+      assert.equal((await readdir(f.task.directory)).includes('retirement-claim.json'), mode !== 'new-before-claim');
+      if (mode === 'new-before-removal') assert.ok(await lstat(join(f.task.directory, 'retirement', 'local-files.json')));
+    }
+  });
+});
+
+test('retirement preserves oversized ignored golangci-lint bytes within 80 MiB; ordinary archives and other files keep their bounds', () => fixture(async f => {
+  await writeFile(join(f.task.worktree, '.gitignore'), '.cache/\nignored\n');
+  const directory = join(f.task.worktree, '.cache', 'gobin'); await mkdir(directory, { recursive: true });
+  const path = join(directory, 'golangci-lint'); await writeFile(path, 'fixture tool', { mode: 0o700 });
+  await truncate(path, 69 * 1024 * 1024);
+  await assert.rejects(localFiles(f.task, f.runtime), /oversized/);
+  const local = await localFiles(f.task, f.runtime, { retirementToolAllowance: true });
+  const file = local.files.find(file => file.name === '.cache/gobin/golangci-lint');
+  assert.equal(Buffer.from(file.base64, 'base64').length, 69 * 1024 * 1024);
+  assert.equal(Buffer.from(file.base64, 'base64').subarray(0, 12).toString(), 'fixture tool');
+  await chmod(path, 0o600); await assert.rejects(f.assess(), /oversized/);
+  await chmod(path, 0o700); await truncate(path, 80 * 1024 * 1024 + 1); await assert.rejects(f.assess(), /oversized/);
+  await rm(path); await writeFile(join(directory, 'another-tool'), ''); await truncate(join(directory, 'another-tool'), 69 * 1024 * 1024);
+  await assert.rejects(f.assess(), /oversized/);
+  assert.ok(!(await readdir(f.task.directory)).includes('retirement-claim.json'));
+}));
 
 test('runtime parser rejects unreviewed protocol values', () => fixture(async f => {
   const path = join(f.dir, 'runtime.json');

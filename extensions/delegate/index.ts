@@ -11,7 +11,7 @@ import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
 import { assessCleanup, cleanupEvidence } from "./cleanup.mjs";
-import { assessRetirement, retirementAuthorization, retireTask } from "./retire.mjs";
+import { assessRetirement, retirementAuthorization, retireTask, retirementBackendObservation } from "./retire.mjs";
 import { assessAutomaticEnrollment, automaticEnrollmentAuthorization, enrollAutomaticRetention, configuredAutomaticObserver } from "./automatic-retention.mjs";
 import { assessPrune, pruneExpectedEvidence, pruneAuthorization, pruneTask, compactDisposalClaim } from "./prune.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
@@ -69,6 +69,7 @@ export default function (pi: ExtensionAPI) {
     }
     return matching(job, tasks) ? view(job, tasks) : null;
   };
+  const observeRetirement = async (job: any) => retirementBackendObservation(job, await configuredAutomaticObserver()());
   const authority = async (task: any, ctx: ExtensionContext, foreground = false) => {
     await assertCustody(task, owner(ctx));
     if (task.reconciliationId && !foreground) throw new Error("Reconciled custody permits foreground review/editing only; worker revision/recovery remain disabled; cleanup requires its own confirmed lifecycle operation");
@@ -147,7 +148,7 @@ export default function (pi: ExtensionAPI) {
       check();
       const committing = input.expectedEvidence !== undefined || input.expectedFingerprint !== undefined;
       if (committing && (!input.expectedEvidence || !input.expectedFingerprint)) throw new Error("Supply both expected fields from a fresh retirement assessment");
-      const gate = await assessRetirement(runtime, input, who, observeReconciliation);
+      const gate = await assessRetirement(runtime, input, who, observeRetirement);
       check();
       if (!committing) return response({ task: gate.task.id, repository: gate.repository, worktree: gate.task.worktree, branch: gate.task.branch,
         reason: input.reason, expectedEvidence: gate.evidence, expectedFingerprint: gate.fingerprint,
@@ -163,16 +164,18 @@ export default function (pi: ExtensionAPI) {
         `Reason (JSON): ${JSON.stringify(input.reason)}`, `Receiving session: ${who.session}`, `Attempts: ${gate.attempts.length}`,
         `Evidence: ${gate.evidence}`, `Fingerprint: ${gate.fingerprint}`, `Current boot: ${gate.observation.bootId}`,
         "This is an operator-attested abandonment, NOT verified worker completion, successful integration or stopped-worker proof. Missing backend jobs and a reboot do not silently become proof.",
-        `Processes with permission-limited observation: ${gate.observation.uninspectablePids.join(", ") || "none"}. Investigate these independently before approving; the scan is not exhaustive stopped proof.`,
+        `Processes with permission-limited observation: ${gate.observation.uninspectablePids.join(", ") || "none"}. Investigate these CURRENT identities independently before approving; this list may differ from the earlier assessment. The scan is not exhaustive stopped proof.`,
+        `Confirmed process identities (PID/start time/command and cgroup hashes/visibility gaps): ${JSON.stringify(gate.observation.visibilityRecords)}`,
         "By approving, independently confirm: all originating/custodian sessions and old clients are idle; no worker or descendant survives; no external build server or foreground user can mutate this checkout. The process scan cannot prove this for unreferenced or uninspectable processes.",
         "Confirm you inspected the retained draft/local/ignored files and protected operational evidence. Preserve Mailhub plans/approved sets/Trash journals and unknown-outcome state; stop rather than authorize provider actions.",
         `Discard this obsolete draft. Archive ${gate.archive.files.length} local/ignored files (${gate.archive.bytes} bytes) plus a Git bundle at ${gate.task.directory}/retirement before worktree/ref removal.`,
+        "All local bytes are preserved. Retirement alone permits up to 80 MiB when the exact ignored executable .cache/gobin/golangci-lint is present; other local content remains bounded to 64 MiB. No tool/cache file is omitted or deleted to evade archival.",
         "Original history/results/containment/claims, recovery, build outputs and logs stay. External symlink targets are untouched. No worker restart, custody, publication, permanent payload disposal or task-root purge.",
         "Permanent shared continuation and retirement claims fence cooperating updated clients. Partial failure remains blocked, with no claim clearing or automatic retry. Old clients must stay idle.",
       ].join("\n"));
       if (!approved) throw new Error("Operator-attested retirement not authorized");
       check();
-      return response(await retireTask(runtime, input, who, observeReconciliation, retirementAuthorization(gate, who, input.reason), check));
+      return response(await retireTask(runtime, input, who, observeRetirement, retirementAuthorization(gate, who, input.reason), check));
     },
   });
   pi.registerTool({

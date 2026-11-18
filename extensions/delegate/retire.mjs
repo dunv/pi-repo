@@ -31,43 +31,80 @@ async function optionalJSON(path) { return await exists(path) ? lifecycleJSON(pa
 // This observation is deliberately NOT called stopped proof. /proc cannot prove
 // an unreferenced process will never write here later. A human must independently
 // establish idleness, including old clients and external build servers.
-export async function observeRetirementProcesses(task) {
-  const boot = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+export async function observeRetirementProcesses(task, io = { readFile, readdir, readlink, lstat }) {
+  const boot = (await io.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
   if (!uuid.test(boot)) throw new Error('Current Linux boot identity unavailable');
   const roots = [task.worktree, task.directory];
   const references = text => roots.some(root => text === root || text.startsWith(root + '/') || text.includes(root + '\0'));
   let seen = 0;
-  const uninspectablePids = [];
-  for (const pid of await readdir('/proc')) {
+  const visibilityRecords = [];
+  for (const pid of await io.readdir('/proc')) {
     if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
     if (++seen > 100000) throw new Error('Process observation exceeds retirement bound');
     const base = '/proc/' + pid;
     try {
-      if ((await lstat(base)).uid !== process.getuid()) continue;
-      let incomplete = false;
-      const observe = async operation => {
+      if ((await io.lstat(base)).uid !== process.getuid()) continue;
+      const startTime = await processStartTime(io, base);
+      const unavailable = [];
+      const observe = async (field, operation) => {
         try { return await operation(); } catch (error) {
           if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
-          incomplete = true; return null;
+          unavailable.push(field); return null;
         }
       };
-      const cwd = await observe(() => readlink(join(base, 'cwd')));
-      const cmd = await observe(() => readFile(join(base, 'cmdline'))) ?? Buffer.alloc(0);
+      const cwd = await observe('cwd', () => io.readlink(join(base, 'cwd')));
+      // Unknown command/cgroup/start identity cannot be safely scoped or bound.
+      const cmd = await io.readFile(join(base, 'cmdline'));
+      const cgroup = await io.readFile(join(base, 'cgroup'));
+      if (cgroup.length > 1024 * 1024) throw new Error('Oversized process identity; retirement blocked');
       if (cmd.length > 1024 * 1024) throw new Error('Oversized process command; retirement blocked');
       if ((cwd !== null && references(cwd)) || cmd.toString('utf8').includes(task.id)) throw new Error(`Process ${pid} references this delegate; retirement blocked`);
-      const fds = await observe(() => readdir(join(base, 'fd'))) ?? [];
+      const fds = await observe('fd', () => io.readdir(join(base, 'fd'))) ?? [];
       if (fds.length > 100000) throw new Error('Open-file observation exceeds retirement bound');
       for (const fd of fds) {
         let target;
-        try { target = await observe(() => readlink(join(base, 'fd', fd))); } catch (error) { if (gone(error)) continue; throw error; }
+        try { target = await observe('fd-target', () => io.readlink(join(base, 'fd', fd))); } catch (error) { if (gone(error)) continue; throw error; }
         if (target !== null && references(target)) throw new Error(`Process ${pid} has a delegate file open; retirement blocked`);
       }
-      if (incomplete) uninspectablePids.push(Number(pid));
-      if (uninspectablePids.length > 1000) throw new Error('Too many uninspectable processes for explicit operator investigation');
+      if (await processStartTime(io, base) !== startTime) throw new Error('PID identity changed during observation; retirement blocked');
+      if (unavailable.length) visibilityRecords.push({ pid: Number(pid), startTime, commandSha256: digest(cmd), cgroupSha256: digest(cgroup),
+        unavailable: [...new Set(unavailable)].sort() });
+      if (visibilityRecords.length > 1000) throw new Error('Too many uninspectable processes for explicit operator investigation');
     } catch (error) { if (!gone(error)) throw error; }
   }
-  if ((await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() !== boot) throw new Error('Boot changed during observation');
-  return { bootId: boot, observation: 'current-user-process-reference-scan', uninspectablePids: uninspectablePids.sort((a, b) => a - b), stoppedProof: false };
+  if ((await io.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() !== boot) throw new Error('Boot changed during observation');
+  visibilityRecords.sort((a, b) => a.pid - b.pid);
+  return { bootId: boot, observation: 'current-user-process-reference-scan', uninspectablePids: visibilityRecords.map(row => row.pid), visibilityRecords, stoppedProof: false };
+}
+async function processStartTime(io, base) {
+  const stat = await io.readFile(join(base, 'stat'), 'utf8');
+  const value = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  if (!/^\d+$/.test(value ?? '')) throw new Error('Process identity unavailable; retirement blocked');
+  return value;
+}
+export function validateRetirementObservation(observation) {
+  if (!uuid.test(observation?.bootId) || observation.stoppedProof !== false || observation.observation !== 'current-user-process-reference-scan'
+    || !Array.isArray(observation.uninspectablePids) || !Array.isArray(observation.visibilityRecords)
+    || observation.visibilityRecords.length !== observation.uninspectablePids.length || observation.visibilityRecords.length > 1000
+    || observation.visibilityRecords.some((row, i) => !Number.isSafeInteger(row.pid) || row.pid <= 0 || row.pid !== observation.uninspectablePids[i]
+      || (i > 0 && row.pid <= observation.visibilityRecords[i - 1].pid) || !/^\d+$/.test(row.startTime)
+      || !hash.test(row.commandSha256) || !hash.test(row.cgroupSha256)
+      || (row.unavailable !== undefined && (!Array.isArray(row.unavailable) || !row.unavailable.length
+        || row.unavailable.some(field => !['cwd', 'fd', 'fd-target'].includes(field)))))) throw new Error('Current process observation unavailable');
+}
+export function retirementVisibilityPermitted(current, confirmed) {
+  validateRetirementObservation(current); validateRetirementObservation(confirmed);
+  return current.bootId === confirmed.bootId && current.visibilityRecords.every(row => confirmed.visibilityRecords.some(old => equal(old, row)));
+}
+// Only retirement may disregard a numeric ID now assigned to an unrelated label.
+// Callers MUST supply a successful complete original-namespace backend snapshot.
+// Ordinary reconciliation/recovery observers deliberately remain stricter.
+export function retirementBackendObservation(job, snapshot) {
+  if (!snapshot || snapshot.namespace !== job.namespace || !Array.isArray(snapshot.tasks)) throw new Error('Original backend snapshot unavailable; retirement blocked');
+  const matches = snapshot.tasks.filter(row => row.label === job.label);
+  if (matches.length > 1 || matches.some(row => row.id !== job.id || row.created !== job.created)) throw new Error('Original backend label reused/replaced; retirement blocked');
+  const row = matches[0];
+  return row ? { nonce: job.nonce, phase: row.phase, ...(row.exitCode === undefined ? {} : { exitCode: row.exitCode }) } : null;
 }
 
 async function attemptsFor(task, runtime, claimId) {
@@ -190,9 +227,8 @@ export async function assessRetirement(runtime, input, who, observe, claimId, pr
       backend: current === null ? 'absent-not-terminal-proof' : current.phase, exitCode: current?.exitCode ?? null });
   }
   const observation = await processes(task);
-  if (!uuid.test(observation.bootId) || observation.stoppedProof !== false || observation.observation !== 'current-user-process-reference-scan'
-    || !Array.isArray(observation.uninspectablePids)) throw new Error('Current process observation unavailable');
-  const fingerprint = await snapshot(task, runtime, claimId), local = await localFiles(task, runtime);
+  validateRetirementObservation(observation);
+  const fingerprint = await snapshot(task, runtime, claimId), local = await localFiles(task, runtime, { retirementToolAllowance: true });
   const patch = await git(runtime, task.worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']);
   if (protectedText.test(patch) || local.files.some(file => protectedText.test(file.name) || (file.base64 && protectedText.test(Buffer.from(file.base64, 'base64').toString('utf8'))))) {
     throw new Error('Potential protected operational evidence; preserve and investigate separately');
@@ -200,21 +236,28 @@ export async function assessRetirement(runtime, input, who, observe, claimId, pr
   // Hidden index entries/submodules must not evade snapshot/archive coverage.
   if (/^[a-zS] /m.test(await git(runtime, task.worktree, ['ls-files', '-v'])) || /^160000 /m.test(await git(runtime, task.worktree, ['ls-files', '--stage']))) throw new Error('Unsupported sparse/submodule checkout');
   const archive = { version: 1, base: task.base, branch: task.branch, patch, ...local };
-  const evidence = digest(JSON.stringify({ original, repository, attempts, observation, fingerprint, archive,
+  // Opaque process identities are bound separately by the FRESH UI authorization.
+  // They are not source evidence: unrelated PID churn before that dialog must not
+  // invalidate the source digest. Afterwards only disappearing gaps are allowed;
+  // new gaps, PID reuse or boot changes block, including after claiming.
+  const evidence = digest(JSON.stringify({ original, repository, attempts, observation: { bootId: observation.bootId,
+    observation: observation.observation, stoppedProof: false }, fingerprint, archive,
     caller: { session: who.session, file: who.file }, reason: input.reason }));
   return { task, repository, attempts, observation, fingerprint, archive, evidence,
     authority: 'operator-attested-retirement', backendAuthority: false, terminalVerified: false, stoppedProof: false };
 }
 export function retirementAuthorization(gate, who, reason) {
   return { id: randomUUID(), task: gate.task.id, evidence: gate.evidence, fingerprint: gate.fingerprint,
-    caller: { session: who.session, file: who.file }, reason, confirmedAt: new Date().toISOString(),
+    caller: { session: who.session, file: who.file }, reason, observation: gate.observation, confirmedAt: new Date().toISOString(),
     declaration: 'obsolete-discarded; all owners/build users idle; no surviving workers or descendants; protected evidence inspected',
     authority: 'operator-attested-retirement', terminalVerified: false, stoppedProof: false };
 }
 export async function retireTask(runtime, input, who, observe, authorization, guard = () => {}, processes = observeRetirementProcesses) {
   const gate = await assessRetirement(runtime, input, who, observe, undefined, processes);
   if (!authorization || !uuid.test(authorization.id) || !Number.isFinite(Date.parse(authorization.confirmedAt))
-    || !equal(authorization, { ...retirementAuthorization(gate, who, input.reason), id: authorization.id, confirmedAt: authorization.confirmedAt })
+    || !equal(authorization, { ...retirementAuthorization(gate, who, input.reason), observation: authorization.observation, id: authorization.id, confirmedAt: authorization.confirmedAt })
+    || Date.now() - Date.parse(authorization.confirmedAt) > 300000 || Date.parse(authorization.confirmedAt) > Date.now() + 5000
+    || !retirementVisibilityPermitted(gate.observation, authorization.observation)
     || input.expectedEvidence !== gate.evidence || input.expectedFingerprint !== gate.fingerprint) throw new Error('Fresh exact retirement assessment and interactive authorization required');
   guard();
   const id = authorization.id, task = gate.task;
@@ -223,7 +266,7 @@ export async function retireTask(runtime, input, who, observe, authorization, gu
   await durableSave(join(task.directory, `revision-after-${digest(task.nonce)}.json`), { retirement: id, previousNonce: task.nonce });
   await durableSave(join(task.directory, 'retirement-claim.json'), { id, task: task.id, authorization });
   const fresh = await assessRetirement(runtime, input, who, observe, id, processes);
-  if (fresh.evidence !== gate.evidence) throw new Error('Retirement evidence changed after claim; retain pending operation');
+  if (fresh.evidence !== gate.evidence || !retirementVisibilityPermitted(fresh.observation, authorization.observation)) throw new Error('Retirement evidence changed after claim; retain pending operation');
   guard();
   const directory = join(task.directory, 'retirement'); await privateDir(directory);
   const parent = await open(task.directory, constants.O_RDONLY | constants.O_DIRECTORY);
@@ -238,7 +281,7 @@ export async function retireTask(runtime, input, who, observe, authorization, gu
   await durableSave(join(directory, 'local-files.json'), gate.archive);
   if (!equal(await lifecycleJSON(join(directory, 'local-files.json')), gate.archive)) throw new Error('Retirement archive verification failed');
   const final = await assessRetirement(runtime, input, who, observe, id, processes);
-  if (final.evidence !== gate.evidence) throw new Error('Retirement evidence changed before removal; preserve archives and claim');
+  if (final.evidence !== gate.evidence || !retirementVisibilityPermitted(final.observation, authorization.observation)) throw new Error('Retirement evidence changed before removal; preserve archives and claim');
   guard();
   await durableSave(join(directory, 'ready.json'), { repository: gate.repository, evidence: gate.evidence,
     archiveFingerprint: digest(JSON.stringify(gate.archive)), recordedAt: new Date().toISOString() });
