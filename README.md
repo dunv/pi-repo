@@ -68,6 +68,15 @@ confirmation remain mandatory. Original evidence, recovery and builds stay;
 ordinary cleanup/disposal gates are unchanged. See the delegate README for
 limitations and deployment requirements. Loading source does not enable it.
 
+Separately configured automatic retention adds one-time
+`delegate_retention_enroll` consent for completed, repository-bound payloads.
+A weekly operator-managed runner can then expire sealed build outputs after
+7 days and recovery archives after 30 days without further dialogs. It never
+enrolls arbitrary old tasks, deletes original sessions/audit records, clears an
+interrupted claim or overrides protected-content/identity checks. Source, Nix
+scheduling and per-task enrollment are separate approvals; see the delegate
+README. Default CLI mode is dry-run and default scheduling is disabled.
+
 ## Development
 
 ```sh

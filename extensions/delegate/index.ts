@@ -12,6 +12,7 @@ import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery
 import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
 import { assessCleanup, cleanupEvidence } from "./cleanup.mjs";
 import { assessRetirement, retirementAuthorization, retireTask } from "./retire.mjs";
+import { assessAutomaticEnrollment, automaticEnrollmentAuthorization, enrollAutomaticRetention, configuredAutomaticObserver } from "./automatic-retention.mjs";
 import { assessPrune, pruneExpectedEvidence, pruneAuthorization, pruneTask, compactDisposalClaim } from "./prune.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
@@ -91,6 +92,45 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
+  pi.registerTool({
+    name: "delegate_retention_enroll", label: "Enroll closed delegate payloads for automatic expiry", exposure: "model-only", executionMode: "sequential",
+    description: "One-time opt-in enrollment of explicitly selected completed delegate recovery/build payloads under a configured automatic retention policy. Read-only without expectedEvidence. Fresh exact-task UI confirmation seals content/metadata and reserves the disposal slot. Weekly expiry then needs no further dialog: 7-day builds, 30-day recovery, measured from closure. No active worktrees, legacy identity, interrupted claims, changed/shared/protected payloads or task-root purge. Audit records and original sessions stay. Skips are re-assessed at the next schedule; interrupted claims are never resumed automatically.",
+    parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }), repository: Type.String(),
+      selections: Type.Array(Type.Union([Type.Literal("build-output"), Type.Literal("recovery")]), { minItems: 1, maxItems: 2 }),
+      inventoryOffset: Type.Optional(Type.Integer({ minimum: 0 })), inventoryLimit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+      expectedEvidence: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, who = owner(ctx), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => { guard(start); if (signal?.aborted || owner(ctx).session !== who.session || owner(ctx).file !== who.file) throw new Error("Automatic enrollment canceled or session changed"); };
+      check();
+      const observe = configuredAutomaticObserver();
+      const gate = await assessAutomaticEnrollment(runtime, input, who, observe);
+      check();
+      const inventoryRows = Object.entries(gate.seals).flatMap(([group, rows]: [string, any]) => rows.map((row: any) => ({ group, ...row })));
+      const offset = input.inventoryOffset ?? 0, limit = input.inventoryLimit ?? 50;
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid enrollment inventory page");
+      if (input.expectedEvidence === undefined) return response({ task: gate.task.id, repository: gate.closure.repository, policy: gate.policy,
+        expectedEvidence: gate.evidence, selections: input.selections, deadlines: gate.deadlines, observation: gate.observation,
+        inventory: Object.fromEntries(Object.entries(gate.seals).map(([group, rows]: [string, any]) => [group, { entries: rows.length, sha256: digest(JSON.stringify(rows)) }])),
+        inventoryOffset: offset, inventoryLimit: limit, inventoryEntries: inventoryRows.slice(offset, offset + limit),
+        nextInventoryOffset: offset + limit < inventoryRows.length ? offset + limit : null,
+        authority: "enrollment-assessment-only", instruction: "Follow inventory pages until nextInventoryOffset is null with unchanged expectedEvidence. Inspect every selected payload and protected operational content. Confirm idleness and investigate process-visibility gaps. Explicitly authorize automatic irreversible loss of these sealed payloads after the displayed deadlines; overdue payloads can expire on the first scheduled run. Then supply expectedEvidence for fresh UI confirmation. No deletion/enrollment occurred; logs, original sessions, identity and audit stay." });
+      if (input.expectedEvidence !== gate.evidence) throw new Error("Automatic enrollment assessment changed");
+      if (!ctx.hasUI) throw new Error("Automatic enrollment requires fresh interactive confirmation");
+      const approved = await ctx.ui.confirm("Authorize automatic expiry of these closed delegate payloads?", [
+        `Task: ${gate.task.id}`, `Repository: ${gate.closure.repository.main}`, `Policy: ${gate.policy.id}`, `Groups: ${input.selections.join(", ")}`,
+        `Deadlines (UTC): ${JSON.stringify(gate.deadlines)}`, `Evidence: ${gate.evidence}`,
+        `Enrolled host identity hash: ${gate.observation.hostIdentity}`, `Current boot: ${gate.observation.bootId}; permission-limited PIDs: ${gate.observation.uninspectablePids.join(", ") || "none"}`,
+        "One-time enrollment reserves the permanent disposal slot. Weekly unattended expiry irreversibly deletes exactly these sealed payloads, WITHOUT ANOTHER DIALOG. Already overdue data may expire on the first run. Recovery deletion has no replacement archive.",
+        "Confirm all originating/custodian/foreground/build users and workers/descendants are idle, visibility gaps independently investigated, and protected operational content inspected. Do not borrow or modify enrolled payloads; changed data will be skipped.",
+        "Preserve Mailhub plans/approved sets/Trash journals and unknown outcomes. No provider action, task-root purge, original-session/log deletion, source edit, worker start or custody transfer. Enrollment is not new terminal/stopped proof.",
+        "A different host, new same-boot visibility gaps/PID identities, active/unknown jobs, changed data or partial claims cause skips. A real later boot on this prospectively enrolled host still permits expiry of unchanged closed data; it does not upgrade old worker evidence. No automatic claim clearing, re-enrollment or retry. Audit stays.",
+      ].join("\n"));
+      if (!approved) throw new Error("Automatic enrollment not authorized");
+      check();
+      return response(await enrollAutomaticRetention(runtime, input, who, observe, automaticEnrollmentAuthorization(gate, who), check));
+    },
+  });
   pi.registerTool({
     name: "delegate_retire", label: "Assess or confirm operator-attested delegate retirement", exposure: "model-only", executionMode: "sequential",
     description: "Opt-in archive-only discard of obsolete prior-boot/uncontained delegates and complete revision chains. Not verified terminal/stopped evidence: independently establish idleness. Exact admissions, fresh backend/process checks and per-task UI confirmation required. Read-only without both expected fields. Archives source/local/ignored files before worktree/ref removal. Active/unknown jobs, unresolved claims and protected evidence block. No retry, custody, workers or payload disposal; history, recovery and builds remain.",

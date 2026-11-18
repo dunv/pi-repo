@@ -145,8 +145,9 @@ export async function removePayloadInventory(task, files, guard, rootIdentity) {
     const st = await root.stat();
     if (!equal([st.dev, st.ino], rootIdentity)) throw new Error('Task directory replaced before disposal');
     for (const row of files.filter(row => !rows.has(row.path.slice(0, row.path.lastIndexOf('/'))))) {
-      if (row.path.startsWith('finalization/')) {
-        const parent = await open(`/proc/self/fd/${root.fd}/finalization`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      if (row.path.startsWith('finalization/') || row.path.startsWith('retirement/')) {
+        const directory = row.path.split('/')[0];
+        const parent = await open(`/proc/self/fd/${root.fd}/${directory}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
         try { await remove(parent, row.path.split('/')[1], row.path); await parent.sync(); } finally { await parent.close(); }
       } else await remove(root, row.path, row.path);
     }

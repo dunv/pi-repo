@@ -242,11 +242,138 @@ verified historical worker completion. Retiring is not acceptance or integration
 
 A retirement receipt is deliberately **not** `finalized.json`; ordinary disposal
 and retention do not accept it. This version reclaims worktree presence, not all
-retained build/archive bytes. Further payload disposal needs its own reviewed
-protocol and separate approval. An interrupted retirement remains blocked, even
+retained build/archive bytes. The separately enabled automatic-retention protocol
+below requires its own one-time enrollment/approval; it never inherits deletion
+permission from retirement alone. An interrupted retirement remains blocked, even
 when only one of worktree/ref removal succeeded; do not retry or clear claims.
 Same-user concurrency remains outside an OS sandbox. If a task cannot satisfy
 these gates, keep it and investigate rather than promising universal deletion.
+
+## Automatic expiry after explicit enrollment
+
+`automaticRetentionProtocol: 1` is a **separate reviewed opt-in**, not a force or
+noninteractive mode for the existing disposal tools. Its runtime policy is exact:
+
+```json
+{
+  "automaticRetentionProtocol": 1,
+  "automaticRetention": {
+    "version": 1,
+    "id": "c6e2fb3a-9ca6-4277-a4c2-3901bdbf95d6",
+    "repositories": ["/home/daniel/GitPLF/goMonorepo"],
+    "buildDays": 7,
+    "recoveryDays": 30
+  }
+}
+```
+
+There is no default policy, whole-state purge, automatic enrollment, diagnostic
+expiry or automatic change to an installed runtime. A future policy change needs
+review/deployment and does not silently rewrite old enrollments.
+
+### One-time enrollment
+
+After successful **modern repository-bound** finalization or operator-attested
+retirement, call `delegate_retention_enroll` with exact task, canonical main
+`repository`, and explicit `selections: ["build-output", "recovery"]` (or a subset).
+Omit `expectedEvidence` for a read-only assessment. Exact inventory metadata and
+content hashes are paginated (`inventoryOffset`, `inventoryLimit`, default 50,
+maximum 1,000); follow `nextInventoryOffset` until null with unchanged
+`expectedEvidence`. Inspect every selected payload,
+protected operational content, original private admission history and closure.
+Missing groups must not be selected. Build outputs are only the task's declared
+`build-output/`, never legacy `bazel-output`, shared caches or arbitrary paths.
+Recovery is exactly `source.bundle` and `local-files.json` beneath that task's
+completed `finalization/` or `retirement/`; intents/ready/receipts stay.
+
+The gate independently verifies manifest/owner/path identity, every original and
+revision admission, completed closure/continuation claims, canonical main Git
+identity, absent worker/ref/registration, unchanged retained attempt evidence,
+current complete original-namespace backend observations and process references.
+Unrelated recycled numeric job IDs cannot become an original job: only the exact
+label plus matching ID/creation identifies it. A reused label, active/queued/
+UNKNOWN original job, contradictory/incomplete state or backend query failure
+blocks. Absence and KILLED never become stopped proof or acceptance. Existing
+ordinary disposal, later retention or enrollment claims block, without clearing.
+
+Inspection is bounded to 250,000 inventory entries/64 MiB inventory metadata and
+16 GiB of streamed regular-file content. Serialized claims above the private
+reader's 128 MiB limit are refused before creation. Files are hashed and inspected through held
+no-follow directory FDs; shared files, mounts, unsupported entries, protected
+names/content and decoded recovery markers block. Recovery schema/byte counts,
+closed archive fingerprint and bundle ref/verification are checked. Symlink
+entries are sealed but never dereferenced or deleted outside their group.
+Content heuristics cannot certify arbitrary data: the enrolling human must still
+inspect for Mailhub plans/approved sets/Trash journals/unknown outcomes and must
+not enroll protected evidence. External original/custodian sessions remain.
+
+After explicit loss authorization, repeat with `expectedEvidence` for fresh UI
+confirmation. The dialog names exact groups and UTC deadlines, warns that deletion
+will happen **without another dialog**, and requires independently established
+idleness and investigation of permission-limited PIDs. Deadlines are the completed
+closure timestamp plus 7 days for builds or 30 days for recovery. Already overdue
+data can disappear on the first scheduled run. Do not borrow or mutate enrolled
+payloads; they are disposable closed-task data, not live workspaces.
+
+Enrollment reserves the existing exclusive `disposal-claim.json` slot with a
+**different**, versioned `automatic-retention-enrollment` kind and then appends
+`automatic-retention-enrollment.json`. It is not `disposed.json`, and ordinary
+manual disposal/pruning reject it. The claim seals policy, repository/root identity,
+closure, host/boot/opaque-process identities, caller consent, exact metadata and
+content hashes for each selected group. Neither denial nor assessment writes it.
+A claim without its coherent enrollment receipt stays blocked; no re-enrollment,
+claim clearing, rewriting previous records or automatic retry.
+
+### Unattended runner
+
+The source-only CLI uses Node 24's native erasable TypeScript support for the
+existing read-only Pueue adapter. It does not need the Pi SDK, a model, credentials,
+new Pueue jobs or a daemon restart:
+
+```sh
+node extensions/delegate/automatic-retention.mjs --runtime /ABSOLUTE/RUNTIME.json
+# Only under the separately approved/enabled policy:
+node extensions/delegate/automatic-retention.mjs --runtime /ABSOLUTE/RUNTIME.json --apply
+```
+
+Default mode is dry-run. Supply the same explicit `PI_PUEUE_BINARY`, config/data,
+namespace and minimal PATH as the existing wrapper; the launcher must scrub the
+environment and hold an exclusive nonblocking `flock` around the entire run.
+Deployment wiring belongs to the operator's repository, not this package.
+
+Only coherently enrolled tasks are considered. At each run, unchanged policy,
+closure/admissions/retained evidence, repository/root identity, source/ref absence,
+complete backend/process observations, mounts, sealed payload content and every
+prior automatic receipt are rechecked. No raw job commands, envs, diagnostic
+bodies or backend errors enter the JSON report. A skipped task includes only its
+ID and bounded reason; other enrolled tasks continue. An incomplete enrollment is
+reported rather than adopted. Unenrolled tasks are never swept by age.
+
+The root-owned machine identity is captured **prospectively** at enrollment, not
+backfilled into old task evidence. On that boot, permission-limited processes must
+remain a subset of the enrolled identities (PID plus kernel start time and hashed
+command/cgroup); new gaps or PID reuse skip expiry. A real later kernel boot on
+that **same independently enrolled host** kills the old boot's processes and can
+still expire unchanged closed payloads if every other gate passes. A different
+host, active/reused original identity or new mutable payload cannot use reboot as
+an override. Original `terminalVerified`/`stoppedProof` records remain unchanged;
+this is policy-authorized loss of sealed closed copies, not worker recovery.
+
+A due group takes one exclusive `automatic-retention-<group>-claim.json`, rechecks
+all relevant state, unlinks only the exact held-FD inventory, then writes its
+matching `automatic-retention-<group>-receipt.json`. Build and recovery groups may
+expire on different weekly runs, or together when both are overdue. A receipt is
+required before later operations; partial/dangling/mismatched claims block the
+whole task forever pending operator investigation, never automatic resumption.
+Reintroduced removed groups and changed enrolled bytes also block. Audit records,
+original sessions, feedback, result/containment, closure records, worker logs and
+the task root stay indefinitely. Unlinked blocks are not guaranteed freed space.
+
+A weekly timer expires data on the **first eligible run after** its cutoff, not
+at an exact minute. Ineligible tasks are re-assessed at later scheduled runs;
+interrupted operations are not retried. Disabling the timer stops future runs,
+but never removes claims or manufactures rollback. Publishing/building source is
+not scheduler activation or one-time payload enrollment.
 
 ## Cleanup-only historical operations
 

@@ -58,6 +58,7 @@ export async function runtimeFrom(path) {
   if (runtime.disposalProtocol !== undefined && runtime.disposalProtocol !== 1) throw new Error('Invalid delegate disposal runtime');
   if (runtime.cleanupProtocol !== undefined && runtime.cleanupProtocol !== 1) throw new Error('Invalid delegate cleanup runtime');
   if (runtime.retirementProtocol !== undefined && runtime.retirementProtocol !== 1) throw new Error('Invalid delegate retirement runtime');
+  if (runtime.automaticRetentionProtocol !== undefined && runtime.automaticRetentionProtocol !== 1) throw new Error('Invalid automatic retention runtime');
   if (runtime.retentionProtocol !== undefined && runtime.retentionProtocol !== 1) throw new Error('Invalid delegate retention runtime');
   if (runtime.legacyRecoveryDisposalProtocol !== undefined && runtime.legacyRecoveryDisposalProtocol !== 1) throw new Error('Invalid delegate legacy recovery disposal runtime');
   if (runtime.reconciliationProtocol !== undefined && runtime.reconciliationProtocol !== 1) throw new Error('Invalid delegate reconciliation runtime');

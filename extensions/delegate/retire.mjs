@@ -121,7 +121,7 @@ async function attemptsFor(task, runtime, claimId) {
   return { task: current, rows: chain };
 }
 
-async function admissions(task, rows) {
+export async function admissions(task, rows) {
   const fd = await open(task.owner.file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let text;
   try {

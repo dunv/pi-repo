@@ -41,7 +41,7 @@ export async function inventory(runtime, { worktrees = false } = {}) {
         || !task.worktree.endsWith(id)) throw new Error('Task ownership/path identity incomplete');
       Object.assign(row, { repo: task.repo, worktree: task.worktree, branch: task.branch,
         owner: { session: task.owner?.session, file: task.owner?.file }, worktreeExists: await exists(task.worktree) });
-      for (const [name, path] of Object.entries({ finalized: 'finalized.json', retired: 'retired.json', retirementClaim: 'retirement-claim.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
+      for (const [name, path] of Object.entries({ finalized: 'finalized.json', retired: 'retired.json', retirementClaim: 'retirement-claim.json', automaticEnrollment: 'automatic-retention-enrollment.json', automaticBuildDisposed: 'automatic-retention-build-output-receipt.json', automaticRecoveryDisposed: 'automatic-retention-recovery-receipt.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
       const names = await readdir(directory);
       row.retentionHistory = names.filter(name => /^retention-(?:after-[a-f0-9]{64}|[a-f0-9-]{36})\.json$/.test(name)).sort();
       row.disposalClaimCompacted = false;

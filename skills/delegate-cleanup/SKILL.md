@@ -87,9 +87,56 @@ not proving it integrated, completed or stopped.
 
 The receipt is `retired.json`, not ordinary finalization. This archive-only
 operation does **not** enable `delegate_dispose`/`delegate_prune` or permanently
-remove retained build/recovery payloads. A further disposal protocol requires
-separate reviewed implementation/deployment and explicit approval. See the
-lifecycle contract's operator-attested-retirement section for limits.
+remove retained build/recovery payloads. The separately enabled automatic protocol
+below needs explicit one-time enrollment; retirement alone is not permission.
+See the lifecycle contract's operator-attested-retirement section for limits.
+
+## Explicit enrollment, automatic expiry
+
+Only after separately reviewed deployment of `automaticRetentionProtocol: 1`,
+a configured canonical-repository allowlist/policy ID, and a fresh Pi session,
+`delegate_retention_enroll` can enroll **completed modern repository-bound**
+finalizations or retirements. The fixed policy is 7-day build outputs and 30-day
+recovery copies, measured from task closure; a weekly runner expires data on its
+first eligible run after the cutoff. Existing archives are NOT silently enrolled.
+
+1. Assess with exact `{task, repository: CANONICAL_MAIN, selections}`. Groups are
+   only `build-output` and `recovery`, not logs/diagnostics/task roots or legacy
+   build folders. Select only present groups, all intended groups together.
+2. Follow inventory pages until `nextInventoryOffset` is null with unchanged
+   `expectedEvidence`. Personally inspect selected contents, every retained attempt
+   and closure, private admission history, backend/process observations and protected state.
+   Potential Mailhub plans/approved sets/Trash journals/unknown outcomes stop
+   enrollment; content hashes/heuristics never replace operator inspection.
+3. Obtain explicit exact-task consent for **automatic irreversible loss** at the
+   displayed UTC deadlines, including the possibility that already overdue data
+   expires on the first run. Confirm all owners/custodians/foreground/build users
+   and workers are idle and investigate permission-limited PIDs independently.
+4. Repeat with `expectedEvidence` for the fresh one-time UI confirmation.
+   The enrollment seals content/metadata, closure/repository, policy and the
+   prospectively observed host/boot/process identities. It reserves the existing
+   exclusive disposal slot with a different claim kind; ordinary tools reject it.
+   No per-run confirmation follows. Do not reuse or mutate enrolled payloads.
+5. Unattended runs only consider complete enrollments and revalidate policy,
+   identity, source/ref absence, all attempt evidence, backend/process observations,
+   protected content, mounts, sealed bytes and previous receipts. A later kernel
+   boot is accepted only on the independently enrolled same host with all other
+   gates intact; it never upgrades historical terminal/stopped-worker records.
+   New same-boot visibility gaps/PID reuse or changed host/data/history skips the
+   task. Skips can be re-assessed at later weekly runs, without resuming a claim.
+6. Successful expiry retains exact group claims/receipts, all original sessions,
+   manifests, result/containment, feedback, worker logs and lifecycle records.
+   Interrupted/mismatched enrollment or group claims stay blocked; never clear,
+   retry, force-enroll, change policy or invoke providers to make deletion pass.
+
+Default CLI mode is dry-run. Only the separately approved immutable launcher may
+run `automatic-retention.mjs --runtime ABSOLUTE_RUNTIME --apply` under a scrubbed
+backend environment and whole-run nonblocking flock. No model/daemon mutation,
+worktree removal, automatic task enrollment, whole-directory purge or GC. Nix
+build/publication does not activate a timer; activation does not enroll payloads.
+Report exact removed/skipped groups and observed unlinked allocation without
+claiming guaranteed free-space reclamation. Full limits/protocol are in the
+lifecycle contract's automatic-expiry section.
 
 ## Two different operations
 
