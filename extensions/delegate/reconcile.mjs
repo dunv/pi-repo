@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { open, lstat, opendir, realpath } from 'node:fs/promises';
 import { join, isAbsolute, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ENTRY, digest, snapshot, git } from './core.mjs';
+import { ENTRY, digest, snapshot, git, assertNotRetired } from './core.mjs';
 import { assertStopped } from './containment.mjs';
 
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
@@ -182,6 +182,7 @@ export async function assessReconciliation(runtime, input, who, observe, stopped
   return { task, fingerprint, evidenceDigest, evidence, current, stopped: proof, receipt };
 }
 export async function assertCustody(task, who, finalizationClaim) {
+  await assertNotRetired(task);
   if (task.nonce && !await missing(claimPath(task))) {
     const claim = await privateJSON(claimPath(task));
     if (claim.finalization && claim.finalization !== finalizationClaim) throw new Error('Finalization claimed; no further foreground use or automatic retry');

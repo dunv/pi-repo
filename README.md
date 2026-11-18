@@ -59,6 +59,15 @@ and Mailhub unknown-outcome barriers; it does not enable source/worktree or buil
 deletion. Reports and exit zero are evidence, not acceptance. See the component
 READMEs for configuration, authorization boundaries and limitations.
 
+A separately enabled `retirementProtocol: 1` adds `delegate_retire` for explicit
+operator-attested abandonment of obsolete prior-boot/uncontained drafts and
+complete revision chains. It archives before worktree/ref removal and never
+manufactures verified completion or stopped proof. Exact admission/repository
+identity, fresh backend/process observations and an independent human idleness
+confirmation remain mandatory. Original evidence, recovery and builds stay;
+ordinary cleanup/disposal gates are unchanged. See the delegate README for
+limitations and deployment requirements. Loading source does not enable it.
+
 ## Development
 
 ```sh
@@ -70,8 +79,10 @@ npm pack --dry-run
 Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies.
 Dev-only host packages are pinned to 1.3.0. Tests use fake backends/executables,
 temporary Git repositories, real kernel locks and Pi's actual extension loader;
-no live daemon, model call or remote mutation. Delegate tests require Linux,
-Bash, Git and `flock`. The GitHub workflow runs the root checks.
+no live daemon, model call or remote mutation. Test files run serially because
+retirement tests observe host-wide process-reference visibility; unrelated test
+process churn must not invalidate a live observation mid-operation. Delegate
+tests require Linux, Bash, Git and `flock`. The GitHub workflow runs the root checks.
 
 ## Provenance and license
 

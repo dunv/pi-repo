@@ -41,7 +41,7 @@ export async function inventory(runtime, { worktrees = false } = {}) {
         || !task.worktree.endsWith(id)) throw new Error('Task ownership/path identity incomplete');
       Object.assign(row, { repo: task.repo, worktree: task.worktree, branch: task.branch,
         owner: { session: task.owner?.session, file: task.owner?.file }, worktreeExists: await exists(task.worktree) });
-      for (const [name, path] of Object.entries({ finalized: 'finalized.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
+      for (const [name, path] of Object.entries({ finalized: 'finalized.json', retired: 'retired.json', retirementClaim: 'retirement-claim.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
       const names = await readdir(directory);
       row.retentionHistory = names.filter(name => /^retention-(?:after-[a-f0-9]{64}|[a-f0-9-]{36})\.json$/.test(name)).sort();
       row.disposalClaimCompacted = false;
@@ -50,7 +50,7 @@ export async function inventory(runtime, { worktrees = false } = {}) {
         catch { row.blockers.push('Disposal claim unreadable; retention history unassessed'); }
       }
       for (const name of names) {
-        const category = name === 'build-output' ? 'build' : name === 'bazel-output' ? 'legacyBuild' : name === 'finalization' ? 'archivesAndReceipts'
+        const category = name === 'build-output' ? 'build' : name === 'bazel-output' ? 'legacyBuild' : ['finalization', 'retirement'].includes(name) ? 'archivesAndReceipts'
           : ['brief.md', 'report.md', 'worker.log', 'metrics.jsonl', 'tracked.diff', 'claude-result.json'].includes(name) || /^check-[0-7]-[a-f0-9-]{36}\.log$/.test(name) ? 'prunableDiagnosticContent'
           : name === 'sessions' ? 'taskLocalSessionContentUnassessed'
           : /(?:\.log|\.jsonl)$/.test(name) ? 'otherLogsAndSessions' : name === 'revisions' ? 'revisions' : name.startsWith('retention-') ? 'retentionHistory' : 'otherEvidence';

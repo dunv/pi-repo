@@ -11,6 +11,7 @@ import { assertStopped } from "./containment.mjs";
 import { recoveryAuthorization, recoveryGate, prepareRecovery } from "./recovery.mjs";
 import { disposalGate, disposalAuthorization, disposeTask } from "./dispose.mjs";
 import { assessCleanup, cleanupEvidence } from "./cleanup.mjs";
+import { assessRetirement, retirementAuthorization, retireTask } from "./retire.mjs";
 import { assessPrune, pruneExpectedEvidence, pruneAuthorization, pruneTask, compactDisposalClaim } from "./prune.mjs";
 import { finalizationAttempts, finalizationGate, finalizationAuthorization, finalizeTask, finalizationRequest } from "./finalize.mjs";
 import { feedbackChoices, feedbackRequest, feedbackTask, validateFeedback, writeFeedback } from "./feedback.mjs";
@@ -90,6 +91,50 @@ export default function (pi: ExtensionAPI) {
       throw new Error(`Task ${task.id} retained at ${directory}. Submission may be UNKNOWN: inspect originating Pueue history. Do not resubmit automatically.`);
     }
   }
+  pi.registerTool({
+    name: "delegate_retire", label: "Assess or confirm operator-attested delegate retirement", exposure: "model-only", executionMode: "sequential",
+    description: "Opt-in archive-only discard of obsolete prior-boot/uncontained delegates and complete revision chains. Not verified terminal/stopped evidence: independently establish idleness. Exact admissions, fresh backend/process checks and per-task UI confirmation required. Read-only without both expected fields. Archives source/local/ignored files before worktree/ref removal. Active/unknown jobs, unresolved claims and protected evidence block. No retry, custody, workers or payload disposal; history, recovery and builds remain.",
+    parameters: Type.Object({ task: Type.String({ pattern: "^[a-f0-9-]{36}$" }), repository: Type.String({ description: "Absolute canonical main checkout" }),
+      reason: Type.String({ minLength: 1, maxLength: 1000, description: "Explicit discard rationale, not a claim of successful integration. No secrets." }),
+      expectedEvidence: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+      expectedFingerprint: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })) }),
+    async execute(_id, input, signal, _update, ctx) {
+      const start = epoch, who = owner(ctx), runtime = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME);
+      const check = () => {
+        guard(start);
+        if (signal?.aborted || owner(ctx).session !== who.session || owner(ctx).file !== who.file) throw new Error("Retirement canceled or session changed");
+      };
+      check();
+      const committing = input.expectedEvidence !== undefined || input.expectedFingerprint !== undefined;
+      if (committing && (!input.expectedEvidence || !input.expectedFingerprint)) throw new Error("Supply both expected fields from a fresh retirement assessment");
+      const gate = await assessRetirement(runtime, input, who, observeReconciliation);
+      check();
+      if (!committing) return response({ task: gate.task.id, repository: gate.repository, worktree: gate.task.worktree, branch: gate.task.branch,
+        reason: input.reason, expectedEvidence: gate.evidence, expectedFingerprint: gate.fingerprint,
+        attempts: gate.attempts.map((row: any) => ({ attempt: row.attempt, nonce: row.nonce, backend: row.backend,
+          containmentRecorded: row.containment !== null, workerResultRecorded: row.result !== null })),
+        observation: gate.observation, localFiles: gate.archive.files.map((file: any) => file.name), localBytes: gate.archive.bytes,
+        authority: gate.authority, backendAuthority: false, terminalVerified: false, stoppedProof: false,
+        instruction: "Assessment only. Inspect the complete retained draft and every local/ignored file, existing feedback and all attempt history. Independently establish that owners/custodians, old clients, workers/descendants and external build servers are idle. Process observations are NOT stopped proof; historical evidence may be incomplete. Explicitly authorize discarding this exact obsolete task, retaining recovery/build/evidence. Supply both expected fields with the identical reason for fresh UI confirmation. No removal, custody transfer or retry is authorized by assessment." });
+      if (input.expectedEvidence !== gate.evidence || input.expectedFingerprint !== gate.fingerprint) throw new Error("Retirement assessment changed; inspect again");
+      if (!ctx.hasUI) throw new Error("Operator-attested retirement requires fresh interactive confirmation");
+      const approved = await ctx.ui.confirm("Retire this obsolete delegate WITHOUT verified historical stopped proof?", [
+        `Task: ${gate.task.id}`, `Worktree: ${gate.task.worktree}`, `Branch: ${gate.task.branch}`, `Main repository: ${gate.repository.main}`,
+        `Reason (JSON): ${JSON.stringify(input.reason)}`, `Receiving session: ${who.session}`, `Attempts: ${gate.attempts.length}`,
+        `Evidence: ${gate.evidence}`, `Fingerprint: ${gate.fingerprint}`, `Current boot: ${gate.observation.bootId}`,
+        "This is an operator-attested abandonment, NOT verified worker completion, successful integration or stopped-worker proof. Missing backend jobs and a reboot do not silently become proof.",
+        `Processes with permission-limited observation: ${gate.observation.uninspectablePids.join(", ") || "none"}. Investigate these independently before approving; the scan is not exhaustive stopped proof.`,
+        "By approving, independently confirm: all originating/custodian sessions and old clients are idle; no worker or descendant survives; no external build server or foreground user can mutate this checkout. The process scan cannot prove this for unreferenced or uninspectable processes.",
+        "Confirm you inspected the retained draft/local/ignored files and protected operational evidence. Preserve Mailhub plans/approved sets/Trash journals and unknown-outcome state; stop rather than authorize provider actions.",
+        `Discard this obsolete draft. Archive ${gate.archive.files.length} local/ignored files (${gate.archive.bytes} bytes) plus a Git bundle at ${gate.task.directory}/retirement before worktree/ref removal.`,
+        "Original history/results/containment/claims, recovery, build outputs and logs stay. External symlink targets are untouched. No worker restart, custody, publication, permanent payload disposal or task-root purge.",
+        "Permanent shared continuation and retirement claims fence cooperating updated clients. Partial failure remains blocked, with no claim clearing or automatic retry. Old clients must stay idle.",
+      ].join("\n"));
+      if (!approved) throw new Error("Operator-attested retirement not authorized");
+      check();
+      return response(await retireTask(runtime, input, who, observeReconciliation, retirementAuthorization(gate, who, input.reason), check));
+    },
+  });
   pi.registerTool({
     name: "delegate_prune", label: "Later prune retained delegate artifacts", exposure: "model-only", executionMode: "sequential",
     description: "Separately opt-in later cleanup of a modern independently repository-bound original task only after a coherent completed delegate_dispose claim and receipt; legacyRecovery never enables it. No custody transfer, worker/provider/process action, task-root purge or retry. Read-only without expected fields; confirmation binds this receiving session, exact metadata/content-hash inventory, completed disposal/finalization history and fresh terminal/stopped evidence. Only documented payloads, diagnostic/review content and task-local worker transcripts are candidates. Unknown/protected evidence, external initiating/custodian sessions, summaries, claims and lifecycle identity remain retained.",

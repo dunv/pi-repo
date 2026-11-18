@@ -180,6 +180,74 @@ Missing/uncertain evidence never permits automatic retry. Branch ownership and
 session identity are preserved; a fork does not gain another session's authority.
 Preparation/admission failures retain artifacts for manual reconciliation.
 
+## Operator-attested retirement of obsolete worktrees
+
+`delegate_retire {task, repository, reason, expectedEvidence?, expectedFingerprint?}`
+is a **separate**, archive-only abandonment operation. It requires separately
+reviewed deployment, `retirementProtocol: 1` in the runtime, and a fresh Pi session.
+It is not a force mode for `delegate_cleanup`, reconciliation, recovery,
+finalization, disposal or pruning; their terminal/stopped gates are unchanged.
+
+This path handles obsolete drafts with prior-boot or missing containment,
+missing terminal reviews/results, and complete admitted revision chains. It
+records `authority: "operator-attested-retirement"`, `disposition: "discarded"`,
+`terminalVerified: false`, `stoppedProof: false`, and `backendAuthority: false`.
+It never calls a missing job, KILLED state, reboot, process scan or human statement
+verified historical worker completion. Retiring is not acceptance or integration.
+
+1. Assess without expected fields. Select the canonical main checkout and supply
+   a bounded secret-free reason for abandoning this exact obsolete draft. The
+   tool independently binds the retained worker and main Git directory, original
+   private v3 owning session/admitted job identities, every attempt/submission,
+   complete linear revision claims, current source and ignored/local contents.
+   A removed linked source need not be recreated. A clone is not identity.
+2. Each exact original backend identity is queried against a fresh complete
+   original-namespace snapshot. Query failure, reused identity, active/queued/
+   paused/UNKNOWN jobs or contradictory retained exit evidence blocks retirement.
+   EXITED/KILLED/absence is retained as an observation only. Unresolved admissions,
+   orphan/forked revision claims, prior reconciliation, finalization/disposal,
+   interrupted retirement, locked/nested worktrees, mounts, sparse entries and
+   submodules stay blocked. No old claim is cleared or repurposed.
+3. A bounded Linux current-user `/proc` scan checks cwd, command-line task UUID
+   and open-file references to the worktree/task state. A positive reference
+   blocks; the tool does not signal processes or stop build servers. Permission-
+   limited PIDs are explicitly listed and bound to confirmation; investigate them
+   independently. Even an unobstructed scan cannot prove arbitrary unreferenced
+   processes or escaped workers will not mutate files later. It is **not stopped
+   proof**. Do not approve when their idleness cannot independently be established.
+4. Personally inspect the retained draft, every new/local/ignored file, existing
+   feedback and every attempt. Potential Mailhub/approved-set/Trash-journal/
+   unknown-outcome markers block rather than invoking provider actions. Heuristics
+   are not proof of safe contents. Obtain explicit abandonment approval, then send
+   both expected fields with the identical reason in the same receiving session.
+   Fresh UI confirmation requires an independent human declaration that all
+   owners/custodians/old clients, workers and descendants, foreground users and
+   external build servers are idle and protected evidence has been inspected.
+   Non-UI, denial, navigation, abort or changed evidence admits no removal.
+5. Recheck after confirmation, exclusively claim the latest shared continuation,
+   then append `retirement-claim.json`; preserve every prior revision claim.
+   Updated worker writes/checks/revision/recovery/foreground lifecycle paths are
+   fenced. Old immutable clients are not fenced retroactively and must stay idle.
+   Recheck all evidence after claiming and immediately before removal. Archive a
+   verified/fsynced Git bundle and the bounded binary patch plus changed/new/
+   ignored file contents/modes/symlink targets in `<task>/retirement/`. Ordinary
+   finalization's 10,000-file/64-MiB local archive limits still apply. Symlink
+   targets are neither followed nor deleted. Oversized/unsafe archives block.
+6. Only after archival, Git removes the registered worktree (retaining its locked/
+   nested protection) and compare-and-deletes the unchanged delegate ref. A durable
+   `retired.json` receipt follows successful completion. Intent/ready/receipt,
+   claims, original manifests, owner sessions, results, containment, feedback,
+   diagnostics, archives and build outputs stay private and retained. No worker,
+   custody transfer, publication, permanent payload disposal or task-root purge.
+
+A retirement receipt is deliberately **not** `finalized.json`; ordinary disposal
+and retention do not accept it. This version reclaims worktree presence, not all
+retained build/archive bytes. Further payload disposal needs its own reviewed
+protocol and separate approval. An interrupted retirement remains blocked, even
+when only one of worktree/ref removal succeeded; do not retry or clear claims.
+Same-user concurrency remains outside an OS sandbox. If a task cannot satisfy
+these gates, keep it and investigate rather than promising universal deletion.
+
 ## Cleanup-only historical operations
 
 `delegate_cleanup {task, repository, action, disposition?, selections?,

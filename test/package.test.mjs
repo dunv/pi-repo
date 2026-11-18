@@ -31,7 +31,7 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
     const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['delegate_cleanup', 'delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_prune', 'delegate_reconcile', 'delegate_resume', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.deepEqual(toolNames.sort(), ['delegate_cleanup', 'delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_prune', 'delegate_reconcile', 'delegate_resume', 'delegate_retire', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(new Set(toolNames).size, toolNames.length);
 
     // Bound model-facing prose, including repeated parameter descriptions.
@@ -49,12 +49,15 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
       assert.ok(tool.description.length <= 1600, `${tool.name}: keep descriptions concise`);
       countDescriptions({ description: tool.description, parameters: tool.parameters });
     }
-    // Reconciliation, disposal, historical cleanup and later retention pruning
-    // carry bounded consent contracts; full lifecycle guidance stays in docs.
-    assert.ok(descriptionCharacters <= 12400, `model-facing description budget exceeded: ${descriptionCharacters}`);
+    // Lifecycle tools, including separate operator-attested retirement, carry
+    // bounded consent contracts; full guidance stays in docs.
+    assert.ok(descriptionCharacters <= 12800, `model-facing description budget exceeded: ${descriptionCharacters}`);
     assert.match(tools.get('delegate_task').description, /NOT an OS sandbox/);
     assert.match(tools.get('delegate_review').description, /main agent must review the entire trackedPatch, every untracked file/);
     assert.match(tools.get('delegate_review').description, /current checks.*delegate_feedback/);
+    assert.equal(tools.get('delegate_retire').exposure, 'model-only');
+    assert.equal(tools.get('delegate_retire').executionMode, 'sequential');
+    assert.match(tools.get('delegate_retire').description, /Not verified terminal\/stopped evidence/);
     assert.equal(tools.get('delegate_prune').exposure, 'model-only');
     assert.equal(tools.get('delegate_prune').executionMode, 'sequential');
     assert.match(tools.get('delegate_prune').description, /completed delegate_dispose/);

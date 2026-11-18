@@ -57,13 +57,29 @@ export async function runtimeFrom(path) {
     || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
   if (runtime.disposalProtocol !== undefined && runtime.disposalProtocol !== 1) throw new Error('Invalid delegate disposal runtime');
   if (runtime.cleanupProtocol !== undefined && runtime.cleanupProtocol !== 1) throw new Error('Invalid delegate cleanup runtime');
+  if (runtime.retirementProtocol !== undefined && runtime.retirementProtocol !== 1) throw new Error('Invalid delegate retirement runtime');
   if (runtime.retentionProtocol !== undefined && runtime.retentionProtocol !== 1) throw new Error('Invalid delegate retention runtime');
   if (runtime.legacyRecoveryDisposalProtocol !== undefined && runtime.legacyRecoveryDisposalProtocol !== 1) throw new Error('Invalid delegate legacy recovery disposal runtime');
   if (runtime.reconciliationProtocol !== undefined && runtime.reconciliationProtocol !== 1) throw new Error('Invalid delegate reconciliation runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;
 }
-export async function assertWorktree(task, runtime, clean = false) {
+// A retirement is a separate operator disposition, never invented completion or
+// custody. Fence cooperating workers even after a partially persisted operation.
+export async function assertNotRetired(task, retirementId) {
+  try {
+    const claim = await lifecycleJSON(join(task.directory, 'retirement-claim.json'));
+    if (!retirementId || claim.id !== retirementId) throw new Error('Retirement claimed; no further task use or automatic retry');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (task.nonce) {
+    try {
+      const claim = await lifecycleJSON(join(task.directory, `revision-after-${digest(task.nonce)}.json`));
+      if (claim.retirement && claim.retirement !== retirementId) throw new Error('Retirement claimed; no further task use or automatic retry');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+export async function assertWorktree(task, runtime, clean = false, retirementId) {
+  await assertNotRetired(task, retirementId);
   const root = (await git(runtime, task.worktree, ['rev-parse', '--show-toplevel'])).trim();
   const head = (await git(runtime, task.worktree, ['rev-parse', 'HEAD'])).trim();
   if (await realpath(root) !== task.worktree || head !== task.base) throw new Error('Worker checkout moved or HEAD changed');
@@ -213,6 +229,7 @@ export function attemptDirectory(task, attempt) {
 export async function prepareRevision(task, input, runtime, recovery) {
   if (runtime.revisionProtocol !== 1) throw new Error('Revision launcher unavailable: activate the updated runtime and restart Pi first');
   const backend = workerBackend({ ...input, backend: input.backend ?? task.backend }, runtime);
+  await assertNotRetired(task);
   validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
   verificationProfile(task.verification);
   if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error('Previous job nonce changed; review the latest task first');
@@ -238,8 +255,8 @@ export function tasksFrom(entries) {
   for (const e of entries) if (e.type === 'custom' && e.customType === ENTRY && e.data?.id) tasks.set(e.data.id, e.data);
   return tasks;
 }
-export async function snapshot(task, runtime) {
-  await assertWorktree(task, runtime);
+export async function snapshot(task, runtime, retirementId) {
+  await assertWorktree(task, runtime, false, retirementId);
   return contentSnapshot(task.worktree, task.base, runtime);
 }
 async function contentSnapshot(worktree, base, runtime) {
@@ -257,6 +274,7 @@ async function contentSnapshot(worktree, base, runtime) {
   return hash.digest('hex');
 }
 export async function writable(task, path) {
+  await assertNotRetired(task);
   const target = resolve(task.worktree, path), rel = relative(task.worktree, target);
   if (!rel || rel.startsWith('../') || isAbsolute(rel) || rel.split('/').some(p => ['.git', '.pi', '.agents', '.claude'].includes(p))) {
     throw new Error('Worker writes must stay inside task source files, outside agent/Git configuration');

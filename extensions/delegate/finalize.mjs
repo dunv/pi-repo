@@ -61,7 +61,7 @@ export async function finalizationAttempts(task, runtime) {
 }
 // Include ignored local files as well: their contents were not covered by review.
 // Bounded JSON/base64 recovery avoids relying on an external archive executable.
-async function localFiles(task, runtime) {
+export async function localFiles(task, runtime) {
   const names = new Set((await git(runtime, task.worktree, ['diff', '--name-only', '--no-ext-diff', '--no-textconv', 'HEAD', '-z'])
     + await git(runtime, task.worktree, ['ls-files', '--others', '--exclude-standard', '-z'])
     + await git(runtime, task.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean));

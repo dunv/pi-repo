@@ -48,6 +48,49 @@ file sizes do not prove actual reclaimable space. Legacy `bazel-output` is repor
 separately; the current disposal tool does not remove it or make legacy uncontained
 attempts eligible.
 
+## Separate operator-attested retirement exception
+
+For an explicitly obsolete draft whose historical containment/terminal-review
+requirements cannot be satisfied, a **separate reviewed deployment** may enable
+`retirementProtocol: 1` and `delegate_retire`. Do not emulate this tool using shell
+removal or change a runtime to enable it implicitly. Existing cleanup/finalization/
+recovery/disposal gates remain unchanged. Retirement means abandoning a draft,
+not proving it integrated, completed or stopped.
+
+- Assess with `{task, repository: CANONICAL_MAIN, reason}` and no expected fields.
+  Complete admitted original/revision chains and exact private original owning
+  session/job identities are required. Read the full retained draft, every new/
+  local/ignored file, existing feedback and every attempt. Never infer obsolescence
+  solely from a parent merge or a branch name.
+- Review the current complete backend observations and process-reference scan.
+  Active/UNKNOWN/contradictory jobs, unresolved admissions/claims, prior lifecycle
+  operations, protected operational evidence or unsupported/oversized archives
+  block. Rebooted/uncontained attempts can be assessed without manufacturing a
+  stopped proof. Absence and KILLED stay observations, never terminal/stopped proof.
+- `/proc` can expose positive cwd/open-file/task-UUID references, but cannot prove
+  unreferenced or escaped workers are absent. Investigate listed permission-limited
+  PIDs independently. If the human cannot establish that all original/custodian/
+  foreground/old-client/build users and workers/descendants are idle, stop.
+- Obtain explicit exact-task discard authorization and the independent human
+  idleness declaration, then supply the same reason and both returned
+  `expectedEvidence`/`expectedFingerprint` fields in this receiving session for
+  fresh UI confirmation. Denial/non-UI/stale evidence grants nothing.
+- The tool archives source/local/ignored files and symlink targets (without
+  dereferencing them) before removing the worktree/unchanged ref. Permanent
+  latest-continuation and retirement claims fence updated cooperating clients;
+  old clients must stay idle. Never clear a claim or retry partial retirement.
+- Report `operator-attested-retirement`, `discarded`, `terminalVerified: false`,
+  `stoppedProof: false`, `backendAuthority: false`. Preserve original history,
+  results, containment, claims, feedback, logs, build outputs and recovery copies.
+  Potential Mailhub plans/approved sets/Trash journals and unknown-outcome state
+  stay protected; the exception grants no provider operation.
+
+The receipt is `retired.json`, not ordinary finalization. This archive-only
+operation does **not** enable `delegate_dispose`/`delegate_prune` or permanently
+remove retained build/recovery payloads. A further disposal protocol requires
+separate reviewed implementation/deployment and explicit approval. See the
+lifecycle contract's operator-attested-retirement section for limits.
+
 ## Two different operations
 
 1. **Archive-and-remove:** after main-agent review and feedback, authorized
