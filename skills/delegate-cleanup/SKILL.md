@@ -1,6 +1,6 @@
 ---
 name: delegate-cleanup
-description: Use disposable delegates through result handoff and one-step separately authorized cleanup. Inspect or continue orphan workspaces without adoption; never delete active work or shared targets.
+description: Use disposable delegates through result handoff and one-step cleanup included in authorized delegation. Inspect or continue orphan workspaces without adoption; never delete active work or shared targets.
 ---
 
 # Using disposable delegates
@@ -30,9 +30,10 @@ Read [the workspace contract](../../extensions/delegate/README.md).
    the result. Keep the needed outcome/check evidence in the main agent session.
    Integration/publication still need the owning repository's authorization.
 6. Use `delegate_cleanup {task}` for inspection. Once the main agent has everything
-   it needs, use `{task, disposition: "used"|"discarded", summary}` for one exact
-   confirmation. The worktree/ref, build outputs and task-local records are then
-   removed. **No archive, enrollment, expiry policy or later disposal step exists.**
+   it needs, use `{task, disposition: "used"|"discarded", summary}` to remove the
+   worktree/ref, build outputs and task-local records. Normal authorized delegation
+   includes this final cleanup: no separate user confirmation or UI is required.
+   **No archive, enrollment, expiry policy or later disposal step exists.**
 
 Do not leave completed disposable workspaces indefinitely. Cleanup is the final
 step of using a delegate, not a separate archival project. It is never triggered
@@ -49,7 +50,7 @@ Parent death does not mean worker death. Current queued/running/unknown backend
 jobs, worker/check scopes and task locks still block concurrent use or removal.
 Do not stop processes, retry provider actions or guess that uncertain writers are
 gone. Ensure spawning/orphan sessions and foreground/external build users are idle
-before confirming removal. Unrelated desktop/container PID churn is not task state.
+before requesting removal. Unrelated desktop/container PID churn is not task state.
 
 ## Scope and failures
 
@@ -61,8 +62,10 @@ if found, preserve it separately before cleanup. No provider action is authorize
 
 Symlink entries may be removed, never their external targets. Mounts, foreign-owned
 entries, changed repository/ref/source, active/uncertain workers and unsafe paths
-block rather than expanding removal scope. The confirmation describes permanent
-loss of all task-local files, including ignored files; keep needed data first.
+block rather than expanding removal scope. Removal permanently deletes all
+task-local files, including ignored files; keep needed data first. Separate explicit
+authorization is still required for legacy/manual cleanup or anything outside the
+exact disposable workspace.
 
 An interrupted cleanup leaves a closing flag in its current manifest while data remains.
 Inspect the outcome before explicitly requesting the same cleanup again. There is

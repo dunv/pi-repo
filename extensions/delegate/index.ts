@@ -220,28 +220,21 @@ export default function (pi: ExtensionAPI) {
       lines: [`Task: ${literal(data.task)}`,
         ...(Array.isArray(data.removed) ? [`Result: ${literal(data.disposition)} · no archive`,
           ...(data.summaryRecorded === false ? ["Summary recording not confirmed; retain it in the main session."] : [])]
-          : ["Review/use the result and retain needed data before confirming removal. No archive will be made."]),
+          : ["Review/use the result and retain needed data before requesting removal. No archive will be made."]),
         ...(expanded ? [`Branch: ${literal(data.branch)}`,
           ...(data.removed ?? data.paths).map((path: string) => `${data.removed ? "Removed" : "Removal scope"}: ${literal(path)}`),
           ...(data.summary ? [`Summary: ${literal(data.summary)}`] : [])] : [])],
     })),
-    description: "Inspect a disposable workspace, or after result handoff remove its worktree/ref/build output and task-local temporary records with one exact confirmation. No archive, enrollment, original-session ownership or takeover protocol. Main agent must already have applied/discarded the result and retained needed data. Current worker jobs/scopes and foreground/build users must be idle. Never follow shared symlink targets or delete main/originating sessions or real operational journals/plans. Installation does not migrate/delete legacy records.",
+    description: "Inspect a disposable workspace, or after result handoff remove its worktree/ref/build output and task-local temporary records with explicit used/discarded disposition and summary. Normal authorized delegation includes this cleanup; no separate user confirmation or UI required. No archive, enrollment, original-session ownership or takeover protocol. Main agent must already have applied/discarded the result and retained needed data. Current worker jobs/scopes and foreground/build users must be idle. Never follow shared symlink targets or delete main/originating sessions or real operational journals/plans. Installation does not migrate/delete legacy records.",
     parameters: Type.Object({ task: Type.String(), disposition: Type.Optional(Type.Union([Type.Literal("used"), Type.Literal("discarded")])), summary: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, config = await runtime(), who = owner(ctx), observe = configuredObserver(), check = () => guard(start, signal);
       if (input.disposition === undefined && input.summary === undefined) {
         const gate = await inspectWorkspace(config, input.task, observe, who); check();
         return response({ task: input.task, paths: gate.paths, branch: gate.task.branch, sourceStamp: gate.sourceStamp, archived: false,
-          instruction: "Inspect/use the result first. Supply disposition used/discarded and a short summary for exact removal confirmation. All disposable task data will go away; no archive." });
+          instruction: "Inspect/use the result first. Supply disposition used/discarded and a short summary to remove this workspace without a separate user confirmation. All disposable task data will go away; no archive." });
       }
-      if (!ctx.hasUI) throw new Error("Workspace removal requires exact interactive confirmation");
-      const result = await cleanupWorkspace(config, input, who, observe, async (gate: any) => ctx.ui.confirm("Remove this disposable delegate workspace WITHOUT an archive?", [
-        `Task: ${input.task}`, `Result: ${input.disposition}`, `Summary (JSON): ${JSON.stringify(input.summary)}`, ...gate.paths.map((path: string) => JSON.stringify(path)),
-        `Branch: ${gate.task.branch}`, "Confirm the main agent has reviewed and applied/discarded the result and retained everything it needs.",
-        "Confirm spawning/orphan sessions and all foreground/build-server users are idle. Workers/checks are checked independently; parent death is not worker death.",
-        "All task-local source, ignored files, build output, reports and worker records are permanently removed. No archive or later expiry step.",
-        "Main/originating sessions and external symlink targets remain. Stop if real operational plans/journals or unknown provider outcomes are present.",
-      ].join("\n")), check);
+      const result = await cleanupWorkspace(config, input, who, observe, check);
       if (start === epoch && !signal?.aborted) {
         pi.appendEntry("pi.delegate.cleaned.v2", result);
         return response({ ...result, summaryRecorded: true });

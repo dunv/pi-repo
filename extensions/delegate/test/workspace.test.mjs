@@ -47,7 +47,7 @@ async function fixture(fn) {
     await recordContainment(task, undefined, fs);
     const observe = async () => ({ namespace, tasks: [] });
     const input = { task: task.id, disposition: 'used', summary: 'Main agent reviewed and retained the useful result.' };
-    const clean = (confirm = async () => true, guard, observer = observe) => cleanupWorkspace(runtime, input, who, observer, confirm, guard);
+    const clean = (guard, observer = observe) => cleanupWorkspace(runtime, input, who, observer, guard);
     await fn({ dir, repo, runtime, task, who, spec, namespace, observe, input, clean, fs, boot });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -108,12 +108,12 @@ test('queued/running/paused/unknown jobs, uncertain admissions, backend failures
     // UUID references also find a current job whose admission reply was lost.
     await rm(join(f.task.directory, 'submission.json'));
     const observe = async () => ({ namespace: f.namespace, tasks: [{ id: 99, label: 'not-known-to-parent', phase, references: [f.task.id] }] });
-    await assert.rejects(f.clean(undefined, undefined, observe), /running, queued or uncertain/);
+    await assert.rejects(f.clean(undefined, observe), /running, queued or uncertain/);
     assert.ok(await present(f.task.worktree)); assert.equal((await json(join(f.task.directory, 'task.json'))).closing === true, false);
   });
   await fixture(async f => {
-    await assert.rejects(f.clean(undefined, undefined, async () => { throw new Error('backend unavailable'); }), /backend unavailable/);
-    await assert.rejects(f.clean(undefined, undefined, async () => ({ namespace: randomUUID(), tasks: [] })), /backend unavailable/);
+    await assert.rejects(f.clean(undefined, async () => { throw new Error('backend unavailable'); }), /backend unavailable/);
+    await assert.rejects(f.clean(undefined, async () => ({ namespace: randomUUID(), tasks: [] })), /backend unavailable/);
     await assert.rejects(assertWorkspaceIdle(f.task, f.runtime, f.observe, async () => { throw new Error('descendants alive'); }), /descendants alive/);
     await rm(join(f.task.directory, 'containment.json')); await save(join(f.task.directory, 'started.json'), {});
     await assert.rejects(f.clean(), /no current stopped-scope evidence/);
@@ -125,31 +125,30 @@ test('kernel task lock prevents cleanup racing a worker/check, without scanning 
     await assert.rejects(f.clean(), /busy/);
     await withTaskLock(f.runtime, f.task.id, true, async () => {});
   });
-  // An unrelated short-lived process changes host /proc while confirmation runs.
-  // It has no task lock/scope and must not alter a task's cleanup identity.
+  // An unrelated short-lived process has no task lock/scope; its host /proc
+  // churn must not alter a task's cleanup identity.
   const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
   await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
   assert.equal((await f.clean()).archived, false);
 }));
 
-test('denial, stale source, session cancellation and newly active backend do not mark the workspace closing', async () => {
-  for (const mode of ['denied', 'source', 'guard', 'backend']) await fixture(async f => {
-    let active = false;
-    const observe = async () => ({ namespace: f.namespace, tasks: active ? [{ phase: 'RUNNING', references: [f.task.id] }] : [] });
-    const confirm = async () => {
-      if (mode === 'source') await writeFile(join(f.task.worktree, 'source.txt'), 'concurrent change');
-      if (mode === 'backend') active = true;
-      return mode !== 'denied';
+test('stale source, session cancellation and newly active backend do not mark the workspace closing', async () => {
+  for (const mode of ['source', 'guard', 'backend']) await fixture(async f => {
+    let observations = 0;
+    const observe = async () => {
+      if (++observations === 2 && mode === 'source') await writeFile(join(f.task.worktree, 'source.txt'), 'concurrent change');
+      return { namespace: f.namespace, tasks: observations === 2 && mode === 'backend' ? [{ phase: 'RUNNING', references: [f.task.id] }] : [] };
     };
     let checks = 0;
-    await assert.rejects(f.clean(confirm, mode === 'guard' ? () => { if (++checks > 1) throw new Error('session changed'); } : undefined, observe));
+    await assert.rejects(f.clean(mode === 'guard' ? () => { if (++checks > 1) throw new Error('session changed'); } : undefined, observe),
+      mode === 'source' ? /Workspace changed/ : mode === 'backend' ? /running, queued or uncertain/ : /session changed/);
     assert.ok(await present(f.task.worktree)); assert.equal((await json(join(f.task.directory, 'task.json'))).closing === true, false);
   });
 });
 
 test('interrupted removal keeps a closing flag in its manifest and can be explicitly finished without a recovery protocol', () => fixture(async f => {
   let calls = 0;
-  await assert.rejects(f.clean(undefined, () => { if (++calls === 4) throw new Error('interrupted after worktree removal'); }), /interrupted/);
+  await assert.rejects(f.clean(() => { if (++calls === 3) throw new Error('interrupted after worktree removal'); }), /interrupted/);
   assert.equal(await present(f.task.worktree), false);
   assert.equal((await json(join(f.task.directory, 'task.json'))).closing === true, true);
   await assert.rejects(writable(f.task, 'source.txt'), /cleanup is in progress/);
@@ -158,7 +157,7 @@ test('interrupted removal keeps a closing flag in its manifest and can be explic
   // closing manifest fences writers; current active jobs still block finishing.
   await rm(join(f.task.directory, 'containment.json'));
   await save(join(f.task.directory, 'started.json'), {});
-  await assert.rejects(f.clean(undefined, undefined, async () => ({ namespace: f.namespace, tasks: [{ phase: 'RUNNING', references: [f.task.id] }] })), /running, queued/);
+  await assert.rejects(f.clean(undefined, async () => ({ namespace: f.namespace, tasks: [{ phase: 'RUNNING', references: [f.task.id] }] })), /running, queued/);
   assert.equal((await f.clean()).archived, false);
   assert.equal(await present(f.task.directory), false);
 }));
@@ -295,17 +294,51 @@ test('real Pi API: six tools, orphan review/follow-up, current checks, stale/unc
   } finally { h.close(); }
 }));
 
-test('real Pi cleanup requires UI, confirms no archive, and rejects session navigation before deletion', async () => {
-  for (const mode of ['no-ui', 'denied', 'tree']) await fixture(async f => {
+test('real Pi cleanup needs no UI or confirmation, but inspection alone never removes data', async () => {
+  for (const hasUI of [true, false]) await fixture(async f => {
     const h = await host(f);
-    h.ctx.ui.confirm = async (title, body) => {
-      assert.match(title, /WITHOUT an archive/); assert.match(body, /main agent has reviewed/);
-      if (mode === 'tree') await h.emit('session_tree');
-      return mode !== 'denied';
-    };
-    if (mode === 'no-ui') h.ctx.hasUI = false;
+    h.ctx.hasUI = hasUI;
+    h.ctx.ui.confirm = async () => { assert.fail('cleanup must not request user confirmation'); };
     try {
-      await assert.rejects(h.invoke('delegate_cleanup', f.input));
+      const inspected = JSON.parse((await h.invoke('delegate_cleanup', { task: f.task.id })).content[0].text);
+      assert.equal(inspected.task, f.task.id); assert.equal(inspected.removed, undefined);
+      assert.ok(await present(f.task.worktree)); assert.ok(await present(f.task.directory));
+      const result = JSON.parse((await h.invoke('delegate_cleanup', f.input)).content[0].text);
+      assert.equal(result.archived, false); assert.equal(result.summaryRecorded, true);
+      assert.equal(await present(f.task.directory), false); assert.equal(await present(f.task.worktree), false);
+      assert.equal(h.entries.at(-1).type, 'pi.delegate.cleaned.v2');
+      assert.equal(h.entries.at(-1).data.summary, f.input.summary);
+    } finally { h.close(); }
+  });
+});
+
+test('real Pi cleanup still requires disposition and a nonblank handoff summary', () => fixture(async f => {
+  const h = await host(f);
+  try {
+    for (const input of [
+      { task: f.task.id, disposition: 'used' },
+      { task: f.task.id, summary: 'Retained outcome' },
+      { ...f.input, summary: '   ' },
+      { ...f.input, disposition: 'unknown' },
+      { ...f.input, summary: 'x'.repeat(2001) },
+    ]) {
+      await assert.rejects(h.invoke('delegate_cleanup', input), /handoff summary required/);
+      assert.ok(await present(f.task.worktree)); assert.equal((await json(join(f.task.directory, 'task.json'))).closing === true, false);
+    }
+  } finally { h.close(); }
+}));
+
+test('real Pi cleanup rejects session navigation and cancellation before deletion without a dialog', async () => {
+  for (const mode of ['tree', 'aborted']) await fixture(async f => {
+    const h = await host(f), controller = new AbortController();
+    h.ctx.ui.confirm = async () => { assert.fail('cleanup must not request user confirmation'); };
+    if (mode === 'tree') h.ctx.sessionManager.getSessionFile = () => {
+      void h.emit('session_tree');
+      return join(f.dir, 'orphan-reader.jsonl');
+    };
+    else controller.abort();
+    try {
+      await assert.rejects(h.invoke('delegate_cleanup', f.input, controller.signal), /Operation canceled or session changed/);
       assert.ok(await present(f.task.worktree)); assert.equal((await json(join(f.task.directory, 'task.json'))).closing === true, false);
     } finally { h.close(); }
   });

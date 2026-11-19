@@ -15,7 +15,10 @@ test('package declares a portable delegate workflow/cleanup manual without runni
   const loaded = loadSkillsFromDir({ dir: join(root, manifest.pi.skills[0]), source: 'fixture' });
   assert.deepEqual(loaded.diagnostics, []);
   assert.deepEqual(loaded.skills.map(s => s.name), ['delegate-cleanup']);
-  assert.match(loaded.skills[0].description, /separately authorized/);
+  assert.match(loaded.skills[0].description, /cleanup included in authorized delegation/);
+  const manual = await readFile(join(root, manifest.pi.skills[0], 'SKILL.md'), 'utf8');
+  assert.match(manual, /no separate user confirmation or UI is required/);
+  assert.match(manual, /authorization is still required for legacy\/manual cleanup/);
 });
 test('root package loads four extensions once, exposes six delegate tools and bounds model-facing prose', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
@@ -50,6 +53,7 @@ test('root package loads four extensions once, exposes six delegate tools and bo
     assert.match(tools.get('delegate_task').description, /not an OS sandbox/);
     assert.match(tools.get('delegate_review').description, /main agent reads the full patch/);
     assert.match(tools.get('delegate_cleanup').description, /No archive/);
+    assert.match(tools.get('delegate_cleanup').description, /no separate user confirmation or UI required/);
     for (const name of ['delegate_task', 'delegate_review', 'delegate_revise', 'delegate_cleanup']) {
       assert.equal(tools.get(name).exposure, 'model-only'); assert.equal(tools.get(name).executionMode, 'sequential');
     }

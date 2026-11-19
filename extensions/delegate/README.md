@@ -65,8 +65,10 @@ A request not to edit is still an instruction, not an enforced read-only mode.
 6. Apply useful changes to the parent checkout, reconciling source drift, or
    explicitly discard the result. Keep the needed summary/evidence in the main
    session. Integration/publication retain the repository's approval rules.
-7. Call `delegate_cleanup` with the outcome/summary. After one exact confirmation,
-   the workspace, ref, build output and task-local temporary records go away.
+7. Call `delegate_cleanup` with the explicit used/discarded disposition and summary.
+   The workspace, ref, build output and task-local temporary records go away without
+   a separate user confirmation or UI. This final cleanup is included in normal
+   authorized delegation; worker exit alone never triggers removal.
    **No archive is made. There is no enrollment, expiry or later disposal step.**
 
 Do not put irreplaceable data, real operational plans/approved sets/Trash journals
@@ -94,8 +96,11 @@ this operation; delegation grants no provider action or unknown-outcome retry.
   and current live/uncertain jobs refuse another submission.
 - `delegate_cleanup {task, disposition?, summary?}` inspects an idle workspace
   without the optional fields. Supplying `disposition: "used"|"discarded"` and a
-  short summary requests one exact removal confirmation. The main agent must
-  already have retained everything it needs. A compact outcome is appended to the
+  short summary requests removal without a separate user confirmation or UI.
+  The main agent must already have reviewed/applied or discarded the result,
+  retained everything it needs and established that foreground/build users are idle.
+  Legacy/manual cleanup and anything outside the exact disposable workspace still
+  require separate explicit authorization. A compact outcome is appended to the
   receiving main session; task-local records are disposable.
 
 ## Orphans
@@ -168,8 +173,8 @@ scopes permit handoff; a genuine later boot does not make old workers survive, b
 any current same-name populated scope still blocks. No original terminal review,
 old Pueue numeric identity, custody receipt or global PID snapshot is required.
 
-Cleanup rechecks current liveness/source/repository after confirmation, removes
-only the registered worktree and unchanged ref, then deletes task-local contents
+Cleanup rechecks current liveness/source/repository immediately before removal.
+It removes only the registered worktree and unchanged ref, then deletes task-local contents
 through held directory descriptors. User-owned read-only build-output directories
 receive owner access through those held descriptors so Bazel outputs can be removed.
 Symlinks are unlinked, never traversed or chmodded into shared SDK/cache targets.
@@ -222,5 +227,6 @@ Run `npm run check` at the package root (Node 24+, Linux/Git/Bash/flock). Tests 
 synthetic repositories, fake worker/backend executables, kernel locks and Pi's
 actual loader. They cover dirty snapshots, model routing, frozen checks, streaming,
 orphan use, active/uncertain writers, one-step removal, shared-target/session
-preservation, stale confirmation and interrupted cleanup. No real model, daemon,
-retained task deletion, SDK bootstrap or system activation is involved.
+preservation, no-UI cleanup, handoff validation, stale-state fencing and interrupted
+cleanup. No real model, daemon, retained task deletion, SDK bootstrap or system
+activation is involved.

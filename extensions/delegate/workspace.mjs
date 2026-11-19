@@ -72,10 +72,10 @@ export async function assertWorkspaceIdle(task, runtime, observe, stopped = asse
     else if (!task.closing && await exists(join(row.directory, 'started.json'))) throw new Error('Started worker has no current stopped-scope evidence');
   }
   // This checks cooperating workers, not arbitrary foreground/build-server users.
-  // The agent manual and exact removal confirmation require those users idle.
+  // The calling main agent must establish that those users are idle.
 }
 async function sourceStamp(task, runtime) {
-  // Confirmation binds current source metadata, not an archive of its bytes.
+  // Revalidation binds current source metadata, not an archive of its bytes.
   // Even a huge discarded file must remain removable without serializing a diff.
   const status = await git(runtime, task.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
   const names = new Set((await git(runtime, task.worktree, ['diff', '--name-only', '--no-ext-diff', '--no-textconv', 'HEAD', '-z'])
@@ -174,14 +174,12 @@ async function removeTree(path, identity) {
     await rmdir(path);
   } finally { await root.close(); }
 }
-export async function cleanupWorkspace(runtime, input, who, observe, confirm, guard = () => {}, stopped) {
+export async function cleanupWorkspace(runtime, input, who, observe, guard = () => {}, stopped) {
   if (!['used', 'discarded'].includes(input.disposition) || typeof input.summary !== 'string' || !input.summary.trim() || input.summary.length > 2000) throw new Error('Used/discarded result and a short handoff summary required');
   return withTaskLock(runtime, input.task, false, async () => {
     const gate = await inspectWorkspace(runtime, input.task, observe, who, stopped); guard();
-    if (!await confirm(gate)) throw new Error('Workspace cleanup not authorized');
-    guard();
     const fresh = await inspectWorkspace(runtime, input.task, observe, who, stopped);
-    if (fresh.identity !== gate.identity) throw new Error('Workspace changed during confirmation; inspect again');
+    if (fresh.identity !== gate.identity) throw new Error('Workspace changed during cleanup checks; inspect again');
     guard();
     // The current manifest is the only progress state. Keep it until last;
     // closing workspaces cannot launch workers or accept source writes.

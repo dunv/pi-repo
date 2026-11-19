@@ -28,7 +28,11 @@ foreground build users must still be idle before removing their workspace.
 The six tools are `delegate_environments`, `delegate_models`, `delegate_task`,
 `delegate_review`, `delegate_revise` and `delegate_cleanup`. Neither exit zero nor collecting a report
 is acceptance. The main agent reviews all changes and preserves needed work before
-cleanup; integration/publication retain the repository's approval requirements.
+cleanup. Normal authorized delegation includes cleanup after explicit used/discarded
+handoff and retaining needed results; no separate user confirmation or UI is required.
+Safety checks still block active/uncertain or unsafe workspaces. Legacy/manual cleanup
+and anything outside the exact disposable workspace need separate explicit authorization;
+integration/publication retain the repository's approval requirements.
 
 The [environment contract v1](extensions/delegate/environment-contract.md) separates
 source-review, implementation and implementation-with-checks capabilities from
