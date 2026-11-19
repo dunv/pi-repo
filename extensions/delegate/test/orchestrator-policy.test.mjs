@@ -1,0 +1,71 @@
+// Real Pi loader/prompt builder; no runtime, worker, model or backend required.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { loadExtensions } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
+import { buildSystemPrompt, normalizeBuildSystemPromptOptions } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js';
+
+const extension = new URL('../index.ts', import.meta.url).pathname;
+const policy = (await readFile(new URL('../orchestrator-policy.md', import.meta.url), 'utf8')).trim();
+async function load() {
+  const loaded = await loadExtensions([extension], process.cwd());
+  assert.deepEqual(loaded.errors, []);
+  const handlers = loaded.extensions[0].handlers.get('before_agent_start');
+  assert.equal(handlers.length, 1);
+  return async options => {
+    const event = { type: 'before_agent_start', messageType: 'user', prompt: 'A bounded task',
+      systemPromptOptions: options, systemPrompt: buildSystemPrompt(options) };
+    assert.equal(await handlers[0](event), undefined, 'do not replace the system prompt or add a conversation message');
+    return buildSystemPrompt(options);
+  };
+}
+function options(overrides = {}) {
+  return normalizeBuildSystemPromptOptions({ cwd: process.cwd(), selectedTools: ['read', 'delegate_task'],
+    sections: { unrelated: 'Keep this other extension section.' }, appendSystemPrompt: 'Keep user instructions.',
+    contextFiles: [{ path: '/fixture/AGENTS.md', content: 'Keep repository instructions.' }], ...overrides });
+}
+
+test('main-agent policy composes with the structured prompt and is idempotent across runs', async () => {
+  const emit = await load(), input = options();
+  const first = await emit(input);
+  assert.equal(input.sections.delegate_orchestration, policy);
+  assert.match(first, /<delegate_orchestration>/);
+  assert.ok(first.includes(policy));
+  assert.match(first, /Keep this other extension section/);
+  assert.match(first, /Keep user instructions/);
+  assert.match(first, /Keep repository instructions/);
+  assert.equal(input.forceSystemPrompt, undefined);
+  assert.equal(await emit(input), first);
+  assert.equal(first.split(policy).length - 1, 1);
+});
+
+test('policy follows the declared task tool and disappears when disabled or hidden', async () => {
+  const emit = await load(), input = options();
+  await emit(input);
+  input.selectedTools = ['read', 'delegate_review'];
+  assert.doesNotMatch(await emit(input), /<delegate_orchestration>/);
+  assert.equal(input.sections.delegate_orchestration, undefined);
+  input.selectedTools.push('delegate_task');
+  await emit(input);
+  input.hiddenTools = ['delegate_task'];
+  assert.doesNotMatch(await emit(input), /<delegate_orchestration>/);
+  assert.equal(input.sections.unrelated, 'Keep this other extension section.');
+});
+
+test('custom prompt prefix is preserved and an explicit forced full prompt is not bypassed', async () => {
+  const emit = await load();
+  const custom = await emit(options({ customPrompt: 'Custom main-agent prefix.' }));
+  assert.match(custom, /Custom main-agent prefix/);
+  assert.ok(custom.includes(policy));
+  assert.equal(await emit(options({ forceSystemPrompt: 'Explicit full replacement.' })), 'Explicit full replacement.');
+});
+
+test('policy stays bounded and retains the agreed decision rules and capability limits', () => {
+  assert.ok(policy.length <= 3500, 'keep policy context cost bounded');
+  for (const text of ['benefits outweigh the costs', 'fewest agents', 'Focused summarization', 'Better model fit',
+    'Parallel progress', 'Context isolation', 'Independent examination', 'meaningfully verify',
+    'inherently sequential', 'large prompt alone', 'Agent agreement is not proof',
+    'source references and uncertainties', 'not additional capabilities or authorization', 'enforced read-only mode']) {
+    assert.ok(policy.includes(text), `missing policy principle: ${text}`);
+  }
+});

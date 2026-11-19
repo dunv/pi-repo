@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import { readdir, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
 import { configuration } from "../pueue/backend.ts";
 import { ENTRY, prepare, prepareRevision, attemptDirectory, runtimeFrom, json, privateJSON, save, writeTask, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
@@ -32,6 +33,15 @@ function renderSubmission(result: { content: Array<{ type: string; text?: string
   } catch { return new Text(raw, 0, 0); }
 }
 export default function (pi: ExtensionAPI) {
+  const orchestratorPolicy = readFileSync(new URL("./orchestrator-policy.md", import.meta.url), "utf8").trim();
+  pi.on("before_agent_start", event => {
+    const options = event.systemPromptOptions;
+    if (options.selectedTools.includes("delegate_task") && !options.hiddenTools.includes("delegate_task")) {
+      options.sections.delegate_orchestration = orchestratorPolicy;
+    } else {
+      delete options.sections.delegate_orchestration;
+    }
+  });
   let epoch = 0;
   pi.on("session_start", () => { epoch++; });
   pi.on("session_tree", () => { epoch++; });

@@ -3,6 +3,25 @@
 Delegates are temporary execution workspaces, not a durable recovery/archive
 system. The main agent owns design, acceptance and integration.
 
+## Main-agent delegation policy
+
+[`orchestrator-policy.md`](orchestrator-policy.md) defines when delegation is
+worthwhile: focused summaries, better model fit, separable parallel work, isolated
+task guidance and independent examination. More agents are not inherently better;
+coordination and verification costs matter.
+
+The extension loads this file once per extension load and contributes a structured
+`delegate_orchestration` system-prompt section before each run where `delegate_task`
+is selected and not hidden. Other prompt sections are preserved; disabling/hiding
+the tool removes this section. Reload the extension to pick up policy edits.
+An explicitly forced full system prompt remains authoritative; this extension does
+not replace it. The policy grants no additional permissions or execution modes.
+In particular, the current implementation workspace is not an enforced read-only
+research/review environment.
+
+[`policy.md`](policy.md) remains the separate worker prompt for both Pi and Claude.
+It is unchanged by the main-agent policy and is not replaced by it.
+
 ## How to use delegates
 
 1. Define bounded work, decided interfaces, acceptance criteria and needed checks.
