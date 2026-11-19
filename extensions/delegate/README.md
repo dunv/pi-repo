@@ -26,8 +26,11 @@ the tool removes this section. Reload the extension to pick up policy edits.
 An explicitly forced full system prompt remains authoritative; this extension does
 not replace it. The policy grants no additional permissions or execution modes.
 `source-review` now enforces read-only source tools, not OS filesystem isolation.
-Network and HOME credential isolation are not provided; discovery reports these
-limits explicitly. See [the environment contract](environment-contract.md).
+Under default v1, network and HOME credential isolation are not provided; discovery
+reports these limits explicitly. [Opt-in v2](environment-contract-v2.md) defines
+OS allowlisting, offline checks and access-only leases. It requires separate
+operator preparation and deployment; loading source does not enable it.
+See [the v1 contract](environment-contract.md) for unchanged default behaviour.
 
 [`policy.md`](policy.md) remains the separate worker prompt for both Pi and Claude.
 It is unchanged by the main-agent policy and is not replaced by it.
@@ -145,7 +148,7 @@ worker liveness remains a blocker, not a reason to guess or retry until lucky.
 - Environment-specific launchers and PATHs are frozen per task. A changed/missing
   descriptor blocks workers, tools, checks and follow-ups; legacy tasks are not
   silently upgraded. Inspection and cleanup still work.
-- These are capability boundaries, **not an OS sandbox**. Trusted check commands
+- V1 provides capability boundaries, **not an OS sandbox**. Trusted check commands
   and HOME-based worker authentication still run as the local user. Do not escape
   the scope or enlist external mutable services without independent lifecycle care.
 
@@ -167,8 +170,10 @@ old Pueue numeric identity, custody receipt or global PID snapshot is required.
 
 Cleanup rechecks current liveness/source/repository after confirmation, removes
 only the registered worktree and unchanged ref, then deletes task-local contents
-through held directory descriptors. Symlinks are unlinked, never traversed into
-shared SDK/cache targets. Main/originating sessions remain outside this scope.
+through held directory descriptors. User-owned read-only build-output directories
+receive owner access through those held descriptors so Bazel outputs can be removed.
+Symlinks are unlinked, never traversed or chmodded into shared SDK/cache targets.
+Main/originating sessions remain outside this scope.
 There is no archive-size limit because nothing is copied into an archive.
 
 Interrupted cleanup retains the current manifest with a closing flag until the

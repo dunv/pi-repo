@@ -101,19 +101,19 @@ export default function (pi: ExtensionAPI) {
         `${literal(entry.id)} · source: ${literal(entry.capabilities.source)} · checks: ${entry.capabilities.checks ? "allowed" : "forbidden"}`,
         `Profiles: ${entry.verificationProfiles.map(literal).join(", ") || "none"}`,
         ...(expanded ? [`Isolation: ${literal(JSON.stringify(entry.isolation))}`, `Launcher: ${literal(entry.launcher)}`, `PATH: ${literal(entry.path)}`] : []),
-      ]), "Tool boundary, not an OS sandbox · host network and HOME credentials accessible · readiness unverified"],
+      ]), data.interfaceVersion === 2 ? "OS allowlist · worker network host-wide · checks offline · access-only leases · readiness unverified" : "Tool boundary, not an OS sandbox · host network and HOME credentials accessible · readiness unverified"],
     })),
-    description: "Discover operator-provided environment contract v1: source-review, implementation and implementation-checked. Reports tool capabilities, approved verification profiles and actual isolation limits; not sandbox/readiness proof. Select an explicit environment; no fallback. Model connectivity and task-network isolation are distinct.",
+    description: "Discover operator-provided environment contract v1 or opt-in v2: source-review, implementation and implementation-checked. Reports tool capabilities, approved verification profiles and actual isolation limits; not sandbox/readiness proof. Select an explicit environment; no fallback. Model connectivity and task-network isolation are distinct.",
     parameters: Type.Object({}),
     async execute() {
       const config = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME), entries = environments(config);
-      if (!entries) throw new Error("Activate an environment contract v1 runtime; no fallback");
-      return response({ interfaceVersion: 1, environments: entries, readinessVerified: false });
+      if (!entries) throw new Error("Activate a supported environment contract runtime; no fallback");
+      return response({ interfaceVersion: config.environmentProtocol, environments: entries, readinessVerified: false });
     },
   });
   pi.registerTool({
     name: "delegate_task", label: "Delegate isolated task", exposure: "model-only", executionMode: "sequential", reachesTools: () => ["pueue_submit"],
-    description: "Run explicitly authorized work in a disposable sibling worktree. Snapshots current source without changing the parent index/branch. Supply exact model/thinking, a self-contained brief and explicit environment from delegate_environments. Only implementation-checked accepts a configured verification profile and checks; other environments require no profile and empty checks. No implicit SDK setup, retries, integration or publication. Workers cannot shell/commit/publish/delegate; not an OS sandbox. Main agent must review and apply/discard the result, retain needed data in its session, then call delegate_cleanup. No archive is made. Do not put operational journals/plans or irreplaceable data in disposable scratch.",
+    description: "Run explicitly authorized work in a disposable sibling worktree. Snapshots current source without changing the parent index/branch. Supply exact model/thinking, a self-contained brief and explicit environment from delegate_environments. Only implementation-checked accepts a configured verification profile and checks; other environments require no profile and empty checks. No implicit SDK setup, retries, integration or publication. Workers cannot shell/commit/publish/delegate. V1 is not an OS sandbox; opt-in v2 requires approved preparation and auth routes. Main agent must review and apply/discard the result, retain needed data in its session, then call delegate_cleanup. No archive is made. Do not put operational journals/plans or irreplaceable data in disposable scratch.",
     parameters: Type.Object({ repo: Type.String(), brief: Type.String({ minLength: 1, maxLength: 32000 }), backend: backendSchema, model: Type.String(), thinking: thinkingSchema,
       environment: Type.Union([Type.Literal("source-review"), Type.Literal("implementation"), Type.Literal("implementation-checked")]),
       profile: Type.Optional(Type.String({ pattern: "^[a-zA-Z0-9_-]{1,64}$" })), checks: Type.Array(Type.Object({ kind: Type.Union([Type.Literal("test"), Type.Literal("build")]),
@@ -122,7 +122,7 @@ export default function (pi: ExtensionAPI) {
     renderResult(result, { expanded, isPartial }, theme) { return renderSubmission(result, expanded, isPartial, theme); },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, config = await runtime(), namespace = configuration(process.env)?.namespace;
-      if (config.environmentProtocol !== 1) throw new Error("Activate the environment contract v1 runtime; no fallback");
+      if (![1, 2].includes(config.environmentProtocol)) throw new Error("Activate a supported environment contract runtime; no fallback");
       if (!namespace) throw new Error("Pueue namespace unavailable");
       guard(start, signal);
       const task = await prepare({ ...resolveSelection(input, config, ctx.modelRegistry), namespace }, config, owner(ctx));
@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
     renderResult(result, { expanded, isPartial }, theme) { return renderSubmission(result, expanded, isPartial, theme); },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, config = await runtime();
-      if (config.environmentProtocol !== 1) throw new Error("Activate the environment contract v1 runtime; no fallback");
+      if (![1, 2].includes(config.environmentProtocol)) throw new Error("Activate a supported environment contract runtime; no fallback");
       return withTaskLock(config, input.task, false, async () => {
         const task = await loadWorkspace(config, input.task);
         await assertWorkspaceIdle(task, config, configuredObserver()); guard(start, signal);

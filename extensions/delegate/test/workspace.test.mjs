@@ -5,7 +5,7 @@ import { watch } from 'node:fs';
 import { createServer } from 'node:net';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, mkdir, rm, readdir, symlink, lstat, truncate } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir, rm, readdir, symlink, lstat, truncate, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -72,6 +72,25 @@ test('one cleanup removes source/builds/worker records without archives, preserv
   assert.equal(await readFile(f.who.file, 'utf8'), 'Main session must survive\n');
   assert.equal(await readFile(join(shared, 'keep'), 'utf8'), 'shared');
   assert.deepEqual((await readdir(f.runtime.state)).filter(name => name !== '.locks'), []);
+}));
+
+test('cleanup removes read-only Bazel output directories without chmodding shared symlink targets', () => fixture(async f => {
+  const shared = join(f.dir, 'shared'); await mkdir(shared); await writeFile(join(shared, 'keep'), 'shared');
+  const output = join(f.task.directory, 'build-output'), nested = join(output, 'readonly');
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(nested, 'asm_amd64.h'), 'rebuildable', { mode: 0o444 });
+  await symlink(shared, join(nested, 'shared'));
+  await chmod(shared, 0o555); await chmod(nested, 0o500); await chmod(output, 0o555);
+  try {
+    await f.clean();
+    assert.equal(await present(f.task.directory), false);
+    assert.equal((await lstat(shared)).mode & 0o777, 0o555);
+    assert.equal(await readFile(join(shared, 'keep'), 'utf8'), 'shared');
+  } finally {
+    await chmod(shared, 0o700);
+    // Permit fixture teardown if a regression stopped cleanup before removal.
+    for (const path of [output, nested]) if (await present(path)) await chmod(path, 0o700);
+  }
 }));
 
 test('orphan access has no owner session/history dependency; legacy immutable records are not silently migrated', () => fixture(async f => {

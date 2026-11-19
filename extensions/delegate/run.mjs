@@ -4,11 +4,12 @@ import { performance } from 'node:perf_hooks';
 import { readFile, writeFile } from 'node:fs/promises';
 import { assertTaskEnvironment, workerTools, environmentCommand, environmentPath, environmentInstructions } from './environments.mjs';
 import { runClaude } from './claude.mjs';
+import { validatePolicy, validatePrepared } from './prepared.mjs';
 import { timestampLine } from './logging.mjs';
 import { assertContained } from './containment.mjs';
 import { withTaskLock } from './lock.mjs';
 import { invalidToolFailure } from './invalid-tools.mjs';
-import { runtimeFrom, json, save, assertWorktree, runToFiles, envFor, snapshot, attemptDirectory, workerBackend, initiatorLabel } from './core.mjs';
+import { runtimeFrom, json, save, saveWorkerLaunch, assertWorktree, runToFiles, envFor, snapshot, attemptDirectory, workerBackend, initiatorLabel } from './core.mjs';
 
 const log = text => console.log(timestampLine(text));
 
@@ -25,6 +26,8 @@ async function runWorker(runtimePath, id, attempt) {
   if (attempt !== undefined && (plan.task !== id || plan.attempt !== attempt)) throw new Error('Revision identity mismatch');
   const backend = workerBackend(plan, runtime);
   assertTaskEnvironment(task, runtime);
+  await validatePolicy(task.execution);
+  await validatePrepared(task, task.worktree, task.verification);
   if (runtime.containmentProtocol === 1) await assertContained(task, attempt);
   await assertWorktree(task, runtime, attempt === undefined);
   if (attempt !== undefined && await snapshot(task, runtime) !== plan.expectedFingerprint) {
@@ -45,7 +48,8 @@ async function runWorker(runtimePath, id, attempt) {
     '--extension', join(here, 'worker.ts'), '--tools', workerTools(task).join(','),
     '--session-dir', join(directory, 'sessions'), '--name', `delegate-${id}`,
     '--append-system-prompt', policyPath, '@' + join(directory, 'brief.md')];
-  const launch = environmentCommand(task, runtime, runtime.pi, args);
+  if (backend === 'pi') await saveWorkerLaunch(task, plan, directory, runtime.pi, args, attempt);
+  const launch = environmentCommand(task, runtime, runtime.pi, args, { purpose: 'worker', runtimePath, attempt });
   log(`[delegate] Initiated by: ${task.initiatorLabel ?? initiatorLabel(task.owner)} session=${task.owner.session}`);
   log(`[delegate] Worker starting: task=${id}${attempt ? ` revision=${attempt}` : ''} model=${plan.model} requested-thinking=${plan.thinking}`);
   log(`[delegate] Prompt file: ${JSON.stringify(join(directory, 'brief.md'))}`);

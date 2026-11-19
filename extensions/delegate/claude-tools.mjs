@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { runtimeFrom, json, assertWorktree, writable, git, envFor } from './core.mjs';
 import { toolSummary } from './progress.mjs';
 import { assertTaskEnvironment, assertTool, workerTools, readable } from './environments.mjs';
+import { validatePolicy } from './prepared.mjs';
 const exec = promisify(execFile);
 const string = { type: 'string', maxLength: 1048576 };
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -36,6 +37,7 @@ export async function createTools(runtimePath, id, attempt) {
   const runtime = await runtimeFrom(runtimePath), root = join(runtime.state, id), task = await json(join(root, 'task.json'));
   if (task.id !== id || task.directory !== root) throw new Error('Task identity mismatch');
   assertTaskEnvironment(task, runtime);
+  await validatePolicy(task.execution);
   const source = (path = '.') => readable(task, path);
   async function text(path) {
     const target = await source(path), info = await stat(target);
@@ -48,6 +50,7 @@ export async function createTools(runtimePath, id, attempt) {
   const call = async (name, args) => {
     validate(name, args);
     assertTaskEnvironment(task, await runtimeFrom(runtimePath));
+    await validatePolicy(task.execution);
     assertTool(task, name);
     await assertWorktree(task, runtime);
     console.error(`[delegate] Tool starting: ${name} ${toolSummary(name, args)}`);

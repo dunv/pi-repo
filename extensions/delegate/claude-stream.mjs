@@ -8,10 +8,10 @@ import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
 
-export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024, now) {
+export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024, now, requiredTools = []) {
   const decoder = new StringDecoder('utf8'), tools = new Map();
   let pending = '', bytes = 0, discarding = false, error, reply;
-  let streamedText = false, lineOpen = false, toolNumber = 0;
+  let streamedText = false, lineOpen = false, toolNumber = 0, initialized = false;
   const fail = message => { error ??= message; };
   const text = async value => {
     if (!value) return;
@@ -43,6 +43,13 @@ export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024, now) {
     // Subagent output is not enabled by this runner. Do not mix its deltas with
     // the main assistant or echo forwarded prompts from other conversations.
     if (value.parent_tool_use_id) return;
+    if (value.type === 'system' && value.subtype === 'init') {
+      initialized = true;
+      if (requiredTools.some(tool => !Array.isArray(value.tools) || !value.tools.includes(tool))) {
+        fail('Required delegate MCP tools unavailable at startup');
+        await marker('[delegate] Required source tools unavailable; this attempt cannot be accepted.');
+      }
+    }
     if (value.type === 'stream_event') {
       const e = value.event;
       if (e?.type === 'message_start') streamedText = false;
@@ -87,6 +94,7 @@ export function claudeStream(emit, maxLineBytes = 8 * 1024 * 1024, now) {
       if (pending && !discarding) await event(pending);
       if (lineOpen) await emit('\n');
       if (!reply) fail('Claude stream ended without a terminal result');
+      if (requiredTools.length && !initialized) fail('Claude stream omitted required tool initialization evidence');
       return { reply, streamError: error };
     },
   };
@@ -110,8 +118,9 @@ export async function runClaudeStream(executable, args, options, inputPath, logP
   };
   try {
     log = await open(logPath, 'wx', 0o600);
-    const parser = claudeStream(emit);
-    const child = spawn(executable, args, { ...options, stdio: [stdin.fd, 'pipe', 'pipe'] });
+    const { requiredTools = [], ...spawnOptions } = options;
+    const parser = claudeStream(emit, undefined, undefined, requiredTools);
+    const child = spawn(executable, args, { ...spawnOptions, stdio: [stdin.fd, 'pipe', 'pipe'] });
     const exited = new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (code, signal) => resolve({ code, signal }));

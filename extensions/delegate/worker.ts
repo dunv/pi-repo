@@ -10,6 +10,7 @@ import { observeMetrics, metricsLine } from "./metrics.mjs";
 import { toolSummary } from "./progress.mjs";
 import { observeInvalidTools, INVALID_TOOL_ARTIFACT } from "./invalid-tools.mjs";
 import { assertTaskEnvironment, assertTool, readable, workerTools } from "./environments.mjs";
+import { validatePolicy } from "./prepared.mjs";
 
 const exec = promisify(execFile);
 export default async function (pi: ExtensionAPI) {
@@ -61,6 +62,7 @@ export default async function (pi: ExtensionAPI) {
     const runtime = await runtimeFrom(runtimePath);
     const task = await json(join(runtime.state, id, "task.json"));
     assertTaskEnvironment(task, runtime);
+    await validatePolicy(task.execution);
     return { runtime, task };
   }
   const startup = await context();

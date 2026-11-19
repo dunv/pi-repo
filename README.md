@@ -34,7 +34,10 @@ The [environment contract v1](extensions/delegate/environment-contract.md) separ
 source-review, implementation and implementation-with-checks capabilities from
 operator-provisioned toolchains and verification profiles. Selection is explicit
 and frozen; tool restrictions are enforced for both backends. Host network and
-HOME credentials remain accessible to trusted processes: these are not OS sandboxes.
+HOME credentials remain accessible to trusted processes under default v1: these
+are not OS sandboxes. [Opt-in v2](extensions/delegate/environment-contract-v2.md)
+adds separate operator-enforced filesystem/check boundaries and access-only leases;
+it is disabled by default and requires explicitly prepared checks.
 
 Anthropic routes use Claude Code; local/OpenAI routes use Pi. No automatic retry,
 model fallback, integration, publication, SDK setup or background cleanup occurs.

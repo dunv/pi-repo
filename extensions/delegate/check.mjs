@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { runtimeFrom, json, save, snapshot, runToFiles, envFor, attemptDirectory, verificationProfile } from './core.mjs';
 import { withTaskLock } from './lock.mjs';
 import { assertTool, environmentCommand, environmentPath } from './environments.mjs';
+import { validatePolicy, validatePrepared } from './prepared.mjs';
 
 // Called under the global flock by worker.ts. No shell, arbitrary argv or model-driven retries.
 export async function check(runtimePath, id, index, attempt) {
@@ -17,6 +18,8 @@ async function runCheck(runtimePath, id, index, attempt) {
   const task = await json(join(root, 'task.json')), planned = task.checks[index], directory = attemptDirectory(task, attempt);
   if (!planned || task.id !== id || task.directory !== root) throw new Error('Unplanned check');
   assertTool(task, 'delegate_check');
+  await validatePolicy(task.execution);
+  await validatePrepared(task, task.worktree, task.verification);
   if (attempt !== undefined) {
     const plan = await json(join(directory, 'attempt.json'));
     if (plan.task !== id || plan.attempt !== attempt) throw new Error('Revision identity mismatch');
@@ -29,7 +32,7 @@ async function runCheck(runtimePath, id, index, attempt) {
   const values = { worktree: task.worktree, outputBase: join(root, 'build-output'), kind: planned.kind };
   const args = template.flatMap(arg => arg === '{targets}' ? planned.targets
     : [arg.replace(/\{(worktree|outputBase|kind)\}/g, (_token, name) => values[name])]);
-  const launch = environmentCommand(task, runtime, command, args);
+  const launch = environmentCommand(task, runtime, command, args, { purpose: 'check', runtimePath, attempt, index });
   await save(join(directory, key + '.intent.json'), { index, before, command, args, environment: task.environment, log });
   const result = await runToFiles(launch.command, launch.args,
     { cwd: task.worktree, env: envFor({ ...runtime, path: environmentPath(task, runtime) }) }, log);

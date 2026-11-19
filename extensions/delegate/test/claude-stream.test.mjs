@@ -6,6 +6,22 @@ const partial = event => ({ type: 'stream_event', event, parent_tool_use_id: nul
 const success = { type: 'result', subtype: 'success', is_error: false, result: 'Final report.' };
 const encode = events => events.map(event => JSON.stringify(event)).join('\n') + '\n';
 
+test('v2 requires actual MCP tool initialization even when the CLI reports a successful result', async () => {
+  const required = ['mcp__delegate__read', 'mcp__delegate__ls'];
+  for (const [init, expected] of [
+    [{ type: 'system', subtype: 'init', tools: required }, undefined],
+    [{ type: 'system', subtype: 'init', tools: [], error: 'PRIVATE_SERVER_BODY' }, /Required delegate MCP tools/],
+    [null, /omitted required tool initialization/],
+  ]) {
+    let output = '';
+    const parser = claudeStream(async chunk => { output += chunk; }, undefined, undefined, required);
+    await parser.write(Buffer.from(encode([...(init ? [init] : []), success])));
+    const result = await parser.finish();
+    if (expected) assert.match(result.streamError, expected); else assert.equal(result.streamError, undefined);
+    assert.ok(!output.includes('PRIVATE_SERVER_BODY'));
+  }
+});
+
 test('Claude stream renders text deltas once, tool lifecycle only, and excludes private payloads', async () => {
   let output = '';
   const parser = claudeStream(async chunk => { output += chunk; });

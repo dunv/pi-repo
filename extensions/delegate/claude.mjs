@@ -5,16 +5,17 @@ import { performance } from 'node:perf_hooks';
 import { claudeMetrics, metricsLine } from './metrics.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { save, envFor } from './core.mjs';
+import { save, saveWorkerLaunch, envFor } from './core.mjs';
 import { runClaudeStream } from './claude-stream.mjs';
 import { timestampLine } from './logging.mjs';
-import { environmentCommand, environmentPath, environmentInstructions } from './environments.mjs';
+import { environmentCommand, environmentPath, environmentInstructions, workerTools } from './environments.mjs';
 
 export async function runClaude(runtime, runtimePath, task, plan, directory, attempt) {
   const here = dirname(fileURLToPath(import.meta.url));
   const config = join(directory, 'claude-mcp.json');
   await save(config, { mcpServers: { delegate: { type: 'stdio', command: runtime.node,
-    args: [join(here, 'claude-tools.mjs'), runtimePath, task.id, ...(attempt === undefined ? [] : [attempt])] } } });
+    args: [join(here, 'claude-tools.mjs'), runtimePath, task.id, ...(attempt === undefined ? [] : [attempt])],
+    ...(task.execution?.interfaceVersion === 2 ? { env: { CLAUDE_CODE_OAUTH_TOKEN: '', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: '' } } : {}) } } });
   const args = ['--print', '--model', plan.model, '--effort', plan.thinking,
     '--restricted', '--setting-sources', '', '--settings', JSON.stringify({ disableAllHooks: true }),
     '--disable-slash-commands', '--strict-mcp-config', '--mcp-config', config,
@@ -24,9 +25,11 @@ export async function runClaude(runtime, runtimePath, task, plan, directory, att
     '--session-id', attempt ?? task.id, '--name', `delegate-${task.id}`,
     '--append-system-prompt', await readFile(join(here, 'policy.md'), 'utf8') + environmentInstructions(task)];
   const start = performance.now();
-  const launch = environmentCommand(task, runtime, runtime.claude, args);
+  await saveWorkerLaunch(task, plan, directory, runtime.claude, args, attempt);
+  const launch = environmentCommand(task, runtime, runtime.claude, args, { purpose: 'worker', runtimePath, attempt });
   const { reply, streamError, ...result } = await runClaudeStream(launch.command, launch.args,
-    { cwd: task.worktree, env: envFor({ ...runtime, path: environmentPath(task, runtime) }) }, join(directory, 'brief.md'), join(directory, 'worker.log'));
+    { cwd: task.worktree, env: envFor({ ...runtime, path: environmentPath(task, runtime) }),
+      requiredTools: task.execution?.interfaceVersion === 2 ? workerTools(task).map(name => `mcp__delegate__${name}`) : [] }, join(directory, 'brief.md'), join(directory, 'worker.log'));
   const elapsedMs = performance.now() - start;
   try {
     if (reply) await save(join(directory, 'claude-result.json'), reply);

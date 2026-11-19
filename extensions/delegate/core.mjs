@@ -9,7 +9,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, realpath, lstat, readlink, open, rm, rename } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { repositoryIdentity } from './repository.mjs';
-import { environments, selectEnvironment, assertTaskEnvironment, assertTool } from './environments.mjs';
+import { environments, selectEnvironment, assertTaskEnvironment, assertTool, validateEnvironmentRoute } from './environments.mjs';
+import { seal, validatePolicy, validatePrepared } from './prepared.mjs';
 
 const exec = promisify(execFile);
 export const ENTRY = 'pi.delegate.task.v1';
@@ -126,7 +127,7 @@ export function verificationProfile(profile) {
     || profile.args.filter(a => a === '{targets}').length !== 1) {
     throw new Error('Verification profile requires an absolute command and literal args with one {targets} token');
   }
-  return { command: profile.command, args: [...profile.args] };
+  return { command: profile.command, args: [...profile.args], ...(profile.prepared === undefined ? {} : { prepared: seal(profile.prepared) }) };
 }
 export function initiatorLabel(owner) {
   const name = typeof owner.name === 'string' ? owner.name : 'session';
@@ -177,11 +178,17 @@ async function captureTree(repo, runtime, directory) {
 export async function prepare(input, runtime, owner) {
   validateInput(input);
   const backend = workerBackend(input, runtime);
-  const execution = selectEnvironment(input, runtime);
+  const execution = selectEnvironment({ ...input, backend }, runtime);
+  await validatePolicy(execution);
   const verification = execution && !execution.capabilities.checks ? undefined : verificationProfile(runtime.profiles?.[input.profile]);
   const repo = await realpath(input.repo);
   if ((await git(runtime, repo, ['rev-parse', '--show-toplevel'])).trim() !== repo) throw new Error('Select the repository root');
   const sourceHead = (await git(runtime, repo, ['rev-parse', 'HEAD'])).trim();
+  let repository;
+  if (execution?.interfaceVersion === 2) {
+    repository = await repositoryIdentity(repo, runtime);
+    await validatePrepared({ execution, repository, checks: input.checks }, repo, verification);
+  } else if (verification?.prepared) throw new Error('Prepared-check profiles require environment contract v2');
   await privateDir(runtime.state);
   const id = randomUUID(), directory = join(runtime.state, id);
   await privateDir(directory);
@@ -197,7 +204,7 @@ export async function prepare(input, runtime, owner) {
   const base = tree === headTree ? sourceHead : (await git(runtime, repo,
     ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', sourceHead, '-m', 'Pi delegate source snapshot'],
     { GIT_AUTHOR_NAME: 'Pi delegate', GIT_AUTHOR_EMAIL: 'delegate@localhost', GIT_COMMITTER_NAME: 'Pi delegate', GIT_COMMITTER_EMAIL: 'delegate@localhost' })).trim();
-  const task = { version: 2, id, owner, namespace: input.namespace ?? null, repository: await repositoryIdentity(repo, runtime), initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
+  const task = { version: 2, id, owner, namespace: input.namespace ?? null, repository: repository ?? await repositoryIdentity(repo, runtime), initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
     directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
     ...(execution ? { environment: execution.id, execution } : {}), profile: input.profile, verification, checks: input.checks };
   // Persist intent before worktree creation. Failures retain evidence; never auto-remove/retry.
@@ -210,6 +217,13 @@ export async function prepare(input, runtime, owner) {
   await assertWorktree(task, runtime, true);
   return task;
 }
+// Trusted adapters persist the exact invocation before entering the OS boundary.
+// The operator independently checks it; workers see this record read-only.
+export async function saveWorkerLaunch(task, plan, directory, command, args, attempt) {
+  if (task.execution?.interfaceVersion !== 2) return;
+  await save(join(directory, 'worker-launch.json'), { task: task.id, attempt: attempt ?? '-',
+    backend: plan.backend ?? 'pi', model: plan.model, thinking: plan.thinking, command, args });
+}
 export function attemptDirectory(task, attempt) {
   if (attempt === undefined) return task.directory;
   if (typeof attempt !== 'string' || !/^[a-f0-9-]{36}$/.test(attempt)) throw new Error('Full revision UUID required');
@@ -221,7 +235,10 @@ export async function prepareRevision(task, input, runtime) {
   await assertOpen(task);
   validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
   assertTaskEnvironment(task, runtime);
+  validateEnvironmentRoute({ backend, model: input.model }, task.execution);
+  await validatePolicy(task.execution);
   if (!task.execution || task.execution.capabilities.checks) verificationProfile(task.verification);
+  await validatePrepared(task, task.worktree, task.verification);
   if (input.environment !== undefined && input.environment !== task.environment) throw new Error('Environment is frozen for follow-ups');
   if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error('Previous job nonce changed; review the latest task first');
   if (!/^[a-f0-9]{64}$/.test(input.expectedFingerprint) || await snapshot(task, runtime) !== input.expectedFingerprint) {

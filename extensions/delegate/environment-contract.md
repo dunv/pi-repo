@@ -1,5 +1,8 @@
 # Delegate environment contract v1
 
+V1 remains the default. See [opt-in contract v2](environment-contract-v2.md) for
+separate OS-isolated worker/check purposes, prepared checks and access-only leases.
+
 `pi-repo` defines and validates this interface; an operator (NixOS here) supplies
 its implementation. The agent selects an approved environment, never its own
 launcher, executable PATH or privileges. Verification profiles remain separate.

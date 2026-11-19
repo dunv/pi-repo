@@ -48,7 +48,7 @@ test('contract v1 advertises three exact capability profiles, with honest isolat
 });
 
 test('contract refuses unsupported versions, capabilities, sandbox claims, malformed launchers and profiles', () => {
-  for (const mutate of [r => r.environmentProtocol = 2, r => delete r.environments.implementation,
+  for (const mutate of [r => r.environmentProtocol = 3, r => delete r.environments.implementation,
     r => r.environments['source-review'].capabilities.checks = true,
     r => r.environments['source-review'].isolation.network = 'offline',
     r => r.environments['source-review'].isolation.credentials = 'model-only',
@@ -84,7 +84,7 @@ test('invalid selection fails before source/state preparation; frozen environmen
   await assert.rejects(writable(task, 'source.txt'), /forbids tool/);
   const current = { ...task, nonce: 'previous' }; await writeTask(current);
   await assert.rejects(prepareRevision(current, { ...spec(f.repo), environment: 'implementation', expectedNonce: 'previous', expectedFingerprint: await snapshot(task, f.runtime) }, f.runtime), /frozen/);
-  await writeFile(f.runtimePath, JSON.stringify({ ...f.runtime, environmentProtocol: 2 }));
+  await writeFile(f.runtimePath, JSON.stringify({ ...f.runtime, environmentProtocol: 3 }));
   await assert.rejects(runtimeFrom(f.runtimePath), /contract/);
 }));
 

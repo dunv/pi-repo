@@ -154,6 +154,9 @@ async function removeTree(path, identity) {
         try {
           const opened = await fd.stat();
           if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error('Workspace entry replaced');
+          // Bazel makes output directories read-only. Restore only owner access
+          // on this validated, held directory; never chmod symlink targets/files.
+          if ((opened.mode & 0o700) !== 0o700) await fd.chmod((opened.mode & 0o777) | 0o700);
           for (const child of await readdir(`/proc/self/fd/${fd.fd}`)) await remove(fd, child);
           const after = await lstat(entry);
           if (after.dev !== opened.dev || after.ino !== opened.ino) throw new Error('Workspace directory replaced');
