@@ -61,11 +61,23 @@ test('custom prompt prefix is preserved and an explicit forced full prompt is no
 });
 
 test('policy stays bounded and retains the agreed decision rules and capability limits', () => {
-  assert.ok(policy.length <= 3500, 'keep policy context cost bounded');
+  assert.ok(policy.length <= 6000, 'keep delegation and model-selection policy context cost bounded');
   for (const text of ['benefits outweigh the costs', 'fewest agents', 'Focused summarization', 'Better model fit',
     'Parallel progress', 'Context isolation', 'Independent examination', 'meaningfully verify',
     'inherently sequential', 'large prompt alone', 'Agent agreement is not proof',
     'source references and uncertainties', 'not additional capabilities or authorization', 'enforced read-only mode']) {
     assert.ok(policy.includes(text), `missing policy principle: ${text}`);
+  }
+});
+
+test('model-selection guidance keeps capability, effort and route authorization separate', () => {
+  for (const text of ['capability and thinking effort separately', 'unresolved decisions',
+    'provisional starting hierarchy', 'Opus or Sol', 'Sonnet', 'Lowest supported and tested setting',
+    'Settled design decisions do not remove implementation difficulty', 'extra-high/maximum effort',
+    'Discover exact routes through delegate_models', 'operator policy',
+    'does not establish worker authentication or readiness', 'medium-only policy must not be overridden',
+    'report the blocker', 'Do not use an automatic router', 'Jev integration is deferred',
+    'representative tasks in the actual worker harness', 'time/cost per accepted result']) {
+    assert.ok(policy.includes(text), `missing model-selection principle: ${text}`);
   }
 });

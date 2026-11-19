@@ -10,6 +10,15 @@ worthwhile: focused summaries, better model fit, separable parallel work, isolat
 task guidance and independent examination. More agents are not inherently better;
 coordination and verification costs matter.
 
+It also supplies a provisional model/effort hierarchy: Opus/Sol for substantial
+reasoning and unresolved design, Sonnet or a mid-tier coding model for ordinary
+features, and validated cheaper/local models for bounded mechanical work.
+Capability and effort are separate choices; exact catalogue routes and operator
+restrictions take precedence. This is advisory prompt guidance, not a new runtime
+router or a claim that benchmarks establish one universally best model. Jev
+integration is deferred. Evaluate changes against representative worker tasks,
+including review/correction effort and time/cost per accepted result.
+
 The extension loads this file once per extension load and contributes a structured
 `delegate_orchestration` system-prompt section before each run where `delegate_task`
 is selected and not hidden. Other prompt sections are preserved; disabling/hiding
