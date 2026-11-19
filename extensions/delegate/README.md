@@ -31,6 +31,23 @@ research/review environment.
 [`policy.md`](policy.md) remains the separate worker prompt for both Pi and Claude.
 It is unchanged by the main-agent policy and is not replaced by it.
 
+## Structured task briefs
+
+The invoker writes an adaptable Markdown brief inside the existing `brief` string
+for both `delegate_task` and `delegate_revise`; there are no new mandatory API
+fields or heading validators. The template in
+[`orchestrator-policy.md`](orchestrator-policy.md#preparing-the-launch-prompt)
+covers goal, scope/exclusions, context, settled/open decisions, guidance to read,
+acceptance/verification and expected report. Combine or omit inapplicable sections.
+
+The launcher supplies shared worker rules automatically. The delegate reads
+referenced repository/language/framework guidance in its own environment; the
+invoker must ensure references are accessible or include secret-free excerpts.
+Do not assume the delegate inherits the main or previous worker conversation.
+Model, thinking, configured profile and executable checks remain separate tool
+arguments, and the brief must agree with that actual plan (frozen for follow-ups).
+A request not to edit is still an instruction, not an enforced read-only mode.
+
 ## How to use delegates
 
 1. Define bounded work, decided interfaces, acceptance criteria and needed checks.

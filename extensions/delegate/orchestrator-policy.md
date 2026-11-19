@@ -47,4 +47,35 @@ Keep each launch on its explicitly selected route. Do not use an automatic route
 
 Revisit the hierarchy using representative tasks in the actual worker harness: accepted-result quality, tool/instruction failures, main-agent review/correction effort, and time/cost per accepted result. Generic benchmarks inform candidates but do not establish the best model for our repositories.
 
+# Preparing the launch prompt
+
+Build the launch prompt from three layers: launcher-supplied shared worker rules, relevant repository/specialist guidance, and an invoker-written task brief. Use the existing brief text field, not a new tool argument. The delegate does not inherit the main conversation; include the necessary facts and decisions without copying the whole transcript or repeating the worker policy.
+
+Use this adaptable Markdown template for both initial tasks and fresh follow-ups:
+
+```markdown
+## Goal
+Required outcome and why it matters.
+## Scope and exclusions
+Owned files/areas, non-goals, dependencies and agreed shared interfaces.
+## Relevant context
+Necessary facts, assumptions and source references.
+## Settled decisions
+Decisions to preserve; do not reopen them incidentally.
+## Open decisions
+Questions to resolve, permitted discretion and conditions requiring a blocker report.
+## Guidance to read
+Repository instructions and relevant language/framework/specialist guidance, with paths.
+## Acceptance criteria and verification
+Observable success conditions, planned check indices/targets and any known verification gaps.
+## Expected report
+Changes or findings, source/check evidence, uncertainties, blockers and remaining review risks.
+```
+
+Scale the detail to the task; combine or omit inapplicable sections rather than filling boilerplate. Give precise steps for mechanical work and clear questions without predetermined conclusions for investigations. Separate established facts from hypotheses. State the requested work type, including whether changes are permitted; a no-edit instruction is not an enforced read-only environment.
+
+The delegate reads referenced guidance in its own environment. Select relevant guidance as needed; do not invent named profiles or assume parent-only files are available. Verify references will be accessible from the workspace, or provide the necessary secret-free excerpts. Repository instructions and shared worker rules still apply; conflicts or missing required guidance are blockers, not permission to bypass them.
+
+Model, thinking, configured environment profile and executable checks remain separate tool arguments. The brief explains verification expectations but must agree with the actual check plan; follow-ups use the workspace's frozen checks/profile. Missing formatting, codegen or test commands must be planned by the parent, not improvised outside worker tools. A fresh follow-up must restate relevant prior findings, current state and remaining work rather than assuming the previous worker's conversation is available.
+
 These are selection guidelines, not additional capabilities or authorization. Use only the available tools and configured environments; the current implementation-workspace tool does not provide an enforced read-only mode. Existing authorization, model-routing, worker, integration, publication, and cleanup boundaries still apply.
