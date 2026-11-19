@@ -3,9 +3,14 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { runtimeFrom, json, save, snapshot, runToFiles, envFor, attemptDirectory, verificationProfile } from './core.mjs';
+import { withTaskLock } from './lock.mjs';
 
 // Called under the global flock by worker.ts. No shell, arbitrary argv or model-driven retries.
 export async function check(runtimePath, id, index, attempt) {
+  const runtime = await runtimeFrom(runtimePath);
+  return withTaskLock(runtime, id, true, () => runCheck(runtimePath, id, index, attempt));
+}
+async function runCheck(runtimePath, id, index, attempt) {
   if (!/^[a-f0-9-]{36}$/.test(id) || !Number.isInteger(index) || index < 0) throw new Error('Invalid task/check');
   const runtime = await runtimeFrom(runtimePath), root = join(runtime.state, id);
   const task = await json(join(root, 'task.json')), planned = task.checks[index], directory = attemptDirectory(task, attempt);

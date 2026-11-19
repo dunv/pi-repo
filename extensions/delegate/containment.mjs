@@ -19,7 +19,7 @@ function validPath(path, scope) {
 }
 async function current(fs) {
   const rows = (await fs.readFile('/proc/self/cgroup', 'utf8')).trim().split('\n');
-  if (rows.length !== 1 || !rows[0].startsWith('0::')) throw new Error('Recovery requires unified cgroup v2');
+  if (rows.length !== 1 || !rows[0].startsWith('0::')) throw new Error('Workers require unified cgroup v2');
   return rows[0].slice(3);
 }
 export async function recordContainment(task, attempt, fs = io) {
@@ -39,7 +39,7 @@ export async function recordContainment(task, attempt, fs = io) {
 async function evidenceFor(task, attempt) {
   let evidence;
   try { evidence = await json(join(attemptDirectory(task, attempt), 'containment.json')); }
-  catch { throw new Error('No trusted attempt containment evidence; legacy/unrecorded workers cannot be resumed safely'); }
+  catch { throw new Error('Worker scope evidence unavailable'); }
   if (evidence.version !== 1 || evidence.task !== task.id || evidence.attempt !== (attempt ?? null)
     || evidence.scope !== scopeName(task.id, attempt) || !validPath(evidence.cgroup, evidence.scope)
     || !uuid.test(evidence.bootId) || !Number.isSafeInteger(evidence.inode) || !Number.isSafeInteger(evidence.device)) {
@@ -57,26 +57,28 @@ export async function assertContained(task, attempt, fs = io) {
 }
 export async function assertStopped(task, attempt = task.attempt, fs = io) {
   const evidence = await evidenceFor(task, attempt);
-  if ((await fs.readFile(boot, 'utf8')).trim() !== evidence.bootId) throw new Error('Boot changed; previous containment evidence needs operator investigation');
+  const currentBoot = (await fs.readFile(boot, 'utf8')).trim();
+  if (!uuid.test(currentBoot)) throw new Error('Current boot identity unavailable');
+  const sameBoot = currentBoot === evidence.bootId;
   const path = root + evidence.cgroup;
   try {
     if (await fs.realpath(path) !== path) throw new Error('Unexpected cgroup path');
     const stat = await fs.lstat(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino !== evidence.inode || stat.dev !== evidence.device) {
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (sameBoot && (stat.ino !== evidence.inode || stat.dev !== evidence.device))) {
       throw new Error('Previous attempt cgroup was replaced');
     }
     // populated includes the entire subtree, including double-forked/setsid
     // descendants. An empty cgroup.procs alone would miss nested cgroups.
     const events = await fs.readFile(join(path, 'cgroup.events'), 'utf8');
     if (!/^populated 0$/m.test(events) || /^populated 1$/m.test(events)) throw new Error('Old worker or descendants are still present, or liveness is uncertain');
-    return { ...evidence, stopped: true, observed: 'empty-cgroup', checkedAt: new Date().toISOString() };
+    return { ...evidence, stopped: true, observed: sameBoot ? 'empty-cgroup' : 'empty-current-scope-after-reboot', checkedAt: new Date().toISOString() };
   } catch (error) {
     // Linux cannot remove a populated cgroup. Missing is proof only because a
     // trusted, exclusive startup record binds this exact scope on this boot.
     if (error.code !== 'ENOENT') throw error;
     // Only the cgroup directory's absence counts, not a missing events file.
     try { await fs.lstat(path); } catch (missing) {
-      if (missing.code === 'ENOENT') return { ...evidence, stopped: true, observed: 'removed-cgroup', checkedAt: new Date().toISOString() };
+      if (missing.code === 'ENOENT') return { ...evidence, stopped: true, observed: sameBoot ? 'removed-cgroup' : 'previous-boot-scope-absent', checkedAt: new Date().toISOString() };
       throw missing;
     }
     throw new Error('Previous cgroup liveness evidence is unavailable');

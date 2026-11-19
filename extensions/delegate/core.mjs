@@ -6,31 +6,31 @@ import { promisify } from 'node:util';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, realpath, lstat, readlink, open, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, realpath, lstat, readlink, open, rm, rename } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
+import { repositoryIdentity } from './repository.mjs';
 
 const exec = promisify(execFile);
 export const ENTRY = 'pi.delegate.task.v1';
 export const digest = data => createHash('sha256').update(data).digest('hex');
 export const json = async path => JSON.parse(await readFile(path, 'utf8'));
 export const save = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-export async function lifecycleJSON(path) {
+export async function privateJSON(path) {
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await fd.stat();
-    if (!before.isFile() || before.uid !== process.getuid() || before.mode & 0o077 || before.size > 128 * 1024 * 1024) throw new Error('Unsafe/oversized private lifecycle record');
+    if (!before.isFile() || before.uid !== process.getuid() || before.mode & 0o077 || before.size > 1024 * 1024) throw new Error('Unsafe/oversized private task metadata');
     const buffer = Buffer.alloc(before.size + 1), { bytesRead } = await fd.read(buffer, 0, buffer.length, 0);
     const after = await fd.stat();
-    if (bytesRead !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('Lifecycle record changed during read');
+    if (bytesRead !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('Task metadata changed during read');
     return JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
   } finally { await fd.close(); }
 }
-// Permanent lifecycle claims/receipts must survive a lost reply or crash.
-export async function durableSave(path, value) {
-  const fd = await open(path, 'wx', 0o600);
-  try { await fd.writeFile(JSON.stringify(value, null, 2) + '\n'); await fd.sync(); } finally { await fd.close(); }
-  const parent = await open(dirname(path), 'r');
-  try { await parent.sync(); } finally { await parent.close(); }
+// Private atomic current-task metadata; callers hold the task lock.
+export async function writeTask(task) {
+  const path = join(task.directory, `.task-${randomUUID()}.json`);
+  await save(path, task);
+  await rename(path, join(task.directory, 'task.json'));
 }
 export const envFor = runtime => ({ HOME: runtime.home, PATH: runtime.path, LANG: 'C.UTF-8',
   GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_SSH_COMMAND: runtime.ssh, GIT_SSH_VARIANT: 'ssh' });
@@ -55,35 +55,18 @@ export async function runtimeFrom(path) {
   if (runtime.claude !== undefined && (typeof runtime.claude !== 'string' || !isAbsolute(runtime.claude))) throw new Error('Invalid delegate runtime: claude');
   if (runtime.containmentProtocol !== undefined && (runtime.containmentProtocol !== 1
     || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
-  if (runtime.disposalProtocol !== undefined && runtime.disposalProtocol !== 1) throw new Error('Invalid delegate disposal runtime');
-  if (runtime.cleanupProtocol !== undefined && runtime.cleanupProtocol !== 1) throw new Error('Invalid delegate cleanup runtime');
-  if (runtime.retirementProtocol !== undefined && runtime.retirementProtocol !== 1) throw new Error('Invalid delegate retirement runtime');
-  if (runtime.automaticRetentionProtocol !== undefined && runtime.automaticRetentionProtocol !== 1) throw new Error('Invalid automatic retention runtime');
-  if (runtime.retentionProtocol !== undefined && runtime.retentionProtocol !== 1) throw new Error('Invalid delegate retention runtime');
-  if (runtime.legacyRecoveryDisposalProtocol !== undefined && runtime.legacyRecoveryDisposalProtocol !== 1) throw new Error('Invalid delegate legacy recovery disposal runtime');
-  if (runtime.reconciliationProtocol !== undefined && runtime.reconciliationProtocol !== 1) throw new Error('Invalid delegate reconciliation runtime');
+  if (runtime.disposableProtocol !== undefined && runtime.disposableProtocol !== 1) throw new Error('Invalid disposable workspace runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
   return runtime;
 }
-// A retirement is a separate operator disposition, never invented completion or
-// custody. Fence cooperating workers even after a partially persisted operation.
-export async function assertNotRetired(task, retirementId) {
-  try {
-    const claim = await lifecycleJSON(join(task.directory, 'retirement-claim.json'));
-    if (!retirementId || claim.id !== retirementId) throw new Error('Retirement claimed; no further task use or automatic retry');
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (task.nonce) {
-    try {
-      const claim = await lifecycleJSON(join(task.directory, `revision-after-${digest(task.nonce)}.json`));
-      if (claim.retirement && claim.retirement !== retirementId) throw new Error('Retirement claimed; no further task use or automatic retry');
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
+export async function assertOpen(task) {
+  if ((await privateJSON(join(task.directory, 'task.json'))).closing) throw new Error('Workspace cleanup is in progress');
 }
-export async function assertWorktree(task, runtime, clean = false, retirementId) {
-  await assertNotRetired(task, retirementId);
+export async function assertWorktree(task, runtime, clean = false) {
+  await assertOpen(task);
   const root = (await git(runtime, task.worktree, ['rev-parse', '--show-toplevel'])).trim();
   const head = (await git(runtime, task.worktree, ['rev-parse', 'HEAD'])).trim();
-  if (await realpath(root) !== task.worktree || head !== task.base) throw new Error('Worker checkout moved or HEAD changed');
+  if (await realpath(root) !== task.worktree || (clean && head !== task.base)) throw new Error('Worker checkout moved or initial HEAD changed');
   const branch = (await git(runtime, task.worktree, ['symbolic-ref', '--short', 'HEAD'])).trim();
   if (branch !== task.branch) throw new Error('Worker branch changed');
   if ((await git(runtime, task.worktree, ['diff', '--cached', '--name-only'])).trim()) throw new Error('Worker index must remain unstaged');
@@ -210,7 +193,7 @@ export async function prepare(input, runtime, owner) {
   const base = tree === headTree ? sourceHead : (await git(runtime, repo,
     ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', sourceHead, '-m', 'Pi delegate source snapshot'],
     { GIT_AUTHOR_NAME: 'Pi delegate', GIT_AUTHOR_EMAIL: 'delegate@localhost', GIT_COMMITTER_NAME: 'Pi delegate', GIT_COMMITTER_EMAIL: 'delegate@localhost' })).trim();
-  const task = { version: 1, id, owner, initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
+  const task = { version: 2, id, owner, namespace: input.namespace ?? null, repository: await repositoryIdentity(repo, runtime), initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
     directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking, profile: input.profile, verification, checks: input.checks };
   // Persist intent before worktree creation. Failures retain evidence; never auto-remove/retry.
   await save(join(directory, 'task.json'), task);
@@ -227,10 +210,10 @@ export function attemptDirectory(task, attempt) {
   if (typeof attempt !== 'string' || !/^[a-f0-9-]{36}$/.test(attempt)) throw new Error('Full revision UUID required');
   return join(task.directory, 'revisions', attempt);
 }
-export async function prepareRevision(task, input, runtime, recovery) {
+export async function prepareRevision(task, input, runtime) {
   if (runtime.revisionProtocol !== 1) throw new Error('Revision launcher unavailable: activate the updated runtime and restart Pi first');
   const backend = workerBackend({ ...input, backend: input.backend ?? task.backend }, runtime);
-  await assertNotRetired(task);
+  await assertOpen(task);
   validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
   verificationProfile(task.verification);
   if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error('Previous job nonce changed; review the latest task first');
@@ -238,31 +221,24 @@ export async function prepareRevision(task, input, runtime, recovery) {
     throw new Error('Source fingerprint changed; review the current diff before revising');
   }
   const attempt = randomUUID(), directory = attemptDirectory(task, attempt);
-  // A permanent per-parent claim also prevents duplicates after tree navigation,
-  // lost admission replies or concurrent calls. No uncertain claim is auto-released.
-  await save(join(task.directory, `revision-after-${digest(task.nonce)}.json`), { attempt, previousNonce: task.nonce });
+  // The caller holds the task lock through preparation AND submission. Updating
+  // the current manifest before admission prevents stale duplicate submissions.
   await privateDir(join(task.directory, 'revisions'));
   await privateDir(directory);
   await save(join(directory, 'attempt.json'), { task: task.id, attempt, previousNonce: task.nonce,
-    expectedFingerprint: input.expectedFingerprint, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
-    ...(recovery ? { recovery } : {}) });
+    expectedFingerprint: input.expectedFingerprint, backend, route: input.route ?? null, model: input.model, thinking: input.thinking });
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
   if (await snapshot(task, runtime) !== input.expectedFingerprint) throw new Error(`Source changed preparing revision ${attempt}; retain evidence and reconcile`);
-  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
-    recovery };
+  return { ...task, attempt, previousNonce: task.nonce, nonce: undefined, backend, route: input.route ?? null, model: input.model, thinking: input.thinking };
 }
-export function tasksFrom(entries) {
-  const tasks = new Map();
-  for (const e of entries) if (e.type === 'custom' && e.customType === ENTRY && e.data?.id) tasks.set(e.data.id, e.data);
-  return tasks;
-}
-export async function snapshot(task, runtime, retirementId) {
-  await assertWorktree(task, runtime, false, retirementId);
+export async function snapshot(task, runtime) {
+  await assertWorktree(task, runtime);
   return contentSnapshot(task.worktree, task.base, runtime);
 }
 async function contentSnapshot(worktree, base, runtime) {
   const hash = createHash('sha256').update(base);
-  hash.update(await git(runtime, worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD']));
+  hash.update(await git(runtime, worktree, ['rev-parse', 'HEAD']));
+  hash.update(await git(runtime, worktree, ['diff', '--binary', '--no-ext-diff', '--no-textconv', base]));
   const files = (await git(runtime, worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean).sort();
   if (files.length > 10000) throw new Error('Too many untracked files for verification snapshot');
   let size = 0;
@@ -275,7 +251,7 @@ async function contentSnapshot(worktree, base, runtime) {
   return hash.digest('hex');
 }
 export async function writable(task, path) {
-  await assertNotRetired(task);
+  await assertOpen(task);
   const target = resolve(task.worktree, path), rel = relative(task.worktree, target);
   if (!rel || rel.startsWith('../') || isAbsolute(rel) || rel.split('/').some(p => ['.git', '.pi', '.agents', '.claude'].includes(p))) {
     throw new Error('Worker writes must stay inside task source files, outside agent/Git configuration');

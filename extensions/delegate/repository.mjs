@@ -1,5 +1,5 @@
 // Local filesystem/Git identity, not ancestry/origin matching. No mutations.
-import { lstat, realpath, readFile } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { git } from './core.mjs';
 
@@ -19,11 +19,6 @@ export function assertNoPayloadMounts(directory, targets, text) {
     if ((mount === directory || mount.startsWith(directory + '/')) && targets.some(target =>
       target === mount || target.startsWith(mount + '/') || mount.startsWith(target + '/'))) throw new Error('Mounted payload (including same-device bind mount); disposal blocked');
   }
-}
-export async function assertFinalizationMounts(task, mountinfo) {
-  const mounts = mountinfo ?? await readFile('/proc/self/mountinfo', 'utf8');
-  assertNoPayloadMounts(task.worktree, [task.worktree], mounts);
-  assertNoPayloadMounts(task.directory, [join(task.directory, 'finalization')], mounts);
 }
 export async function repositoryIdentity(repo, runtime) {
   await canonical(repo);

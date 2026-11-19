@@ -8,7 +8,7 @@ export type Config = {
   binary: string; config: string; data: string; namespace: string;
   home: string; path: string; hints?: string; confirmSubmit?: boolean;
 };
-export type Task = { id: number; created: string; label: string; phase: string; exitCode?: number };
+export type Task = { id: number; created: string; label: string; phase: string; exitCode?: number; references?: string[] };
 export type Run = (args: string[]) => Promise<string>;
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 export function configuration(env: NodeJS.ProcessEnv): Config | undefined {
@@ -47,7 +47,8 @@ export function runner(c: Config): Run {
 }
 const object = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 /** Project immediately; no raw task, command, envs or backend diagnostics escape this boundary. */
-export function project(text: string): Task[] {
+export function project(text: string, workspace?: string): Task[] {
+  if (workspace !== undefined && !uuid.test(workspace)) throw new Error("Full workspace UUID required");
   let state: unknown;
   try { state = JSON.parse(text); } catch { throw new Error("Invalid Pueue status response"); }
   if (!object(state) || !object(state.tasks)) throw new Error("Invalid Pueue state schema");
@@ -59,7 +60,7 @@ export function project(text: string): Task[] {
     if (!object(raw) || !Number.isSafeInteger(raw.id) || Number(raw.id) < 0
       || key !== String(raw.id) || ids.has(Number(raw.id))
       || typeof raw.created_at !== "string" || !Number.isFinite(Date.parse(raw.created_at))
-      || !(raw.label === null || typeof raw.label === "string") || !object(raw.status)) {
+      || !(raw.label === null || typeof raw.label === "string") || !object(raw.status) || Object.keys(raw.status).length !== 1) {
       throw new Error("Invalid Pueue task schema");
     }
     ids.add(Number(raw.id));
@@ -78,7 +79,12 @@ export function project(text: string): Task[] {
       // neither process/descendant termination nor safe retry. No exit code is inferred.
       // Other failures remain unresolved.
     }
-    tasks.push({ id: Number(raw.id), created: raw.created_at, label: raw.label ?? "", phase, ...(exitCode === undefined ? {} : { exitCode }) });
+    // Query only a KNOWN workspace UUID; never expose arbitrary UUID-shaped
+    // credentials/identifiers from other commands. This finds a queued/running
+    // delegate after a lost admission reply without reading its owner's session.
+    const references = workspace && [raw.command, raw.original_command, raw.path].some(value => typeof value === "string" && value.includes(workspace)) ? [workspace] : [];
+    tasks.push({ id: Number(raw.id), created: raw.created_at, label: raw.label ?? "", phase, ...(exitCode === undefined ? {} : { exitCode }),
+      ...(references.length ? { references } : {}) });
   }
   return tasks;
 }
@@ -98,7 +104,7 @@ export class Backend {
   async check() {
     if ((await this.run(["--version"])).trim() !== "pueue 4.0.4") throw new Error("Only Pueue 4.0.4 is supported; no automatic install/start/upgrade");
   }
-  async tasks(): Promise<Task[]> { return project(await this.run(["status", "--json"])); }
+  async tasks(workspace?: string): Promise<Task[]> { return project(await this.run(["status", "--json"]), workspace); }
   async reserve(group: string) {
     const reply = await this.run(["group", "add", "--parallel", "1", group]);
     if (reply.trim() !== `New group "${group}" has been created`) throw new Error("Reservation refused or uncertain; no automatic retry or takeover");

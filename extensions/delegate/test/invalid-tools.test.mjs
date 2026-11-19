@@ -116,7 +116,7 @@ test('real Pi CLI/worker: third invalid call aborts, ordinary edit errors do not
     } } }));
     await writeFile(runtimePath, JSON.stringify({ git: '/fixture/git', node: process.execPath, pi: '/fixture/pi', flock: '/fixture/flock',
       ssh: '/fixture/ssh', home, state, launcher: '/fixture/launcher', path: process.env.PATH }));
-    await writeFile(join(directory, 'task.json'), JSON.stringify({ id, directory, worktree, checks: [] }));
+    await writeFile(join(directory, 'task.json'), JSON.stringify({ id, directory, worktree, checks: [] }), { mode: 0o600 });
     const child = spawn(process.execPath, [join(sdk, 'dist/cli.js'), '--offline', '--print', '--provider', 'fixture', '--model', 'fixture', '--thinking', 'off',
       '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-approve', '--no-mcp',
       '--extension', new URL('../worker.ts', import.meta.url).pathname,

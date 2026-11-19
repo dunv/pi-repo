@@ -4,22 +4,25 @@ import { performance } from 'node:perf_hooks';
 import { runClaude } from './claude.mjs';
 import { timestampLine } from './logging.mjs';
 import { assertContained } from './containment.mjs';
-import { assertRecoveryHandoff } from './recovery.mjs';
+import { withTaskLock } from './lock.mjs';
 import { invalidToolFailure } from './invalid-tools.mjs';
 import { runtimeFrom, json, save, assertWorktree, runToFiles, envFor, snapshot, attemptDirectory, workerBackend, initiatorLabel } from './core.mjs';
 
 const log = text => console.log(timestampLine(text));
 
 export async function run(runtimePath, id, attempt) {
+  const runtime = await runtimeFrom(runtimePath);
+  return withTaskLock(runtime, id, true, () => runWorker(runtimePath, id, attempt));
+}
+async function runWorker(runtimePath, id, attempt) {
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Full task UUID required');
   const runtime = await runtimeFrom(runtimePath), root = join(runtime.state, id);
   const task = await json(join(root, 'task.json')), directory = attemptDirectory(task, attempt);
-  if (task.id !== id || task.directory !== root) throw new Error('Task identity mismatch');
+  if (task.version !== 2 || task.id !== id || task.directory !== root) throw new Error('Disposable task identity mismatch');
   const plan = attempt === undefined ? task : await json(join(directory, 'attempt.json'));
   if (attempt !== undefined && (plan.task !== id || plan.attempt !== attempt)) throw new Error('Revision identity mismatch');
   const backend = workerBackend(plan, runtime);
   if (runtime.containmentProtocol === 1) await assertContained(task, attempt);
-  if (plan.recovery) await assertRecoveryHandoff(task, plan, runtime);
   await assertWorktree(task, runtime, attempt === undefined);
   if (attempt !== undefined && await snapshot(task, runtime) !== plan.expectedFingerprint) {
     throw new Error('Revision source changed after handoff; retain evidence and reconcile');

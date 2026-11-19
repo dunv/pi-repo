@@ -2,7 +2,7 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { lifecycleJSON, git, runtimeFrom } from '../../../extensions/delegate/core.mjs';
+import { privateJSON, git, runtimeFrom } from '../../../extensions/delegate/core.mjs';
 
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 async function allocation(path, device, seen = new Set()) {
@@ -35,25 +35,17 @@ export async function inventory(runtime, { worktrees = false } = {}) {
     try {
       const ds = await lstat(directory);
       if (!ds.isDirectory() || ds.isSymbolicLink() || ds.uid !== process.getuid() || ds.mode & 0o077) throw new Error('Unsafe task directory');
-      const task = await lifecycleJSON(join(directory, 'task.json'));
+      const task = await privateJSON(join(directory, 'task.json'));
       if (task.id !== id || task.directory !== directory || task.branch !== `delegate/${id}`
         || !isAbsolute(task.repo) || !isAbsolute(task.worktree) || dirname(task.worktree) !== task.repo + '.worktrees'
         || !task.worktree.endsWith(id)) throw new Error('Task ownership/path identity incomplete');
       Object.assign(row, { repo: task.repo, worktree: task.worktree, branch: task.branch,
         owner: { session: task.owner?.session, file: task.owner?.file }, worktreeExists: await exists(task.worktree) });
-      for (const [name, path] of Object.entries({ finalized: 'finalized.json', retired: 'retired.json', retirementClaim: 'retirement-claim.json', automaticEnrollment: 'automatic-retention-enrollment.json', automaticBuildDisposed: 'automatic-retention-build-output-receipt.json', automaticRecoveryDisposed: 'automatic-retention-recovery-receipt.json', reconciled: 'reconciliation.json', disposed: 'disposed.json', containment: 'containment.json', result: 'result.json', feedback: 'feedback' })) row.receipts[name] = await exists(join(directory, path));
+      row.disposable = task.version === 2;
+      row.receipts.result = await exists(join(directory, 'result.json'));
       const names = await readdir(directory);
-      row.retentionHistory = names.filter(name => /^retention-(?:after-[a-f0-9]{64}|[a-f0-9-]{36})\.json$/.test(name)).sort();
-      row.disposalClaimCompacted = false;
-      if (await exists(join(directory, 'disposal-claim.json'))) {
-        try { row.disposalClaimCompacted = (await lifecycleJSON(join(directory, 'disposal-claim.json'))).compacted === true; }
-        catch { row.blockers.push('Disposal claim unreadable; retention history unassessed'); }
-      }
       for (const name of names) {
-        const category = name === 'build-output' ? 'build' : name === 'bazel-output' ? 'legacyBuild' : ['finalization', 'retirement'].includes(name) ? 'archivesAndReceipts'
-          : ['brief.md', 'report.md', 'worker.log', 'metrics.jsonl', 'tracked.diff', 'claude-result.json'].includes(name) || /^check-[0-7]-[a-f0-9-]{36}\.log$/.test(name) ? 'prunableDiagnosticContent'
-          : name === 'sessions' ? 'taskLocalSessionContentUnassessed'
-          : /(?:\.log|\.jsonl)$/.test(name) ? 'otherLogsAndSessions' : name === 'revisions' ? 'revisions' : name.startsWith('retention-') ? 'retentionHistory' : 'otherEvidence';
+        const category = name === 'build-output' ? 'build' : name === 'bazel-output' ? 'legacyBuild' : 'otherTaskData';
         row.allocatedBytes[category] = (row.allocatedBytes[category] ?? 0) + await allocation(join(directory, name), ds.dev);
       }
       if (!repositories.has(task.repo)) repositories.set(task.repo, (async () => {
@@ -80,12 +72,12 @@ export async function inventory(runtime, { worktrees = false } = {}) {
           catch { row.blockers.push('Worktree allocation unavailable; scan failed'); }
         }
       }
-      row.blockers.push('No live terminal/stopped-worker, current review or integration/discard assessment performed');
+      row.blockers.push('No live terminal/scoped-worker, handoff or foreground-user assessment performed');
     } catch (error) { row.blockers.push(error.code ?? 'Invalid/incomplete local evidence; manual inspection required'); }
   }
   return { state: root, observedAt: new Date().toISOString(), worktreeAllocationRequested: worktrees, tasks,
     accounting: 'Allocated blocks per category, deduplicated within each top-level artifact only; shared hardlinks, snapshots, open files and concurrent changes prevent treating this as reclaimable space.',
-    instruction: 'Not a deletion manifest or retention-eligibility assessment. Diagnostic/session categories only identify possible documented content groups; exact allowlist, private/unshared metadata, content hashes and protected evidence are not assessed here. Retention history/compaction fields only report observed records. Inspect live attempt identity/status, stopped proof, source/review and external foreground users separately. Never infer disposability from age, exit files or a merged ref.' };
+    instruction: 'Not a deletion manifest. Inspect current workers/checks, result handoff and foreground/build users before cleanup. Legacy records are not disposable v2 scratch. Never infer idleness from age, exit files or a merged ref.' };
 }
 // Node resolves the module URL through symlinks, but leaves argv[1] as invoked.
 const invokedPath = process.argv[1] ? await realpath(process.argv[1]).catch(() => null) : null;

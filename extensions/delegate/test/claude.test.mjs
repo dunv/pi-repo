@@ -5,6 +5,8 @@ import { mkdtemp, writeFile, readFile, rm, symlink, readdir } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { recordContainment, scopeName } from '../containment.mjs';
 import { prepare, prepareRevision, snapshot, save, json, attemptDirectory, workerBackend, validateInput } from '../core.mjs';
 import { run } from '../run.mjs';
 import { createTools, tools } from '../claude-tools.mjs';
@@ -33,6 +35,27 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     await fn({ dir, repo, git, runtime, runtimePath });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+// API fixtures use a fake complete backend and synthetic stopped scopes. Worker
+// CLI tests need no real systemd manager, cgroup writes or model calls.
+async function apiEnvironment(f) {
+  const binary = join(f.dir, 'fake-pueue'), workerRuntime = join(f.dir, 'worker-runtime.json'), namespace = randomUUID();
+  await writeFile(binary, `#!${process.execPath}\nconsole.log(process.argv.includes('--version')?'pueue 4.0.4':JSON.stringify({tasks:{}}));\n`, { mode: 0o700 });
+  await writeFile(workerRuntime, JSON.stringify(f.runtime));
+  await writeFile(f.runtimePath, JSON.stringify({ ...f.runtime, disposableProtocol: 1, containmentProtocol: 1, systemdRun: '/fixture/systemd-run' }));
+  const env = { PI_DELEGATE_RUNTIME: f.runtimePath, PI_PUEUE_BINARY: binary, PI_PUEUE_CONFIG: join(f.dir, 'config'), PI_PUEUE_DATA: f.dir,
+    PI_PUEUE_NAMESPACE: namespace, PI_PUEUE_PATH: process.env.PATH };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]])); Object.assign(process.env, env);
+  return {
+    run: async (id, attempt) => {
+      const code = await run(workerRuntime, id, attempt), task = await json(join(f.runtime.state, id, 'task.json'));
+      const boot = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+      await recordContainment(task, attempt, { readFile: async path => path.endsWith('boot_id') ? boot : `0::/user.slice/user-${process.getuid()}.slice/user@${process.getuid()}.service/app.slice/${scopeName(id, attempt)}\n`,
+        realpath: async path => path, lstat: async () => ({ ino: 123, dev: 27, isDirectory: () => true, isSymbolicLink: () => false }) });
+      return code;
+    },
+    close: () => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; },
+  };
+}
 test('shared catalogue tool pages local/CLI routes and freezes automatic task/revision selection', () => fixture(async f => {
   const sdk = process.env.PI_TEST_SDK ?? new URL('../../../node_modules/@earendil-works/pi-coding-agent/', import.meta.url).pathname;
   const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(join(sdk, 'dist/core/extensions/loader.js')));
@@ -49,9 +72,9 @@ test('shared catalogue tool pages local/CLI routes and freezes automatic task/re
     getSessionFile: () => who.file, getSessionId: () => who.session, getBranch: () => entries,
   }, executeTool: async name => {
     calls.push(name);
-    return { result: { content: [{ type: 'text', text: JSON.stringify(name === 'pueue_status' ? [{ phase: 'EXITED', exitCode: 0 }] : { nonce: `nonce-${calls.length}`, phase: 'QUEUED' }) }] } };
+    return { result: { content: [{ type: 'text', text: JSON.stringify(name === 'pueue_status' ? [{ phase: 'EXITED', exitCode: 0 }] : { nonce: randomUUID(), phase: 'QUEUED' }) }] } };
   } };
-  const previous = process.env.PI_DELEGATE_RUNTIME; process.env.PI_DELEGATE_RUNTIME = f.runtimePath;
+  const api = await apiEnvironment(f);
   try {
     const invoke = async (name, input) => JSON.parse((await registered.get(name).execute(name, input, undefined, undefined, ctx)).content[0].text);
     const page = await invoke('delegate_models', { limit: 1 });
@@ -63,7 +86,7 @@ test('shared catalogue tool pages local/CLI routes and freezes automatic task/re
     assert.equal(task.backend, 'pi'); assert.equal(task.route.selection, task.model);
     const original = await json(join(task.artifacts, 'task.json'));
     assert.equal(original.route.provider, 'evo-x2'); assert.equal(original.route.authentication.workerVerified, false);
-    await run(f.runtimePath, task.task);
+    await api.run(task.task);
     const revision = await invoke('delegate_revise', { task: task.task, expectedNonce: task.nonce,
       expectedFingerprint: await snapshot(original, f.runtime), brief: 'Explicitly select CLI route.',
       model: 'claude-code/claude-sonnet-4-6', thinking: 'high' });
@@ -72,9 +95,10 @@ test('shared catalogue tool pages local/CLI routes and freezes automatic task/re
     assert.equal(plan.route.id, 'claude-code/claude-sonnet-4-6');
     // Removing catalogue policy does not re-route an already prepared worker.
     await writeFile(f.runtimePath, JSON.stringify({ ...f.runtime, catalogue: [] }));
-    assert.equal(await run(f.runtimePath, task.task, revision.attempt), 0);
-    assert.equal((await json(join(task.artifacts, 'task.json'))).backend, 'pi');
-  } finally { if (previous === undefined) delete process.env.PI_DELEGATE_RUNTIME; else process.env.PI_DELEGATE_RUNTIME = previous; }
+    assert.equal(await api.run(task.task, revision.attempt), 0);
+    assert.equal((await json(join(task.artifacts, 'task.json'))).backend, 'claude');
+    assert.equal((await json(join(task.artifacts, 'result.json'))).backend, 'pi');
+  } finally { api.close(); }
 }));
 
 test('explicit backend validation rejects aliases, unavailable CLI and unsupported effort before preparation', () => fixture(async f => {
@@ -95,7 +119,7 @@ test('Claude worker has explicit capabilities, stdin brief, clean environment, d
   const invocation = await json(join(f.dir, 'invocation.json')), args = invocation.args;
   assert.equal(invocation.secret, undefined); assert.equal(invocation.cwd, task.worktree);
   assert.equal(invocation.stdin, spec(f.repo).brief); assert.ok(!args.join(' ').includes('SECRET_BRIEF'));
-  for (const flag of ['--restricted', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome']) assert.ok(args.includes(flag));
+  for (const flag of ['--restricted', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome', '--no-session-persistence']) assert.ok(args.includes(flag));
   for (const [flag, value] of [['--model', task.model], ['--effort', 'high'], ['--tools', ''], ['--setting-sources', ''], ['--permission-mode', 'dontAsk'], ['--permission-prompts', 'none'], ['--output-format', 'stream-json'], ['--session-id', task.id]]) {
     assert.equal(args[args.indexOf(flag) + 1], value);
   }
@@ -250,8 +274,8 @@ test('Pi host routes native and registry Anthropic IDs through Claude and can sw
   const ctx = { modelRegistry: { find: () => { registryCalls++; return { id: 'model' }; },
     hasConfiguredAuth: model => { assert.notEqual(model.provider, 'anthropic', 'Anthropic Pi auth must not be read'); return true; } }, sessionManager: {
     getSessionFile: () => who.file, getSessionId: () => who.session, getBranch: () => entries,
-  }, executeTool: async name => ({ result: { content: [{ type: 'text', text: JSON.stringify(name === 'pueue_status' ? [{ phase: 'EXITED', exitCode: 0 }] : { nonce: 'nonce', phase: 'QUEUED' }) }] } }) };
-  const previous = process.env.PI_DELEGATE_RUNTIME; process.env.PI_DELEGATE_RUNTIME = f.runtimePath;
+  }, executeTool: async name => ({ result: { content: [{ type: 'text', text: JSON.stringify(name === 'pueue_status' ? [{ phase: 'EXITED', exitCode: 0 }] : { nonce: randomUUID(), phase: 'QUEUED' }) }] } }) };
+  const api = await apiEnvironment(f);
   try {
     const reply = await registered.get('delegate_task').execute('task', spec(f.repo), undefined, undefined, ctx);
     const task = JSON.parse(reply.content[0].text);
@@ -261,12 +285,12 @@ test('Pi host routes native and registry Anthropic IDs through Claude and can sw
     }, undefined, undefined, ctx)).content[0].text);
     assert.equal(alias.backend, 'claude'); assert.equal(alias.model, 'claude-sonnet-4-6');
     assert.equal(alias.route.canonicalId, 'claude-code/claude-sonnet-4-6'); assert.equal(registryCalls, 1);
-    await run(f.runtimePath, task.task);
+    await api.run(task.task);
     const current = entries.findLast(entry => entry.data.id === task.task).data;
     const revision = await registered.get('delegate_revise').execute('revise', {
-      task: task.task, expectedNonce: 'nonce', expectedFingerprint: await snapshot(current, f.runtime),
+      task: task.task, expectedNonce: task.nonce, expectedFingerprint: await snapshot(current, f.runtime),
       backend: 'pi', model: 'fixture/model', thinking: 'minimal', brief: 'Explicit switch to Pi.',
     }, undefined, undefined, ctx);
     assert.equal(JSON.parse(revision.content[0].text).backend, 'pi'); assert.equal(registryCalls, 2);
-  } finally { if (previous === undefined) delete process.env.PI_DELEGATE_RUNTIME; else process.env.PI_DELEGATE_RUNTIME = previous; }
+  } finally { api.close(); }
 }));

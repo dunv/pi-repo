@@ -6,8 +6,8 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, chmod, readl
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createRequire } from 'node:module';
-import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, sourceSnapshot, writable, json, save, envFor, tasksFrom, ENTRY } from '../core.mjs';
+import { randomUUID } from 'node:crypto';
+import { initiatorLabel, prepare, prepareRevision, attemptDirectory, validateInput, verificationProfile, snapshot, sourceSnapshot, writable, json, save, envFor } from '../core.mjs';
 import { run } from '../run.mjs';
 import { check } from '../check.mjs';
 import { toolSummary } from '../progress.mjs';
@@ -18,7 +18,8 @@ const sdk = process.env.PI_TEST_SDK ?? new URL('../../../node_modules/@earendil-
 
 const executable = name => execFileSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
 const gitBin = executable('git'), flock = executable('flock');
-const input = repo => ({ repo, brief: 'Mechanical: change source.txt only. Accept when its content is updated. Self-review the diff.',
+const namespace = randomUUID();
+const input = repo => ({ repo, namespace, brief: 'Mechanical: change source.txt only. Accept when its content is updated. Self-review the diff.',
   model: 'fixture/model', thinking: 'low', profile: 'fixture', checks: [{ kind: 'test', targets: ['//:ok'] }] });
 const who = { session: 'fixture-session', file: '/fixture/session.jsonl' };
 async function fixture(fn) {
@@ -385,10 +386,10 @@ test('mutating/failing checks do not pass, unplanned checks never execute', () =
   await assert.rejects(check(f.runtimePath, task.id, 2), /Unplanned/);
 }));
 
-test('changed worker HEAD is never accepted as verification evidence', () => fixture(async f => {
-  const task = await prepare(input(f.repo), f.runtime, who);
-  execFileSync(gitBin, ['-C', task.worktree, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '--allow-empty', '-qm', 'unexpected']);
-  await assert.rejects(snapshot(task, f.runtime), /HEAD changed/);
+test('foreground continuation commits change the fingerprint and remain reviewable', () => fixture(async f => {
+  const task = await prepare(input(f.repo), f.runtime, who), before = await snapshot(task, f.runtime);
+  execFileSync(gitBin, ['-C', task.worktree, '-c', 'user.name=Fixture', '-c', 'user.email=f@invalid', 'commit', '--allow-empty', '-qm', 'foreground continuation']);
+  assert.notEqual(await snapshot(task, f.runtime), before);
 }));
 
 test('explicit revision reuses dirty source and build state, while retaining per-attempt evidence', t => fixture(async f => {
@@ -407,7 +408,7 @@ test('explicit revision reuses dirty source and build state, while retaining per
   assert.equal(revision.worktree, task.worktree); assert.equal(revision.base, task.base); assert.equal(revision.branch, task.branch);
   assert.equal(revision.nonce, undefined); assert.equal(revision.previousNonce, bound.nonce);
   assert.deepEqual(await json(join(task.directory, 'task.json')), task, 'Original manifest stays immutable');
-  await assert.rejects(prepareRevision(bound, spec, f.runtime), /EEXIST/, 'Duplicate parent claim never permits another attempt');
+  assert.equal((await readdir(task.directory)).some(name => name.startsWith('revision-after-')), false, 'No permanent lifecycle/continuation claims');
   assert.equal(await run(f.runtimePath, task.id, revision.attempt), 0);
   const promptLines = logs.map(line => line.replace(/^\[[\dT:.Z-]+\] /, '')).filter(line => line.startsWith('[delegate] Prompt file: '));
   assert.deepEqual(promptLines, [task.directory, artifacts].map(directory =>
@@ -450,9 +451,7 @@ test('revision rejects stale handoffs, staged changes and source movement before
   assert.throws(() => attemptDirectory(task, '../escape'), /UUID/);
 }));
 
-test('task restoration follows only supplied branch entries; runtime does not inherit secrets', () => {
-  assert.equal(tasksFrom([{ type: 'custom', customType: ENTRY, data: { id: 'a', nonce: 'first' } },
-    { type: 'custom', customType: ENTRY, data: { id: 'a', nonce: 'second' } }]).get('a').nonce, 'second');
+test('runtime does not inherit secrets', () => {
   assert.deepEqual(Object.keys(envFor({ home: '/home/fixture', path: '/bin' })).sort(), ['GIT_CONFIG_NOSYSTEM', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_TERMINAL_PROMPT', 'HOME', 'LANG', 'PATH']);
 });
 
@@ -513,213 +512,3 @@ test('real worker extension forwards revision identity to check artifacts while 
     for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
 }));
-
-test('real Pi loader: nested Pueue workflow, main-agent review, visible submissions and fork ownership', async () => {
-  const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(join(sdk, 'dist/core/extensions/loader.js')));
-  const requireHost = createRequire(join(sdk, 'package.json'));
-  const { runToolCall } = await import(pathToFileURL(join(dirname(requireHost.resolve('@earendil-works/pi-agent-core/package.json')), 'dist/index.js')));
-  const loaded = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], process.cwd());
-  assert.deepEqual(loaded.errors, []);
-  const tools = loaded.extensions.flatMap(e => [...e.tools.values()]).map(v => v.definition ?? v);
-  assert.deepEqual(tools.map(t => t.name).sort(), ['delegate_cleanup', 'delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_prune', 'delegate_reconcile', 'delegate_resume', 'delegate_retention_enroll', 'delegate_retire', 'delegate_review', 'delegate_revise', 'delegate_task']);
-  for (const name of ['delegate_models', 'delegate_task', 'delegate_revise'])
-    assert.match(tools.find(t => t.name === name).description, /Reserve GMKtec models for simple, well-specified mechanical work/);
-  assert.match(tools.find(t => t.name === 'delegate_task').description, /3 cumulative unavailable-tool calls/);
-  const review = tools.find(t => t.name === 'delegate_review');
-  await fixture(async f => {
-    const entries = [], calls = [];
-    const host = createExtensionRuntime();
-    host.appendEntry = (customType, data) => entries.push({ type: 'custom', customType, data });
-    const instance = await loadExtensions([new URL('../index.ts', import.meta.url).pathname], f.repo, undefined, host);
-    assert.deepEqual(instance.errors, []);
-    const registered = new Map([...instance.extensions[0].tools.values()].map(v => [v.definition.name, v.definition]));
-    let phase = 'RUNNING', submissionFailure = false, serial = 0, exitCode = 0, cancellationRequested = false, absent = false;
-    const ctx = { modelRegistry: { find: () => ({ id: 'model' }) }, sessionManager: {
-      getSessionFile: () => who.file, getSessionId: () => who.session, getSessionName: () => 'Checkout fixes (GMKtec)', getBranch: () => entries,
-    }, executeTool: async (name, args) => {
-      calls.push({ name, args });
-      // Use Pi's real nested-call envelope, not an approximation of a tool result.
-      const tool = { name, label: name, description: 'Fixture backend', parameters: { type: 'object', additionalProperties: true },
-        execute: async () => {
-          if (submissionFailure && name === 'pueue_submit') throw new Error('Fixture uncertain admission');
-          return { content: [{ type: 'text', text: JSON.stringify(name === 'pueue_submit' ? { nonce: `fixture-nonce-${++serial}`, id: serial, phase: 'QUEUED' }
-            : name === 'pueue_status' ? absent ? [] : [{ nonce: args.nonce, phase, exitCode, cancellationRequested }] : {}) }], details: undefined };
-        } };
-      return runToolCall({ type: 'toolCall', id: 'nested-fixture', name, arguments: args }, {
-        tools: [tool], assistantMessage: { role: 'assistant', content: [] }, context: { systemPrompt: '', messages: [] },
-      });
-    } };
-    const previous = process.env.PI_DELEGATE_RUNTIME; process.env.PI_DELEGATE_RUNTIME = f.runtimePath;
-    try {
-      await writeFile(join(f.repo, 'source.txt'), 'main agent handoff\n');
-      await writeFile(join(f.repo, 'inherited.txt'), 'main agent addition\n');
-      const reply = await registered.get('delegate_task').execute('call', input(f.repo), undefined, undefined, ctx);
-      const task = JSON.parse(reply.content[0].text);
-      assert.equal(calls[0].name, 'pueue_submit');
-      assert.deepEqual(calls[0].args.argv, [f.runtime.launcher, f.runtimePath, task.task]);
-      assert.equal(entries.length, 2);
-      assert.equal(task.model, 'fixture/model'); assert.equal(task.thinking, 'low');
-      assert.equal(task.initiator.name, 'Checkout fixes (GMKtec)');
-      assert.match(task.initiator.label, /^checkout-fixes-gmktec-s[a-f0-9]{8}$/);
-      assert.ok(task.worktree.endsWith(`delegate-${task.initiator.label}-${task.task}`));
-      const theme = { fg: (_color, text) => text, bold: text => text };
-      const submitTool = registered.get('delegate_task');
-      const callText = submitTool.renderCall(input(f.repo), theme).render(120).join('\n');
-      assert.match(callText, /Subagent/); assert.match(callText, /fixture\/model/); assert.match(callText, /thinking: low/);
-      const rendered = submitTool.renderResult(reply, { expanded: false, isPartial: false }, theme).render(120).join('\n');
-      assert.equal(rendered.trimEnd(), 'Queued · Pueue #1');
-      assert.doesNotMatch(callText, /Task:|Artifacts:|Worktree:/);
-      const expandedSubmission = submitTool.renderResult(reply, { expanded: true, isPartial: false }, theme).render(160).join('\n');
-      assert.match(expandedSubmission, new RegExp(task.nonce));
-      assert.match(expandedSubmission, new RegExp(task.task));
-      assert.match(expandedSubmission, /Worktree:|Artifacts:/);
-      assert.doesNotMatch(expandedSubmission, /fixture\/model|thinking:/);
-      const errorResult = { content: [{ type: 'text', text: 'Submission may be UNKNOWN' }] };
-      assert.match(submitTool.renderResult(errorResult, { expanded: false }, theme).render(120).join('\n'), /UNKNOWN/);
-      assert.doesNotMatch(submitTool.description, /human diff review/);
-      assert.match(registered.get('delegate_review').description, /main agent must review/);
-      await assert.rejects(registered.get('delegate_review').execute('review', { task: task.task }, undefined, undefined, ctx), /not authoritatively/);
-      assert.equal(calls.some(c => c.name === 'worktree_panel_target'), false);
-      await run(f.runtimePath, task.task); phase = 'EXITED';
-      const reviewTool = registered.get('delegate_review');
-      const reviewReply = await reviewTool.execute('review', { task: task.task }, undefined, undefined, ctx);
-      const reviewed = JSON.parse(reviewReply.content[0].text);
-      const colours = [];
-      const reviewTheme = { ...theme, fg: (colour, text) => { colours.push({ colour, text }); return text; } };
-      assert.match(reviewTool.renderCall({ task: task.task }, theme).render(120).join('\n'), /collect changes and report/);
-      const renderReview = (data, expanded = false) => reviewTool.renderResult(
-        { content: [{ type: 'text', text: JSON.stringify(data) }] }, { expanded, isPartial: false }, reviewTheme).render(120).join('\n');
-      const reviewText = renderReview(reviewed);
-      assert.match(reviewText, /EXITED · exit 0/);
-      assert.match(reviewText, /Changes collected · review verdict is separate/);
-      assert.doesNotMatch(reviewText, /Evidence collected|review pending|not accepted/);
-      assert.equal(colours.some(c => c.text.includes('Changes collected')), false, 'Collection status is plain text, not a warning or an approval signal');
-      assert.match(reviewText, /needed for indices: 0/);
-      assert.match(reviewText, /New files: 1.*new\.txt/);
-      assert.doesNotMatch(reviewText, /fingerprint|tracked.diff|"task":/);
-      const expandedReview = renderReview(reviewed, true);
-      assert.match(expandedReview, /Tracked diff:.*tracked.diff/);
-      assert.match(expandedReview, /Worker report \(untrusted\):/);
-      assert.match(expandedReview, /Worker duration:/);
-      assert.match(renderReview({ ...reviewed, missingChecks: [], checks: [] }), /Checks: none planned/);
-      assert.match(renderReview({ ...reviewed, worker: undefined }), /Worker result evidence unavailable/);
-      assert.ok(colours.some(c => c.colour === 'warning' && c.text === 'Worker result evidence unavailable.'));
-      assert.match(renderReview({ ...reviewed, worker: { code: 7, integrityError: 'fixture problem' } }), /Integrity error: fixture problem/);
-      assert.ok(colours.some(c => c.colour === 'error' && c.text === 'Integrity error: fixture problem'));
-      assert.match(renderReview([]), /No delegated tasks/);
-      assert.match(renderReview([{ task: task.task, model: task.model, thinking: task.thinking }]), /fixture\/model/);
-      const reviewError = reviewTool.renderResult({ content: [{ type: 'text', text: 'Worker is not authoritatively EXITED' }] },
-        { expanded: false, isPartial: false }, theme).render(120).join('\n');
-      assert.match(reviewError, /not authoritatively EXITED/);
-      assert.equal(reviewed.accepted, false); assert.deepEqual(reviewed.untracked, ['new.txt']);
-      assert.deepEqual(reviewed.missingChecks, [0]);
-      const patch = await readFile(reviewed.trackedPatch, 'utf8');
-      assert.match(patch, /worker changed/); assert.match(patch, /-main agent handoff/);
-      assert.doesNotMatch(patch, /inherited.txt|original/);
-      assert.equal(reviewed.sourceState.unchanged, true);
-      assert.equal(reviewed.baseline.base, task.baseline.base);
-      await writeFile(join(f.repo, 'source.txt'), 'main agent continued\n');
-      const driftReply = JSON.parse((await reviewTool.execute('review', { task: task.task }, undefined, undefined, ctx)).content[0].text);
-      assert.equal(driftReply.sourceState.unchanged, false);
-      assert.match(renderReview(driftReply), /Main checkout changed since handoff/);
-      assert.equal(reviewed.reviewer, 'main-agent');
-      assert.equal(reviewed.feedback.tool, 'delegate_feedback');
-      assert.equal(reviewed.feedback.expectedNonce, task.nonce);
-      assert.match(reviewed.feedback.instruction, /After reviewing/);
-      const feedbackTool = registered.get('delegate_feedback');
-      const feedbackInput = { task: task.task, expectedNonce: task.nonce, reviewStatus: 'reviewed', usefulness: 'partly',
-        correctness: 'issues', instructionFollowing: 'good', reviewEffort: 'moderate', wouldDelegateAgain: 'unsure',
-        rationale: 'Changes are scoped but verification is missing.', problems: ['No planned check evidence'],
-        improvements: ['Run the planned check'], evidence: ['Missing check index 0'], reviewedFingerprint: reviewed.fingerprint };
-      const recorded = JSON.parse((await feedbackTool.execute('feedback', feedbackInput, undefined, undefined, ctx)).content[0].text);
-      assert.equal(recorded.recorded, true); assert.equal(recorded.accepted, false);
-      const feedback = await json(recorded.path);
-      assert.equal(feedback.assessment.usefulness, 'partly'); assert.equal(feedback.invocation.model, 'fixture/model');
-      assert.equal(feedback.reviewedFingerprint, reviewed.fingerprint);
-      assert.equal(feedback.artifacts.directory, task.artifacts);
-      assert.equal(feedback.caller.session, who.session);
-      assert.equal(calls.some(c => c.name === 'worktree_panel_target'), false, 'Review does not require opening a human diff panel');
-      await registered.get('delegate_review').execute('panel', { task: task.task, openDiff: true }, undefined, undefined, ctx);
-      assert.equal(calls.at(-1).name, 'worktree_panel_target');
-      assert.equal(calls.at(-1).args.base, task.baseline.base);
-      const revisionInput = { task: task.task, expectedNonce: task.nonce, expectedFingerprint: reviewed.fingerprint,
-        brief: 'Explicit authorized revision; preserve worktree and prior changes.', model: 'fixture/model', thinking: 'low' };
-      const revise = registered.get('delegate_revise');
-      const submitsBeforeRevision = calls.filter(c => c.name === 'pueue_submit').length;
-      for (const state of ['RUNNING', 'QUEUED', 'UNKNOWN', 'ADMISSION_UNKNOWN', 'KILLED']) {
-        phase = state;
-        await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /not confirmed/);
-      }
-      phase = 'EXITED'; exitCode = 7;
-      await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /not confirmed/);
-      exitCode = 0; cancellationRequested = true;
-      await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /not confirmed/);
-      cancellationRequested = false; absent = true;
-      await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /not confirmed/);
-      absent = false;
-      const originalResultPath = join(task.artifacts, 'result.json'), originalResult = await readFile(originalResultPath, 'utf8');
-      await writeFile(originalResultPath, JSON.stringify({ code: 0, integrityError: 'fixture integrity failure' }));
-      await assert.rejects(revise.execute('revision', revisionInput, undefined, undefined, ctx), /evidence incomplete/);
-      await writeFile(originalResultPath, originalResult);
-      assert.equal(calls.filter(c => c.name === 'pueue_submit').length, submitsBeforeRevision);
-      const revision = JSON.parse((await revise.execute('revision', revisionInput, undefined, undefined, ctx)).content[0].text);
-      assert.equal(revision.task, task.task); assert.equal(revision.worktree, task.worktree);
-      assert.notEqual(revision.nonce, task.nonce);
-      const revisionRender = revise.renderResult({ content: [{ type: 'text', text: JSON.stringify(revision) }] },
-        { expanded: true, isPartial: false }, theme).render(160).join('\n');
-      assert.match(revisionRender, /Queued · Pueue #2/);
-      assert.match(revisionRender, new RegExp(revision.attempt));
-      assert.doesNotMatch(revisionRender, /fixture\/model|thinking:/);
-      const revisionCall = revise.renderCall(revisionInput, theme).render(160).join('\n');
-      assert.match(revisionCall, /Subagent · revision/); assert.match(revisionCall, /fixture\/model/);
-      assert.equal(revisionCall.split('\n').map(line => line.trimEnd()).join('\n'), 'Subagent · revision\nfixture/model · requested thinking: low');
-      const compactRevision = revise.renderResult({ content: [{ type: 'text', text: JSON.stringify(revision) }] },
-        { expanded: false, isPartial: false }, theme).render(160).join('\n');
-      assert.equal(compactRevision.trimEnd(), 'Queued · Pueue #2');
-      assert.deepEqual(calls.at(-1).args.argv, [f.runtime.launcher, f.runtimePath, task.task, revision.attempt]);
-      await assert.rejects(revise.execute('stale', revisionInput, undefined, undefined, ctx), /nonce changed/);
-      await run(f.runtimePath, task.task, revision.attempt);
-      const revisedReview = JSON.parse((await registered.get('delegate_review').execute('review', { task: task.task, openDiff: false }, undefined, undefined, ctx)).content[0].text);
-      assert.equal(revisedReview.attempt, revision.attempt);
-      assert.equal(revisedReview.report.path, join(revision.artifacts, 'report.md'));
-      assert.equal(revisedReview.accepted, false);
-      const correction = JSON.parse((await feedbackTool.execute('correction', { ...feedbackInput, supersedes: recorded.id,
-        rationale: 'Historical attempt correction after revision.' }, undefined, undefined, ctx)).content[0].text);
-      assert.equal((await json(correction.path)).attempt, null);
-      assert.equal((await json(correction.path)).supersedes, recorded.id);
-      assert.deepEqual(await json(recorded.path), feedback, 'Correction preserves the original record');
-      const revisionFeedback = JSON.parse((await feedbackTool.execute('revision-feedback', { ...feedbackInput,
-        expectedNonce: revision.nonce, reviewedFingerprint: revisedReview.fingerprint }, undefined, undefined, ctx)).content[0].text);
-      assert.equal((await json(revisionFeedback.path)).attempt, revision.attempt);
-      assert.equal((await json(revisionFeedback.path)).artifacts.directory, revision.artifacts);
-      await assert.rejects(feedbackTool.execute('cross-attempt', { ...feedbackInput, expectedNonce: revision.nonce,
-        supersedes: recorded.id }, undefined, undefined, ctx), /same attempt/);
-      phase = 'RUNNING';
-      await assert.rejects(feedbackTool.execute('active-feedback', feedbackInput, undefined, undefined, ctx), /known terminal/);
-      phase = 'EXITED'; exitCode = 7;
-      const failedFeedback = JSON.parse((await feedbackTool.execute('failed-feedback', { ...feedbackInput,
-        expectedNonce: revision.nonce, reviewStatus: 'not_reviewed', correctness: 'not_assessed' }, undefined, undefined, ctx)).content[0].text);
-      assert.equal((await json(failedFeedback.path)).execution.exitCode, 7);
-      exitCode = 0;
-      await assert.rejects(feedbackTool.execute('foreign-feedback', feedbackInput, undefined, undefined,
-        { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => 'fork' } }), /not owned/);
-      submissionFailure = true;
-      const nextRevision = { ...revisionInput, expectedNonce: revision.nonce, expectedFingerprint: revisedReview.fingerprint };
-      const revisionSubmits = calls.filter(c => c.name === 'pueue_submit').length;
-      await assert.rejects(revise.execute('uncertain-revision', nextRevision, undefined, undefined, ctx), /UNKNOWN/);
-      assert.equal(tasksFrom(entries).get(task.task).nonce, undefined, 'Uncertain revision clears old binding instead of granting another launch');
-      await assert.rejects(revise.execute('duplicate-revision', nextRevision, undefined, undefined, ctx), /binding unavailable/);
-      assert.equal(calls.filter(c => c.name === 'pueue_submit').length, revisionSubmits + 1);
-      const before = calls.filter(c => c.name === 'pueue_submit').length;
-      await assert.rejects(registered.get('delegate_task').execute('uncertain', input(f.repo), undefined, undefined, ctx), /UNKNOWN/);
-      assert.equal(calls.filter(c => c.name === 'pueue_submit').length, before + 1, 'No automatic retry on a real error envelope');
-      assert.equal(entries.at(-1).data.nonce, undefined, 'Failed admission never receives an invented binding');
-    } finally {
-      if (previous === undefined) delete process.env.PI_DELEGATE_RUNTIME; else process.env.PI_DELEGATE_RUNTIME = previous;
-    }
-  });
-  await assert.rejects(review.execute('call', { task: 'foreign' }, undefined, undefined, {
-    sessionManager: { getSessionFile: () => '/other.jsonl', getSessionId: () => 'fork', getBranch: () => [
-      { type: 'custom', customType: ENTRY, data: { id: 'foreign', owner: who } } ] },
-  }), /not owned/);
-});

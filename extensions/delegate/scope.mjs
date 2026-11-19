@@ -3,16 +3,22 @@
 import { spawn } from 'node:child_process';
 import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runtimeFrom, json, attemptDirectory, envFor } from './core.mjs';
+import { runtimeFrom, json, attemptDirectory, envFor, assertOpen } from './core.mjs';
 import { recordContainment, scopeName } from './containment.mjs';
 import { run } from './run.mjs';
 import { timestampLine } from './logging.mjs';
+import { withTaskLock } from './lock.mjs';
 
 export async function scopedRun(runtimePath, id, attempt, inside = false) {
+  const runtime = await runtimeFrom(runtimePath);
+  return withTaskLock(runtime, id, true, () => runScope(runtimePath, id, attempt, inside));
+}
+async function runScope(runtimePath, id, attempt, inside) {
   const runtime = await runtimeFrom(runtimePath), unit = scopeName(id, attempt);
   if (runtime.containmentProtocol !== 1 || !isAbsolute(runtime.systemdRun ?? '')) throw new Error('Attempt scope runtime unavailable');
   const directory = join(runtime.state, id), task = await json(join(directory, 'task.json'));
-  if (task.id !== id || task.directory !== directory) throw new Error('Scope task identity mismatch');
+  if (task.version !== 2 || task.id !== id || task.directory !== directory) throw new Error('Disposable scope task identity mismatch');
+  await assertOpen(task);
   attemptDirectory(task, attempt); // Validate before invoking systemd.
   if (inside) {
     await recordContainment(task, attempt);

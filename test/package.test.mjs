@@ -8,7 +8,7 @@ import { loadSkillsFromDir } from '../node_modules/@earendil-works/pi-coding-age
 import { discoverAndLoadExtensions } from '../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-test('package declares the cleanup skill and Pi validates its portable frontmatter without running inventory', async () => {
+test('package declares a portable delegate workflow/cleanup manual without running inventory', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.pi.skills, ['./skills/delegate-cleanup']);
   assert.ok(manifest.files.includes('skills/delegate-cleanup'));
@@ -17,7 +17,7 @@ test('package declares the cleanup skill and Pi validates its portable frontmatt
   assert.deepEqual(loaded.skills.map(s => s.name), ['delegate-cleanup']);
   assert.match(loaded.skills[0].description, /separately authorized/);
 });
-test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory autodiscovery loads each once without starting resources', async () => {
+test('root package loads four extensions once, exposes only five delegate tools and bounds model-facing prose', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.pi.extensions, ['./extensions/worktree-panel/index.ts', './extensions/pueue/index.ts', './extensions/repo-snapshot/index.ts', './extensions/delegate/index.ts']);
   assert.equal(manifest.dependencies, undefined);
@@ -30,50 +30,29 @@ test('root manifest exposes exactly four entries; Pi 1.3.0 extension-directory a
     const loaded = await discoverAndLoadExtensions([], cwd, agentDir);
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
-    const toolNames = loaded.extensions.flatMap(e => [...e.tools.keys()]);
-    assert.deepEqual(toolNames.sort(), ['delegate_cleanup', 'delegate_dispose', 'delegate_feedback', 'delegate_finalize', 'delegate_models', 'delegate_prune', 'delegate_reconcile', 'delegate_resume', 'delegate_retention_enroll', 'delegate_retire', 'delegate_review', 'delegate_revise', 'delegate_task', 'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
-    assert.equal(new Set(toolNames).size, toolNames.length);
-
-    // Bound model-facing prose, including repeated parameter descriptions.
-    // Character budgets are deterministic; actual token counts depend on the model.
     const tools = new Map(loaded.extensions.flatMap(e => [...e.tools].map(([name, tool]) => [name, tool.definition])));
+    assert.deepEqual([...tools.keys()].sort(), ['delegate_cleanup', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task',
+      'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
+    assert.equal(loaded.extensions.flatMap(e => [...e.tools.keys()]).length, tools.size);
     let descriptionCharacters = 0;
-    const countDescriptions = value => {
+    const count = value => {
       if (!value || typeof value !== 'object') return;
       for (const [key, child] of Object.entries(value)) {
         if (key === 'description' && typeof child === 'string') descriptionCharacters += child.length;
-        else countDescriptions(child);
+        else count(child);
       }
     };
     for (const tool of tools.values()) {
       assert.ok(tool.description.length <= 1600, `${tool.name}: keep descriptions concise`);
-      countDescriptions({ description: tool.description, parameters: tool.parameters });
+      count({ description: tool.description, parameters: tool.parameters });
     }
-    // Lifecycle tools, including separate operator-attested retirement, carry
-    // bounded consent contracts; full guidance stays in docs.
-    assert.ok(descriptionCharacters <= 13500, `model-facing description budget exceeded: ${descriptionCharacters}`);
-    assert.match(tools.get('delegate_task').description, /NOT an OS sandbox/);
-    assert.match(tools.get('delegate_review').description, /main agent must review the entire trackedPatch, every untracked file/);
-    assert.match(tools.get('delegate_review').description, /current checks.*delegate_feedback/);
-    assert.equal(tools.get('delegate_retention_enroll').exposure, 'model-only');
-    assert.equal(tools.get('delegate_retention_enroll').executionMode, 'sequential');
-    assert.match(tools.get('delegate_retention_enroll').description, /One-time opt-in enrollment/);
-    assert.equal(tools.get('delegate_retire').exposure, 'model-only');
-    assert.equal(tools.get('delegate_retire').executionMode, 'sequential');
-    assert.match(tools.get('delegate_retire').description, /Not verified terminal\/stopped evidence/);
-    assert.equal(tools.get('delegate_prune').exposure, 'model-only');
-    assert.equal(tools.get('delegate_prune').executionMode, 'sequential');
-    assert.match(tools.get('delegate_prune').description, /completed delegate_dispose/);
-    assert.match(tools.get('delegate_prune').description, /fresh terminal\/stopped evidence/);
-    assert.match(tools.get('delegate_cleanup').description, /read-only assessment/);
-    assert.match(tools.get('delegate_cleanup').description, /no custody transfer or workers/);
-    assert.match(tools.get('delegate_cleanup').description, /fresh interactive confirmation/);
-    assert.match(tools.get('delegate_reconcile').description, /fresh interactive user confirmation/);
-    assert.match(tools.get('delegate_reconcile').description, /foreground-only custody/);
-    assert.match(tools.get('delegate_resume').description, /fresh interactive user confirmation/);
-    assert.match(tools.get('delegate_resume').description, /cgroup-v2 proof.*descendants stopped/);
-    assert.match(tools.get('delegate_finalize').description, /fresh interactive user confirmation/);
-    assert.match(tools.get('delegate_finalize').description, /EVERY attempt/);
+    assert.ok(descriptionCharacters <= 8000, `model-facing prose budget exceeded: ${descriptionCharacters}`);
+    assert.match(tools.get('delegate_task').description, /not an OS sandbox/);
+    assert.match(tools.get('delegate_review').description, /main agent reads the full patch/);
+    assert.match(tools.get('delegate_cleanup').description, /No archive/);
+    for (const name of ['delegate_task', 'delegate_review', 'delegate_revise', 'delegate_cleanup']) {
+      assert.equal(tools.get(name).exposure, 'model-only'); assert.equal(tools.get(name).executionMode, 'sequential');
+    }
     assert.match(tools.get('pueue_submit').description, /NEVER include secrets/);
     assert.match(tools.get('pueue_status').description, /UNKNOWN\/absence never authorizes retry\/takeover/);
     assert.match(tools.get('pueue_cancel').description, /explicit user confirmation/);

@@ -19,7 +19,7 @@ export async function runClaude(runtime, runtimePath, task, plan, directory, att
     '--disable-slash-commands', '--strict-mcp-config', '--mcp-config', config,
     '--tools', '', '--allowedTools', 'mcp__delegate__*', '--permission-mode', 'dontAsk',
     '--permission-prompts', 'none', '--no-chrome', '--output-format', 'stream-json',
-    '--verbose', '--include-partial-messages',
+    '--verbose', '--include-partial-messages', '--no-session-persistence',
     '--session-id', attempt ?? task.id, '--name', `delegate-${task.id}`,
     '--append-system-prompt', await readFile(join(here, 'policy.md'), 'utf8')];
   const start = performance.now();

@@ -1,81 +1,54 @@
 # pi-repo
 
-Source-only [Pi](https://pi.dev) extension package (Node 24+, tested with Pi 1.3.0).
+Source-only [Pi](https://pi.dev) extensions (Node 24+, tested with Pi 1.3.0):
 
-- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-files panel and read-only diff viewer for linked worktrees and branches.
-- [`extensions/pueue`](extensions/pueue/README.md): thin adapter for **Rust Pueue 4.0.4 CLI + pueued**, with session-owned jobs and retained evidence.
-- [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand, read-only Git snapshot. No watcher, fetch, or per-prompt scan.
-- [`extensions/delegate`](extensions/delegate/README.md): optional retained-worktree workers over Pueue: Anthropic via Claude Code, local/OpenAI via Pi, a shared exact-route catalogue, session-labelled worktrees, explicit check plans, review/revision evidence, explicitly confirmed stopped-attempt recovery, opt-in foreground-only cross-session reconciliation, retained caller feedback, recoverable task finalization, opt-in one-shot disposal, cleanup-only historical operations, and a separate later retained-artifact prune/claim-compaction operation. Later pruning accepts only modern completed disposal records with independently bound canonical repository identity; the recovery-only legacy exception applies solely to the older one-shot cleanup/disposal route and never enables pruning.
-- [`skills/delegate-cleanup`](skills/delegate-cleanup/SKILL.md): read-only ownership/allocation inventory and explicit cleanup guidance; no age-based purge or deletion authority.
+- [`extensions/worktree-panel`](extensions/worktree-panel/README.md): changed-file
+  panel and read-only diff viewer.
+- [`extensions/pueue`](extensions/pueue/README.md): thin Rust Pueue 4.0.4 adapter
+  with session-owned jobs and retained backend evidence.
+- [`extensions/repo-snapshot`](extensions/repo-snapshot/README.md): on-demand
+  read-only Git status; no fetch, watcher or per-prompt scan.
+- [`extensions/delegate`](extensions/delegate/README.md): disposable isolated
+  workers, model discovery, result review, explicit follow-ups and one-step cleanup.
+- [`skills/delegate-cleanup`](skills/delegate-cleanup/SKILL.md): the agent manual
+  for result handoff and safe disposal, plus a read-only disk inventory.
+
+## Delegate workflow
+
+```text
+start → wait → collect/review → apply or discard → keep needed summary → cleanup
+```
+
+After the main agent has everything it needs, the delegate worktree, build output
+and task-local temporary records can go away. **No archive is made.** There is no
+separate finalization/disposal/retention workflow. Orphans may be inspected,
+continued or discarded without session adoption; current workers/checks and
+foreground build users must still be idle before removing their workspace.
+
+The five tools are `delegate_models`, `delegate_task`, `delegate_review`,
+`delegate_revise` and `delegate_cleanup`. Neither exit zero nor collecting a report
+is acceptance. The main agent reviews all changes and preserves needed work before
+cleanup; integration/publication retain the repository's approval requirements.
+
+Anthropic routes use Claude Code; local/OpenAI routes use Pi. No automatic retry,
+model fallback, integration, publication, SDK setup or background cleanup occurs.
+Shared SDK/cache symlink targets and main/originating sessions are not deleted.
+Operational plans/journals and unknown provider-outcome evidence are not disposable
+scratch. Existing legacy records are not migrated or deleted by installation.
 
 ## Installation
 
-Try the root package for one invocation:
-
 ```sh
 pi --no-extensions -e /absolute/path/to/pi-repo
-```
-
-Or install it persistently:
-
-```sh
+# Or persistently:
 pi install /absolute/path/to/pi-repo
-# Alternatively, use a reviewed Git revision:
-pi install git:github.com/dunv/pi-repo@REVISION
+pi install git:github.com/dunv/pi-repo@REVIEWED_REVISION
 ```
 
-The root manifest exposes four entry points. Choose one installation route; do
-not also install its children or the former standalone worktree-panel/delegate
-extensions. Pi's actual loader tests discovery through an extension-directory
-symlink and checks that each tool is registered once.
-
-Pueue requires an externally configured matching backend and the explicit paths
-described in its README. Delegation additionally requires `PI_DELEGATE_RUNTIME`,
-including operator-defined verification commands. Loading the package does not
-start workers, install software, manage services, or change Pi settings.
-
-Ordinary Pueue submissions use session-specific groups with three slots, not a
-global machine cap. Delegate workers additionally share six worker locks and one
-heavy-check lock. There is no automatic retry, integration, publication, merge,
-or cleanup. After authorized integration/discard, `delegate_finalize` explicitly
-archives and removes a task worktree/branch with fresh confirmation and stopped-worker
-proof, retaining diagnostic evidence and build state. Separately confirmed
-`delegate_dispose` can permanently remove selected finalized build/recovery payloads;
-it never purges task identities, sessions or audit evidence. A separate later
-`delegate_prune` operation, requiring a coherent completed modern disposal history,
-independently bound canonical repository identity and its own retention protocol/
-confirmation, can remove only selected still-retained payloads or compact the disposal
-file inventory while preserving permanent identity/evidence. `legacyRecovery` never
-makes a task eligible for this later operation.
-Opt-in `delegate_cleanup`
-assesses and separately confirms those lifecycle operations across sessions or
-when a linked source checkout disappeared, without adopting custody or enabling
-workers. Historical finalized archives lacking durable repository identity stay
-blocked by default; matching commits or a clone are not sufficient. A separately
-enabled `legacyRecoveryDisposalProtocol: 1` permits explicitly confirmed loss of
-only finalized legacy recovery copies, recording historical identity as unverified
-rather than fabricating it. It retains terminal/stopped-worker gates, audit records
-and Mailhub unknown-outcome barriers; it does not enable source/worktree or build
-deletion. Reports and exit zero are evidence, not acceptance. See the component
-READMEs for configuration, authorization boundaries and limitations.
-
-A separately enabled `retirementProtocol: 1` adds `delegate_retire` for explicit
-operator-attested abandonment of obsolete prior-boot/uncontained drafts and
-complete revision chains. It archives before worktree/ref removal and never
-manufactures verified completion or stopped proof. Exact admission/repository
-identity, fresh backend/process observations and an independent human idleness
-confirmation remain mandatory. Original evidence, recovery and builds stay;
-ordinary cleanup/disposal gates are unchanged. See the delegate README for
-limitations and deployment requirements. Loading source does not enable it.
-
-Separately configured automatic retention adds one-time
-`delegate_retention_enroll` consent for completed, repository-bound payloads.
-A weekly operator-managed runner can then expire sealed build outputs after
-7 days and recovery archives after 30 days without further dialogs. It never
-enrolls arbitrary old tasks, deletes original sessions/audit records, clears an
-interrupted claim or overrides protected-content/identity checks. Source, Nix
-scheduling and per-task enrollment are separate approvals; see the delegate
-README. Default CLI mode is dry-run and default scheduling is disabled.
+The root manifest exposes four entry points. Use one package installation, not
+separate copies of its child extensions. Pueue and delegation require an operator-
+configured backend/runtime; merely loading the package starts no resources.
+See the component READMEs for configuration and boundaries.
 
 ## Development
 
@@ -85,17 +58,15 @@ npm run check
 npm pack --dry-run
 ```
 
-Runtime npm dependencies: **none**. Pi host modules are peers, not bundled copies.
-Dev-only host packages are pinned to 1.3.0. Tests use fake backends/executables,
-temporary Git repositories, real kernel locks and Pi's actual extension loader;
-no live daemon, model call or remote mutation. Test files run serially because
-retirement tests observe host-wide process-reference visibility; unrelated test
-process churn must not invalidate a live observation mid-operation. Delegate
-tests require Linux, Bash, Git and `flock`. The GitHub workflow runs the root checks.
+Runtime npm dependencies: **none**. Pi host modules are peers; development host
+packages are pinned to 1.3.0. Tests use temporary repositories, fake backends and
+worker executables, real kernel locks and Pi's actual loader. They do not contact
+models, mutate real task data or activate a system. Linux, Git, Bash and flock are
+required for delegate tests. The GitHub workflow runs the root checks.
 
 ## Provenance and license
 
 MIT, copyright Daniel Unverricht. Git history retains the original
 [`pi-worktree-panel`](https://github.com/dunv/pi-worktree-panel) history through
-`7a84ea8e795ffc5fb5dd6073a1495e768aae0df0`. Root packaging supersedes the original
-standalone package installation instructions.
+`7a84ea8e795ffc5fb5dd6073a1495e768aae0df0`. Root packaging supersedes the former
+standalone extension installation instructions.
