@@ -10,9 +10,10 @@ import { recordContainment, scopeName } from '../containment.mjs';
 import { prepare, prepareRevision, snapshot, save, json, attemptDirectory, workerBackend, validateInput } from '../core.mjs';
 import { run } from '../run.mjs';
 import { createTools, tools } from '../claude-tools.mjs';
+import { environmentFixture } from './environment-fixture.mjs';
 const executable = name => execFileSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
 const gitBin = executable('git');
-const spec = repo => ({ repo, backend: 'claude', model: 'claude-sonnet-4-6', thinking: 'high', brief: 'SECRET_BRIEF: edit source.txt only.', profile: 'fixture', checks: [{ kind: 'test', targets: ['unit:test'] }] });
+const spec = repo => ({ repo, environment: 'implementation-checked', backend: 'claude', model: 'claude-sonnet-4-6', thinking: 'high', brief: 'SECRET_BRIEF: edit source.txt only.', profile: 'fixture', checks: [{ kind: 'test', targets: ['unit:test'] }] });
 const who = { session: 'session', file: '/fixture/session.jsonl' };
 async function fixture(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'delegate-claude-')), repo = join(dir, 'repo with spaces');
@@ -31,6 +32,7 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     const runtime = { git: gitBin, node: process.execPath, pi: claude, claude, flock: executable('flock'), ssh: '/fixture/ssh',
       home: dir, state: join(dir, 'state'), launcher: '/fixture/launcher', path: process.env.PATH, revisionProtocol: 1,
       profiles: { fixture: { command: verifier, args: ['{worktree}', '{outputBase}', '{kind}', '{targets}'] } } };
+    Object.assign(runtime, environmentFixture(runtime, executable('env')));
     const runtimePath = join(dir, 'runtime.json'); await save(runtimePath, runtime);
     await fn({ dir, repo, git, runtime, runtimePath });
   } finally { await rm(dir, { recursive: true, force: true }); }

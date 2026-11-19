@@ -25,10 +25,16 @@ separate finalization/disposal/retention workflow. Orphans may be inspected,
 continued or discarded without session adoption; current workers/checks and
 foreground build users must still be idle before removing their workspace.
 
-The five tools are `delegate_models`, `delegate_task`, `delegate_review`,
-`delegate_revise` and `delegate_cleanup`. Neither exit zero nor collecting a report
+The six tools are `delegate_environments`, `delegate_models`, `delegate_task`,
+`delegate_review`, `delegate_revise` and `delegate_cleanup`. Neither exit zero nor collecting a report
 is acceptance. The main agent reviews all changes and preserves needed work before
 cleanup; integration/publication retain the repository's approval requirements.
+
+The [environment contract v1](extensions/delegate/environment-contract.md) separates
+source-review, implementation and implementation-with-checks capabilities from
+operator-provisioned toolchains and verification profiles. Selection is explicit
+and frozen; tool restrictions are enforced for both backends. Host network and
+HOME credentials remain accessible to trusted processes: these are not OS sandboxes.
 
 Anthropic routes use Claude Code; local/OpenAI routes use Pi. No automatic retry,
 model fallback, integration, publication, SDK setup or background cleanup occurs.

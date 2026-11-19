@@ -65,7 +65,7 @@ test('policy stays bounded and retains the agreed decision rules and capability 
   for (const text of ['benefits outweigh the costs', 'fewest agents', 'Focused summarization', 'Better model fit',
     'Parallel progress', 'Context isolation', 'Independent examination', 'meaningfully verify',
     'inherently sequential', 'large prompt alone', 'Agent agreement is not proof',
-    'source references and uncertainties', 'not additional capabilities or authorization', 'enforced read-only mode']) {
+    'source references and uncertainties', 'not additional capabilities or authorization', 'source-review enforces read-only source tools']) {
     assert.ok(policy.includes(text), `missing policy principle: ${text}`);
   }
 });
@@ -96,12 +96,12 @@ test('brief template distinguishes worker rules, referenced guidance and invoker
   }
 });
 
-test('structured brief guidance leaves task and follow-up APIs as free-form text', async () => {
+test('structured brief guidance keeps brief text free-form alongside explicit environment selection', async () => {
   const loaded = await loadExtensions([extension], process.cwd());
   assert.deepEqual(loaded.errors, []);
   const tools = loaded.extensions[0].tools;
   const expected = {
-    delegate_task: ['repo', 'brief', 'backend', 'model', 'thinking', 'profile', 'checks'],
+    delegate_task: ['repo', 'brief', 'backend', 'model', 'thinking', 'environment', 'profile', 'checks'],
     delegate_revise: ['task', 'expectedNonce', 'expectedFingerprint', 'brief', 'backend', 'model', 'thinking'],
   };
   for (const [name, fields] of Object.entries(expected)) {

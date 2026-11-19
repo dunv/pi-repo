@@ -17,7 +17,7 @@ test('package declares a portable delegate workflow/cleanup manual without runni
   assert.deepEqual(loaded.skills.map(s => s.name), ['delegate-cleanup']);
   assert.match(loaded.skills[0].description, /separately authorized/);
 });
-test('root package loads four extensions once, exposes only five delegate tools and bounds model-facing prose', async () => {
+test('root package loads four extensions once, exposes six delegate tools and bounds model-facing prose', async () => {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.pi.extensions, ['./extensions/worktree-panel/index.ts', './extensions/pueue/index.ts', './extensions/repo-snapshot/index.ts', './extensions/delegate/index.ts']);
   assert.equal(manifest.dependencies, undefined);
@@ -31,7 +31,7 @@ test('root package loads four extensions once, exposes only five delegate tools 
     assert.deepEqual(loaded.errors, []); assert.deepEqual(loaded.warnings ?? [], []);
     assert.equal(loaded.extensions.length, 4);
     const tools = new Map(loaded.extensions.flatMap(e => [...e.tools].map(([name, tool]) => [name, tool.definition])));
-    assert.deepEqual([...tools.keys()].sort(), ['delegate_cleanup', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task',
+    assert.deepEqual([...tools.keys()].sort(), ['delegate_cleanup', 'delegate_environments', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task',
       'pueue_cancel', 'pueue_result', 'pueue_status', 'pueue_submit', 'repo_snapshot', 'worktree_panel_target']);
     assert.equal(loaded.extensions.flatMap(e => [...e.tools.keys()]).length, tools.size);
     let descriptionCharacters = 0;

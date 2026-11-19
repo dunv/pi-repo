@@ -9,9 +9,10 @@ import { appendFile } from "node:fs/promises";
 import { observeMetrics, metricsLine } from "./metrics.mjs";
 import { toolSummary } from "./progress.mjs";
 import { observeInvalidTools, INVALID_TOOL_ARTIFACT } from "./invalid-tools.mjs";
+import { assertTaskEnvironment, assertTool, readable, workerTools } from "./environments.mjs";
 
 const exec = promisify(execFile);
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
   const runtimePath = process.env.PI_DELEGATE_RUNTIME, id = process.env.PI_DELEGATE_TASK, attempt = process.env.PI_DELEGATE_ATTEMPT;
   // Print mode only emits the final answer on stdout. Mirror progress on stderr
   // so Pueue/Pui can follow it without changing report.md or exposing thinking.
@@ -58,17 +59,29 @@ export default function (pi: ExtensionAPI) {
   async function context() {
     if (!id || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("Missing task identity");
     const runtime = await runtimeFrom(runtimePath);
-    return { runtime, task: await json(join(runtime.state, id, "task.json")) };
+    const task = await json(join(runtime.state, id, "task.json"));
+    assertTaskEnvironment(task, runtime);
+    return { runtime, task };
   }
+  const startup = await context();
+  pi.on("session_start", () => { pi.setActiveTools(workerTools(startup.task)); });
   pi.on("tool_call", async event => {
-    if (["write", "edit"].includes(event.toolName)) {
+    try {
       const { task } = await context();
-      const path = (event.input as { path?: string }).path;
-      if (typeof path !== "string") return { block: true, reason: "A source path is required" };
-      try { await writable(task, path); } catch (error) { return { block: true, reason: String(error) }; }
-    }
+      if (task.execution) {
+        assertTool(task, event.toolName);
+        if (["read", "grep", "find", "ls"].includes(event.toolName)) {
+          await readable(task, (event.input as { path?: string }).path ?? ".");
+        }
+      }
+      if (["write", "edit"].includes(event.toolName)) {
+        const path = (event.input as { path?: string }).path;
+        if (typeof path !== "string") return { block: true, reason: "A source path is required" };
+        await writable(task, path);
+      }
+    } catch (error) { return { block: true, reason: String(error) }; }
   });
-  pi.registerTool({
+  if (workerTools(startup.task).includes("delegate_check")) pi.registerTool({
     name: "delegate_check", label: "Run planned verification", executionMode: "sequential",
     description: "Run one orchestrator-planned verification check by zero-based index. All delegated heavy checks share a machine-wide lock. No arbitrary commands, implicit SDK bootstrap, timeout or retry. Check output/evidence stays in task artifacts. Do not loop on failures; report blockers.",
     parameters: Type.Object({ index: Type.Integer({ minimum: 0, maximum: 7 }) }),

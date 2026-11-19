@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { save, envFor } from './core.mjs';
 import { runClaudeStream } from './claude-stream.mjs';
 import { timestampLine } from './logging.mjs';
+import { environmentCommand, environmentPath, environmentInstructions } from './environments.mjs';
 
 export async function runClaude(runtime, runtimePath, task, plan, directory, attempt) {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -21,10 +22,11 @@ export async function runClaude(runtime, runtimePath, task, plan, directory, att
     '--permission-prompts', 'none', '--no-chrome', '--output-format', 'stream-json',
     '--verbose', '--include-partial-messages', '--no-session-persistence',
     '--session-id', attempt ?? task.id, '--name', `delegate-${task.id}`,
-    '--append-system-prompt', await readFile(join(here, 'policy.md'), 'utf8')];
+    '--append-system-prompt', await readFile(join(here, 'policy.md'), 'utf8') + environmentInstructions(task)];
   const start = performance.now();
-  const { reply, streamError, ...result } = await runClaudeStream(runtime.claude, args,
-    { cwd: task.worktree, env: envFor(runtime) }, join(directory, 'brief.md'), join(directory, 'worker.log'));
+  const launch = environmentCommand(task, runtime, runtime.claude, args);
+  const { reply, streamError, ...result } = await runClaudeStream(launch.command, launch.args,
+    { cwd: task.worktree, env: envFor({ ...runtime, path: environmentPath(task, runtime) }) }, join(directory, 'brief.md'), join(directory, 'worker.log'));
   const elapsedMs = performance.now() - start;
   try {
     if (reply) await save(join(directory, 'claude-result.json'), reply);

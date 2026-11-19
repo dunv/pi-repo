@@ -17,6 +17,7 @@ import { loadWorkspace, assertWorkspaceIdle, inspectWorkspace, cleanupWorkspace 
 import { assertNoPayloadMounts } from '../repository.mjs';
 import { project } from '../../pueue/backend.ts';
 import { scopedRun } from '../scope.mjs';
+import { environmentFixture } from './environment-fixture.mjs';
 
 const executable = name => execFileSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
 const git = executable('git'), flock = executable('flock');
@@ -32,7 +33,8 @@ async function fixture(fn) {
     const runtime = { git, flock, node: process.execPath, pi: '/fixture/pi', ssh: '/fixture/ssh', home: dir, state: join(dir, 'state'),
       launcher: '/fixture/launcher', path: process.env.PATH, disposableProtocol: 1, revisionProtocol: 1, containmentProtocol: 1, systemdRun: '/fixture/systemd-run',
       profiles: { fixture: { command: '/fixture/check', args: ['{targets}'] } } };
-    const spec = { repo, namespace, model: 'fixture/model', thinking: 'low', profile: 'fixture', checks: [{ kind: 'test', targets: ['unit:test'] }], brief: 'Synthetic disposable work.' };
+    Object.assign(runtime, environmentFixture(runtime, executable('env')));
+    const spec = { repo, namespace, environment: 'implementation-checked', model: 'fixture/model', thinking: 'low', profile: 'fixture', checks: [{ kind: 'test', targets: ['unit:test'] }], brief: 'Synthetic disposable work.' };
     const task = { ...await prepare(spec, runtime, who), nonce: randomUUID() };
     await save(join(task.directory, 'submission.json'), { nonce: task.nonce }); await writeTask(task);
     await writeFile(join(task.worktree, 'source.txt'), 'worker change\n');
@@ -240,14 +242,14 @@ async function host(f) {
     close: () => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
 }
 
-test('real Pi API: five tools, orphan review/follow-up, current checks, stale/uncertain admission fencing and one-step cleanup', () => fixture(async f => {
+test('real Pi API: six tools, orphan review/follow-up, current checks, stale/uncertain admission fencing and one-step cleanup', () => fixture(async f => {
   await writeFile(join(f.task.directory, 'report.md'), 'Untrusted worker report');
   const fingerprint = await snapshot(f.task, f.runtime);
   await save(join(f.task.directory, 'result.json'), { code: 0, fingerprint });
   await save(join(f.task.directory, `check-0-${randomUUID()}.json`), { index: 0, passed: true, after: fingerprint });
   const h = await host(f);
   try {
-    assert.deepEqual([...h.tools.keys()].sort(), ['delegate_cleanup', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
+    assert.deepEqual([...h.tools.keys()].sort(), ['delegate_cleanup', 'delegate_environments', 'delegate_models', 'delegate_review', 'delegate_revise', 'delegate_task']);
     const review = JSON.parse((await h.invoke('delegate_review', { task: f.task.id })).content[0].text);
     assert.equal(review.status.phase, 'ABSENT'); assert.equal(review.accepted, false); assert.deepEqual(review.missingChecks, []);
     assert.match(await readFile(review.trackedPatch, 'utf8'), /worker change/); assert.equal(review.cleanup.tool, 'delegate_cleanup');

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { readdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
+import { environments } from "./environments.mjs";
 import { configuration } from "../pueue/backend.ts";
 import { ENTRY, prepare, prepareRevision, attemptDirectory, runtimeFrom, json, privateJSON, save, writeTask, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
 import { withTaskLock } from "./lock.mjs";
@@ -67,7 +68,7 @@ export default function (pi: ExtensionAPI) {
       await writeTask({ ...task, nonce: state.nonce });
       guard(start, signal);
       pi.appendEntry(ENTRY, { ...task, nonce: state.nonce });
-      return response({ task: task.id, attempt: task.attempt, ...state, route: task.route, backend: task.backend ?? "pi", model: task.model, thinking: task.thinking,
+      return response({ task: task.id, attempt: task.attempt, ...state, environment: task.execution ?? null, route: task.route, backend: task.backend ?? "pi", model: task.model, thinking: task.thinking,
         worktree: task.worktree, artifacts: attemptDirectory(task, task.attempt), baseline: { base: task.base, sourceHead: task.sourceHead, sourceFingerprint: task.sourceFingerprint } });
     } catch {
       throw new Error(`Workspace ${task.id} retained at ${task.directory}. Submission may be UNKNOWN; inspect current jobs. Never resubmit automatically.`);
@@ -85,15 +86,27 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
+    name: "delegate_environments", label: "List delegate environments", exposure: "model-only", executionMode: "sequential",
+    description: "Discover operator-provided environment contract v1: source-review, implementation and implementation-checked. Reports tool capabilities, approved verification profiles and actual isolation limits; not sandbox/readiness proof. Select an explicit environment; no fallback. Model connectivity and task-network isolation are distinct.",
+    parameters: Type.Object({}),
+    async execute() {
+      const config = await runtimeFrom(process.env.PI_DELEGATE_RUNTIME), entries = environments(config);
+      if (!entries) throw new Error("Activate an environment contract v1 runtime; no fallback");
+      return response({ interfaceVersion: 1, environments: entries, readinessVerified: false });
+    },
+  });
+  pi.registerTool({
     name: "delegate_task", label: "Delegate isolated task", exposure: "model-only", executionMode: "sequential", reachesTools: () => ["pueue_submit"],
-    description: "Run explicitly authorized work in a disposable sibling worktree. Snapshots current source without changing the parent index/branch. Supply exact model/thinking, a self-contained brief, configured profile and necessary checks. No implicit SDK setup, retries, integration or publication. Workers cannot shell/commit/publish/delegate; not an OS sandbox. Main agent must review and apply/discard the result, retain needed data in its session, then call delegate_cleanup. No archive is made. Do not put operational journals/plans or irreplaceable data in disposable scratch.",
+    description: "Run explicitly authorized work in a disposable sibling worktree. Snapshots current source without changing the parent index/branch. Supply exact model/thinking, a self-contained brief and explicit environment from delegate_environments. Only implementation-checked accepts a configured verification profile and checks; other environments require no profile and empty checks. No implicit SDK setup, retries, integration or publication. Workers cannot shell/commit/publish/delegate; not an OS sandbox. Main agent must review and apply/discard the result, retain needed data in its session, then call delegate_cleanup. No archive is made. Do not put operational journals/plans or irreplaceable data in disposable scratch.",
     parameters: Type.Object({ repo: Type.String(), brief: Type.String({ minLength: 1, maxLength: 32000 }), backend: backendSchema, model: Type.String(), thinking: thinkingSchema,
-      profile: Type.String({ pattern: "^[a-zA-Z0-9_-]{1,64}$" }), checks: Type.Array(Type.Object({ kind: Type.Union([Type.Literal("test"), Type.Literal("build")]),
+      environment: Type.Union([Type.Literal("source-review"), Type.Literal("implementation"), Type.Literal("implementation-checked")]),
+      profile: Type.Optional(Type.String({ pattern: "^[a-zA-Z0-9_-]{1,64}$" })), checks: Type.Array(Type.Object({ kind: Type.Union([Type.Literal("test"), Type.Literal("build")]),
         targets: Type.Array(Type.String(), { minItems: 1, maxItems: 32 }) }), { maxItems: 8 }) }),
     renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("Subagent · task")) + `\n${args.model} · requested thinking: ${args.thinking}`, 0, 0); },
     renderResult(result, { expanded, isPartial }, theme) { return renderSubmission(result, expanded, isPartial, theme); },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, config = await runtime(), namespace = configuration(process.env)?.namespace;
+      if (config.environmentProtocol !== 1) throw new Error("Activate the environment contract v1 runtime; no fallback");
       if (!namespace) throw new Error("Pueue namespace unavailable");
       guard(start, signal);
       const task = await prepare({ ...resolveSelection(input, config, ctx.modelRegistry), namespace }, config, owner(ctx));
@@ -102,13 +115,14 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "delegate_revise", label: "Continue delegate work", exposure: "model-only", executionMode: "sequential", reachesTools: () => ["pueue_submit"],
-    description: "Explicitly start a fresh follow-up in an idle disposable workspace, including an orphan. No custody/adoption/resume protocol. Use the latest nonce and fingerprint from review, exact model/thinking and a self-contained brief. Reuses the worktree, build directory and frozen checks. Current jobs/scopes must be idle. Failed work is not automatically retried. Main agent reviews the new result and cleans up after handoff.",
+    description: "Explicitly start a fresh follow-up in an idle disposable workspace, including an orphan. No custody/adoption/resume protocol. Use the latest nonce and fingerprint from review, exact model/thinking and a self-contained brief. Reuses the worktree, build directory, frozen environment and checks. Current jobs/scopes must be idle. Failed work is not automatically retried. Main agent reviews the new result and cleans up after handoff.",
     parameters: Type.Object({ task: Type.String(), expectedNonce: Type.String({ minLength: 1 }), expectedFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
       brief: Type.String({ minLength: 1, maxLength: 32000 }), backend: backendSchema, model: Type.String(), thinking: thinkingSchema }),
     renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("Subagent · follow-up")) + `\n${args.model} · requested thinking: ${args.thinking}`, 0, 0); },
     renderResult(result, { expanded, isPartial }, theme) { return renderSubmission(result, expanded, isPartial, theme); },
     async execute(_id, input, signal, _update, ctx) {
       const start = epoch, config = await runtime();
+      if (config.environmentProtocol !== 1) throw new Error("Activate the environment contract v1 runtime; no fallback");
       return withTaskLock(config, input.task, false, async () => {
         const task = await loadWorkspace(config, input.task);
         await assertWorkspaceIdle(task, config, configuredObserver()); guard(start, signal);
@@ -152,7 +166,7 @@ export default function (pi: ExtensionAPI) {
         const names = await readdir(config.state).catch((error: any) => { if (error.code === "ENOENT") return []; throw error; });
         for (const id of names.filter((name: string) => /^[a-f0-9-]{36}$/.test(name))) {
           const task = await privateJSON(join(config.state, id, "task.json")).catch(() => null);
-          if (task?.version === 2) rows.push({ task: id, attempt: task.attempt, nonce: task.nonce, model: task.model, thinking: task.thinking, worktree: task.worktree, artifacts: task.directory });
+          if (task?.version === 2) rows.push({ task: id, environment: task.execution ?? null, attempt: task.attempt, nonce: task.nonce, model: task.model, thinking: task.thinking, worktree: task.worktree, artifacts: task.directory });
         }
         return response(rows);
       }
@@ -174,7 +188,7 @@ export default function (pi: ExtensionAPI) {
         const current = await observe(task.id), status = current.tasks.find((row: any) => row.label === `pi:${task.namespace}:${task.nonce}`);
         guard(start, signal);
         if (input.openDiff) await ctx.executeTool("worktree_panel_target", { path: task.worktree, base: task.base }, { signal });
-        return response({ task: task.id, attempt: task.attempt, route: task.route, backend: task.backend ?? "pi", status: { nonce: task.nonce, phase: status?.phase ?? "ABSENT", id: status?.id, exitCode: status?.exitCode },
+        return response({ task: task.id, attempt: task.attempt, environment: task.execution ?? null, route: task.route, backend: task.backend ?? "pi", status: { nonce: task.nonce, phase: status?.phase ?? "ABSENT", id: status?.id, exitCode: status?.exitCode },
           worker, fingerprint, trackedPatch, untracked, checks, report, sourceState, baseline: { base: task.base, sourceHead: task.sourceHead, sourceFingerprint: task.sourceFingerprint },
           worktree: task.worktree, reviewRequired: true, reviewer: "main-agent", accepted: false,
           cleanup: { tool: "delegate_cleanup", task: task.id, instruction: "After review and applying/discarding the result, keep needed data in the main session and remove this disposable workspace. No archive will be made." },

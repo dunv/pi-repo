@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, realpath, lstat, readlink, open, rm, rename } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { repositoryIdentity } from './repository.mjs';
+import { environments, selectEnvironment, assertTaskEnvironment, assertTool } from './environments.mjs';
 
 const exec = promisify(execFile);
 export const ENTRY = 'pi.delegate.task.v1';
@@ -57,6 +58,7 @@ export async function runtimeFrom(path) {
     || typeof runtime.systemdRun !== 'string' || !isAbsolute(runtime.systemdRun))) throw new Error('Invalid delegate containment runtime');
   if (runtime.disposableProtocol !== undefined && runtime.disposableProtocol !== 1) throw new Error('Invalid disposable workspace runtime');
   if (typeof runtime.path !== 'string' || runtime.path.split(':').some(p => !isAbsolute(p))) throw new Error('Invalid delegate PATH');
+  environments(runtime);
   return runtime;
 }
 export async function assertOpen(task) {
@@ -105,7 +107,8 @@ export function validateInput(input) {
   if (!isAbsolute(input.repo) || !input.brief?.trim() || input.brief.length > 32000) throw new Error('Absolute repo and bounded nonempty brief required');
   workerBackend(input);
   if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.thinking)) throw new Error('Explicit thinking level required');
-  if (typeof input.profile !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(input.profile)) throw new Error('Choose an explicitly configured verification profile');
+  if (!(input.profile === undefined && ['source-review', 'implementation'].includes(input.environment))
+    && (typeof input.profile !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(input.profile))) throw new Error('Choose an explicitly configured verification profile');
   if (!Array.isArray(input.checks) || input.checks.length > 8) throw new Error('At most eight planned checks');
   for (const check of input.checks) {
     if (!['test', 'build'].includes(check.kind) || !Array.isArray(check.targets) || !check.targets.length || check.targets.length > 32
@@ -174,7 +177,8 @@ async function captureTree(repo, runtime, directory) {
 export async function prepare(input, runtime, owner) {
   validateInput(input);
   const backend = workerBackend(input, runtime);
-  const verification = verificationProfile(runtime.profiles?.[input.profile]);
+  const execution = selectEnvironment(input, runtime);
+  const verification = execution && !execution.capabilities.checks ? undefined : verificationProfile(runtime.profiles?.[input.profile]);
   const repo = await realpath(input.repo);
   if ((await git(runtime, repo, ['rev-parse', '--show-toplevel'])).trim() !== repo) throw new Error('Select the repository root');
   const sourceHead = (await git(runtime, repo, ['rev-parse', 'HEAD'])).trim();
@@ -194,7 +198,8 @@ export async function prepare(input, runtime, owner) {
     ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', sourceHead, '-m', 'Pi delegate source snapshot'],
     { GIT_AUTHOR_NAME: 'Pi delegate', GIT_AUTHOR_EMAIL: 'delegate@localhost', GIT_COMMITTER_NAME: 'Pi delegate', GIT_COMMITTER_EMAIL: 'delegate@localhost' })).trim();
   const task = { version: 2, id, owner, namespace: input.namespace ?? null, repository: await repositoryIdentity(repo, runtime), initiatorLabel: label, repo, base, sourceHead, sourceFingerprint, sourceTree: tree, branch: `delegate/${id}`, worktree: join(worktrees, `delegate-${label}-${id}`),
-    directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking, profile: input.profile, verification, checks: input.checks };
+    directory, backend, route: input.route ?? null, model: input.model, thinking: input.thinking,
+    ...(execution ? { environment: execution.id, execution } : {}), profile: input.profile, verification, checks: input.checks };
   // Persist intent before worktree creation. Failures retain evidence; never auto-remove/retry.
   await save(join(directory, 'task.json'), task);
   await writeFile(join(directory, 'brief.md'), input.brief, { mode: 0o600, flag: 'wx' });
@@ -215,7 +220,9 @@ export async function prepareRevision(task, input, runtime) {
   const backend = workerBackend({ ...input, backend: input.backend ?? task.backend }, runtime);
   await assertOpen(task);
   validateInput({ ...task, ...input, backend, repo: task.repo, profile: task.profile, checks: task.checks });
-  verificationProfile(task.verification);
+  assertTaskEnvironment(task, runtime);
+  if (!task.execution || task.execution.capabilities.checks) verificationProfile(task.verification);
+  if (input.environment !== undefined && input.environment !== task.environment) throw new Error('Environment is frozen for follow-ups');
   if (!task.nonce || task.nonce !== input.expectedNonce) throw new Error('Previous job nonce changed; review the latest task first');
   if (!/^[a-f0-9]{64}$/.test(input.expectedFingerprint) || await snapshot(task, runtime) !== input.expectedFingerprint) {
     throw new Error('Source fingerprint changed; review the current diff before revising');
@@ -251,6 +258,7 @@ async function contentSnapshot(worktree, base, runtime) {
   return hash.digest('hex');
 }
 export async function writable(task, path) {
+  assertTool(task, 'write');
   await assertOpen(task);
   const target = resolve(task.worktree, path), rel = relative(task.worktree, target);
   if (!rel || rel.startsWith('../') || isAbsolute(rel) || rel.split('/').some(p => ['.git', '.pi', '.agents', '.claude'].includes(p))) {

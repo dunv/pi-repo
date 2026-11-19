@@ -25,8 +25,9 @@ is selected and not hidden. Other prompt sections are preserved; disabling/hidin
 the tool removes this section. Reload the extension to pick up policy edits.
 An explicitly forced full system prompt remains authoritative; this extension does
 not replace it. The policy grants no additional permissions or execution modes.
-In particular, the current implementation workspace is not an enforced read-only
-research/review environment.
+`source-review` now enforces read-only source tools, not OS filesystem isolation.
+Network and HOME credential isolation are not provided; discovery reports these
+limits explicitly. See [the environment contract](environment-contract.md).
 
 [`policy.md`](policy.md) remains the separate worker prompt for both Pi and Claude.
 It is unchanged by the main-agent policy and is not replaced by it.
@@ -44,14 +45,15 @@ The launcher supplies shared worker rules automatically. The delegate reads
 referenced repository/language/framework guidance in its own environment; the
 invoker must ensure references are accessible or include secret-free excerpts.
 Do not assume the delegate inherits the main or previous worker conversation.
-Model, thinking, configured profile and executable checks remain separate tool
-arguments, and the brief must agree with that actual plan (frozen for follow-ups).
+Model, thinking, environment, verification profile and executable checks remain
+separate tool arguments, and the brief must agree with that actual plan (frozen for follow-ups).
 A request not to edit is still an instruction, not an enforced read-only mode.
 
 ## How to use delegates
 
 1. Define bounded work, decided interfaces, acceptance criteria and needed checks.
-2. Discover/select an exact model and reasoning level; start `delegate_task`.
+2. Discover an environment with `delegate_environments` and an exact model/effort
+   with `delegate_models`; start `delegate_task` with an explicit environment.
 3. Wait for completion. Do not edit/check the workspace while its worker owns it.
 4. Collect with `delegate_review`. Read the full tracked patch, every new file,
    relevant context and current check evidence. Report your own verdict; a worker
@@ -68,18 +70,23 @@ Do not put irreplaceable data, real operational plans/approved sets/Trash journa
 or unknown provider-outcome evidence in disposable scratch. Preserve those outside
 this operation; delegation grants no provider action or unknown-outcome retry.
 
-## Five tools
+## Six tools
 
+- `delegate_environments {}` discovers the operator-provided environments, source
+  capabilities, approved verification profiles and actual isolation limitations.
 - `delegate_models {backend?, provider?, query?, offset?, limit?}` discovers routes
   without model/auth calls. Catalogue presence is not worker readiness.
-- `delegate_task {repo, brief, model, thinking, profile, checks, backend?}` creates
-  an isolated sibling worktree and submits one fresh worker through Pueue.
+- `delegate_task {repo, brief, model, thinking, environment, profile?, checks, backend?}`
+  creates an isolated sibling worktree and submits one fresh worker through Pueue.
+  Choose `source-review`, `implementation` or `implementation-checked`. Only the
+  last accepts/requires an approved verification profile; others need `checks: []`
+  and no profile. There is no default environment or fallback.
 - `delegate_review {task?, openDiff?}` lists disposable workspaces or collects an
   idle workspace's current result. `openDiff` is optional; review is the main
   agent's responsibility, not an extra mandatory human approval step.
 - `delegate_revise {task, expectedNonce, expectedFingerprint, brief, model,
   thinking, backend?}` explicitly starts a new attempt in the SAME idle worktree
-  and build directory with its frozen checks/profile. It can follow failed work;
+  and build directory with its frozen environment and checks/profile. It can follow failed work;
   it is never an automatic retry or Claude `--resume`. Stale nonces/fingerprints
   and current live/uncertain jobs refuse another submission.
 - `delegate_cleanup {task, disposition?, summary?}` inspects an idle workspace
@@ -135,6 +142,9 @@ worker liveness remains a blocker, not a reason to guess or retry until lucky.
   argv. No model-selected shell or implicit SDK bootstrap is provided. The deployed
   Bazel profiles use `--batch` so checks do not leave persistent servers holding
   task output directories or worker scopes alive.
+- Environment-specific launchers and PATHs are frozen per task. A changed/missing
+  descriptor blocks workers, tools, checks and follow-ups; legacy tasks are not
+  silently upgraded. Inspection and cleanup still work.
 - These are capability boundaries, **not an OS sandbox**. Trusted check commands
   and HOME-based worker authentication still run as the local user. Do not escape
   the scope or enlist external mutable services without independent lifecycle care.
@@ -178,7 +188,9 @@ Main/originating external sessions and Pueue's own backend history are not delet
 The operator supplies `PI_DELEGATE_RUNTIME`: absolute trusted `git`, `node`, `pi`,
 `flock`, `ssh`, `home`, `state`, `launcher`, an explicit absolute-component `path`,
 `revisionProtocol: 1`, `containmentProtocol: 1`, `disposableProtocol: 1`,
-`systemdRun`, optional `claude`, and named verification `profiles`.
+`systemdRun`, optional `claude`, named verification `profiles`, and
+`environmentProtocol: 1` / `environments` implementing
+[the versioned environment interface](environment-contract.md).
 Profiles contain an absolute `command` and literal `args` with one standalone
 `{targets}` and optional `{worktree}`, `{outputBase}`, `{kind}` placeholders.
 `piModelPolicy` optionally maps exact Pi provider/model IDs to allowed thinking

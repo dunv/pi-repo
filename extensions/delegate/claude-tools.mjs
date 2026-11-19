@@ -1,13 +1,14 @@
 // Dependency-free newline-delimited MCP stdio bridge. No shell or arbitrary
 // executable tool; serialize calls so source mutation cannot overlap a check.
 import { createInterface } from 'node:readline';
-import { readFile, writeFile, mkdir, readdir, stat, realpath } from 'node:fs/promises';
-import { resolve, relative, isAbsolute, join, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runtimeFrom, json, assertWorktree, writable, git, envFor } from './core.mjs';
 import { toolSummary } from './progress.mjs';
+import { assertTaskEnvironment, assertTool, workerTools, readable } from './environments.mjs';
 const exec = promisify(execFile);
 const string = { type: 'string', maxLength: 1048576 };
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -34,12 +35,8 @@ export async function createTools(runtimePath, id, attempt) {
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Full task UUID required');
   const runtime = await runtimeFrom(runtimePath), root = join(runtime.state, id), task = await json(join(root, 'task.json'));
   if (task.id !== id || task.directory !== root) throw new Error('Task identity mismatch');
-  async function source(path = '.') {
-    if (path.includes('\0')) throw new Error('Invalid path');
-    const target = await realpath(resolve(task.worktree, path)), rel = relative(task.worktree, target);
-    if (rel.startsWith('../') || isAbsolute(rel)) throw new Error('Read outside worktree');
-    return target;
-  }
+  assertTaskEnvironment(task, runtime);
+  const source = (path = '.') => readable(task, path);
   async function text(path) {
     const target = await source(path), info = await stat(target);
     if (!info.isFile() || info.size > 1048576) throw new Error('Expected text file at most 1 MiB');
@@ -48,8 +45,10 @@ export async function createTools(runtimePath, id, attempt) {
     return value;
   }
   const files = async () => [...new Set((await git(runtime, task.worktree, ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean))].sort();
-  return async (name, args) => {
+  const call = async (name, args) => {
     validate(name, args);
+    assertTaskEnvironment(task, await runtimeFrom(runtimePath));
+    assertTool(task, name);
     await assertWorktree(task, runtime);
     console.error(`[delegate] Tool starting: ${name} ${toolSummary(name, args)}`);
     let output;
@@ -92,6 +91,8 @@ export async function createTools(runtimePath, id, attempt) {
       return { content: [{ type: 'text', text: output.slice(0, 50000) + (output.length > 50000 ? '\n[truncated; use narrower reads/searches]' : '') }] };
     } finally { console.error(`[delegate] Tool finished: ${name}`); }
   };
+  call.tools = tools.filter(tool => workerTools(task).includes(tool.name));
+  return call;
 }
 export async function serve(runtimePath, id, attempt) {
   const call = await createTools(runtimePath, id, attempt);
@@ -106,7 +107,7 @@ export async function serve(runtimePath, id, attempt) {
       switch (request.method) {
         case 'initialize': result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'delegate', version: '1.0.0' } }; break;
         case 'ping': result = {}; break;
-        case 'tools/list': result = { tools }; break;
+        case 'tools/list': result = { tools: call.tools }; break;
         case 'tools/call':
           try { result = await call(request.params?.name, request.params?.arguments ?? {}); }
           catch (error) { result = { isError: true, content: [{ type: 'text', text: `Tool failed; inspect artifacts, do not automatically retry: ${error.message}` }] }; }

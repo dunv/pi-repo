@@ -10,7 +10,11 @@ Read [the workspace contract](../../extensions/delegate/README.md).
 ## Normal flow
 
 1. The main agent decides the bounded scope, interfaces, model/effort and checks.
-   Start `delegate_task`; no implicit SDK setup or automatic model fallback.
+   Discover with `delegate_environments` and explicitly select `source-review`,
+   `implementation` or `implementation-checked`. Only the last accepts a verification
+   profile/check plan; the others need empty checks and no profile. Read the stated
+   isolation limits: host network/HOME access remain, not an OS sandbox. Start
+   `delegate_task`; no implicit SDK setup or automatic model/environment fallback.
 2. Wait for the worker/checks to finish. Do not edit or build concurrently in its
    workspace. Missing/unknown admission is not permission to submit again.
 3. Collect with `delegate_review`. Personally inspect the full tracked patch,
@@ -18,7 +22,9 @@ Read [the workspace contract](../../extensions/delegate/README.md).
    the worker's report/exit zero is not acceptance and user diff review is not
    mandatory just because the work was delegated.
 4. If needed, explicitly use `delegate_revise` for a fresh follow-up in the same
-   idle worktree/build directory. Use the latest nonce/fingerprint from review.
+   idle worktree/build directory with the frozen environment/checks. Use the latest
+   nonce/fingerprint from review. Legacy tasks without an environment descriptor
+   are not silently upgraded for new worker execution.
    This can follow failed work; it is not automatic recovery or CLI `--resume`.
 5. Apply useful changes to the parent, reconciling drift, or deliberately discard
    the result. Keep the needed outcome/check evidence in the main agent session.
