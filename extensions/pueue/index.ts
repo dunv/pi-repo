@@ -4,6 +4,7 @@ import { MouseRegion, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { WIDGET, widgetLines } from "./widget.ts";
 import { noticeText } from "./notice.ts";
 import { logPresentation } from "./log-presentation.ts";
+import { literal, toolPresentation } from "./tool-presentation.ts";
 import { commandPreview, displayLiteral, displayState, statusLabel, submission, submissionDetails, submissionFor } from "./presentation.ts";
 import { watch, type FSWatcher } from "node:fs";
 import { Backend, configuration, command, privateDirectory, sliceLog } from "./backend.ts";
@@ -252,6 +253,11 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   });
   pi.registerTool({
     name: "pueue_status", label: "Pueue status", executionMode: "sequential",
+    ...toolPresentation("Pueue · status", (rows, expanded) => ({
+      heading: `Pueue · ${rows.length} tracked job${rows.length === 1 ? "" : "s"}`,
+      lines: rows.length ? rows.flatMap((row: JobView) => [statusLabel(row).text,
+        ...(expanded ? [`Job nonce: ${literal(row.nonce)}`] : [])]) : ["No matching backend-tracked jobs; absence is not completion."],
+    })),
     description: "Read this branch's backend-tracked jobs; filter by full nonce or state (default all). Absent jobs are omitted, not completed; history remains. Active includes UNKNOWN/ADMISSION_UNKNOWN; finished includes EXITED/KILLED. UNKNOWN/absence never authorizes retry/takeover. KILLED may be restored state, not proof processes stopped; cancellation is intent only. No inferred exit code. Exit 0 is not CI/review/publication success or merge permission; missing verification remains unverified. No polling/sleep loops; use completion callbacks/resume.",
     parameters: Type.Object({ nonce: Type.Optional(Type.String({ minLength: 1 })),
       state: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("active"), Type.Literal("finished")])) }), annotations: { readOnlyHint: true },
@@ -332,6 +338,12 @@ export function extension(pi: ExtensionAPI, makeBackend = (c: ConstructorParamet
   }
   pi.registerTool({
     name: "pueue_cancel", label: "Request Pueue cancellation", executionMode: "sequential",
+    ...toolPresentation("Pueue · cancellation", (data, expanded) => ({
+      heading: data.signalRequested === true ? "Pueue · SIGTERM requested" : "Pueue · No signal sent",
+      ink: "warning",
+      lines: ["Stopping and publication remain unverified; check status separately.",
+        ...(expanded ? [`Job nonce: ${literal(data.nonce)}`, `Cancellation intent: ${data.cancellationRequested === true ? "recorded" : "not recorded"}`] : [])],
+    })),
     description: "Request SIGTERM for this branch's owned job by full nonce; requires explicit user confirmation via UI. Only verified, fully admitted running/paused jobs qualify. No queued/stashed/uncertain cancellation, force-kill, escalation or automatic retry. Acknowledgement proves neither stopped descendants nor absent publication; check status separately.",
     parameters: Type.Object({ nonce: Type.String({ minLength: 1 }) }),
     annotations: { readOnlyHint: false, destructiveHint: true },

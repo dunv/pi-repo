@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { catalogue, resolveSelection } from "./catalogue.mjs";
 import { environments } from "./environments.mjs";
 import { configuration } from "../pueue/backend.ts";
+import { literal, toolPresentation } from "../pueue/tool-presentation.ts";
 import { ENTRY, prepare, prepareRevision, attemptDirectory, runtimeFrom, json, privateJSON, save, writeTask, snapshot, sourceSnapshot, git, tail } from "./core.mjs";
 import { withTaskLock } from "./lock.mjs";
 import { loadWorkspace, assertWorkspaceIdle, inspectWorkspace, cleanupWorkspace, configuredObserver } from "./workspace.mjs";
@@ -76,6 +77,13 @@ export default function (pi: ExtensionAPI) {
   }
   pi.registerTool({
     name: "delegate_models", label: "List delegate model routes", exposure: "model-only", executionMode: "sequential",
+    ...toolPresentation("Subagents · model routes", (data, expanded) => ({
+      heading: `Subagents · ${data.entries.length} of ${data.total} model routes`,
+      lines: [...data.entries.map((entry: any) => `${literal(entry.id)} · ${literal(entry.backend)} · thinking: ${literal(entry.capabilities.thinking?.join(", ") ?? "provider-defined")}`),
+        "Discovery only · worker readiness unverified · no fallback",
+        ...(data.nextOffset !== null ? [`More routes: offset ${literal(data.nextOffset)}`] : []),
+        ...(expanded ? data.entries.map((entry: any) => `Route details: ${literal(JSON.stringify(entry))}`) : [])],
+    })),
     description: "Discover exact delegate model routes without model/auth calls. Anthropic uses Claude Code; local/OpenAI use Pi. Select a listed model and thinking level; never silently fall back. Reserve local GMKtec models for simple mechanical work.",
     parameters: Type.Object({ backend: backendSchema, provider: Type.Optional(Type.String({ maxLength: 128 })), query: Type.Optional(Type.String({ maxLength: 200 })),
       offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }),
@@ -87,6 +95,14 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "delegate_environments", label: "List delegate environments", exposure: "model-only", executionMode: "sequential",
+    ...toolPresentation("Subagents · environments", (data, expanded) => ({
+      heading: `Subagents · ${data.environments.length} environments`,
+      lines: [...data.environments.flatMap((entry: any) => [
+        `${literal(entry.id)} · source: ${literal(entry.capabilities.source)} · checks: ${entry.capabilities.checks ? "allowed" : "forbidden"}`,
+        `Profiles: ${entry.verificationProfiles.map(literal).join(", ") || "none"}`,
+        ...(expanded ? [`Isolation: ${literal(JSON.stringify(entry.isolation))}`, `Launcher: ${literal(entry.launcher)}`, `PATH: ${literal(entry.path)}`] : []),
+      ]), "Tool boundary, not an OS sandbox · host network and HOME credentials accessible · readiness unverified"],
+    })),
     description: "Discover operator-provided environment contract v1: source-review, implementation and implementation-checked. Reports tool capabilities, approved verification profiles and actual isolation limits; not sandbox/readiness proof. Select an explicit environment; no fallback. Model connectivity and task-network isolation are distinct.",
     parameters: Type.Object({}),
     async execute() {
@@ -198,6 +214,17 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "delegate_cleanup", label: "Remove disposable workspace", exposure: "model-only", executionMode: "sequential",
+    ...toolPresentation("Subagent · workspace cleanup", (data, expanded) => ({
+      heading: Array.isArray(data.removed) ? "Subagent · Disposable workspace removed" : "Subagent · Workspace inspected (not removed)",
+      ink: Array.isArray(data.removed) ? "success" : "muted",
+      lines: [`Task: ${literal(data.task)}`,
+        ...(Array.isArray(data.removed) ? [`Result: ${literal(data.disposition)} · no archive`,
+          ...(data.summaryRecorded === false ? ["Summary recording not confirmed; retain it in the main session."] : [])]
+          : ["Review/use the result and retain needed data before confirming removal. No archive will be made."]),
+        ...(expanded ? [`Branch: ${literal(data.branch)}`,
+          ...(data.removed ?? data.paths).map((path: string) => `${data.removed ? "Removed" : "Removal scope"}: ${literal(path)}`),
+          ...(data.summary ? [`Summary: ${literal(data.summary)}`] : [])] : [])],
+    })),
     description: "Inspect a disposable workspace, or after result handoff remove its worktree/ref/build output and task-local temporary records with one exact confirmation. No archive, enrollment, original-session ownership or takeover protocol. Main agent must already have applied/discarded the result and retained needed data. Current worker jobs/scopes and foreground/build users must be idle. Never follow shared symlink targets or delete main/originating sessions or real operational journals/plans. Installation does not migrate/delete legacy records.",
     parameters: Type.Object({ task: Type.String(), disposition: Type.Optional(Type.Union([Type.Literal("used"), Type.Literal("discarded")])), summary: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
     async execute(_id, input, signal, _update, ctx) {
